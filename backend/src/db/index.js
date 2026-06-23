@@ -1,0 +1,79 @@
+/**
+ * 描述: SQLite 数据库连接及初始化模块
+ * 主要功能:
+ *     - 载入 better-sqlite3 建立本地 sqlite 持久化连接
+ *     - 启动自检并自动创建 backend/data 目录
+ *     - 开启 WAL 并行日志模式和 foreign_keys 级联约束
+ *     - 检查并执行 schema.sql 初始化 6 张核心关系表
+ */
+
+import Database from 'better-sqlite3';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// 规划数据存储目录与文件路径
+const dataDir = path.join(__dirname, '../../data');
+const dbPath = path.join(dataDir, 'lawchers.sqlite');
+const schemaPath = path.join(__dirname, 'schema.sql');
+
+// 1. 自检并自动创建 data/ 数据库物理目录
+if (!fs.existsSync(dataDir)) {
+  console.log(`[INFO] 数据库目录 ${dataDir} 不存在，正在自动创建...`);
+  fs.mkdirSync(dataDir, { recursive: true });
+}
+
+// 2. 建立 better-sqlite3 本地连接
+console.log(`[INFO] 正在连接 SQLite 数据库: ${dbPath}`);
+const db = new Database(dbPath, {
+  // 可以选择加上 verbose: console.log 方便调试 SQL，但正式版可不加
+});
+
+// 3. 启用 SQLite 实效命令以增强并发读写与外键删除能力
+db.pragma('foreign_keys = ON');  // 必须开启外键关联，以保障级联删除生效
+db.pragma('journal_mode = WAL'); // WAL 预写日志模式，大幅提升读写性能
+db.pragma('synchronous = NORMAL');
+
+// 4. 表结构自初始化自检
+try {
+  // 检查 case 表是否存在
+  const tableCheck = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='case';").get();
+  
+  if (!tableCheck) {
+    console.log('[INFO] 检测到数据库尚未初始化表结构，正在读取并执行 schema.sql...');
+    const schemaSql = fs.readFileSync(schemaPath, 'utf-8');
+    db.exec(schemaSql);
+    console.log('[OK] 数据库表结构初始化成功！');
+  } else {
+    console.log('[OK] 数据库连接成功，表结构已就绪。');
+  }
+
+  // 5. 增量迁移：为 material 表添加 Stage 4 所需的新列
+  try {
+    const matCols = db.prepare("PRAGMA table_info('material')").all();
+    const matColNames = matCols.map(c => c.name);
+
+    if (!matColNames.includes('redacted_md')) {
+      db.exec("ALTER TABLE \"material\" ADD COLUMN \"redacted_md\" TEXT DEFAULT ''");
+      console.log('[MIGRATE] material 表已添加 redacted_md 列');
+    }
+    if (!matColNames.includes('map_json')) {
+      db.exec("ALTER TABLE \"material\" ADD COLUMN \"map_json\" TEXT DEFAULT '{}'");
+      console.log('[MIGRATE] material 表已添加 map_json 列');
+    }
+    if (!matColNames.includes('occurrences_json')) {
+      db.exec("ALTER TABLE \"material\" ADD COLUMN \"occurrences_json\" TEXT DEFAULT '[]'");
+      console.log('[MIGRATE] material 表已添加 occurrences_json 列');
+    }
+  } catch (migErr) {
+    console.warn('[WARN] material 表增量迁移检查异常（可忽略若已存在）:', migErr.message);
+  }
+} catch (err) {
+  console.error('[FATAL ERROR] 数据库表自检初始化失败！', err.message);
+  throw err;
+}
+
+export default db;
