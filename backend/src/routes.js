@@ -181,7 +181,8 @@ router.post('/upload', upload.single('file'), async (req, res) => {
       return res.status(400).json({ success: false, message: '缺少案件 ID' });
     }
 
-    const originalName = req.file.originalname;
+    // multer 以 latin1 解析 originalname，中文文件名会乱码，转回 utf-8
+    const originalName = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
     const ext = path.extname(originalName).toLowerCase();
     const tmpPath = req.file.path; // multer 临时存储路径
 
@@ -446,6 +447,52 @@ router.post('/materials/:id/confirm', async (req, res) => {
   } catch (error) {
     console.error('Confirm Material Error:', error);
     res.status(500).json({ success: false, message: '确认材料失败', error: error.message });
+  }
+});
+
+/**
+ * DELETE /api/materials/:id - 删除材料（连带本地脱敏产物文件 + 级联实体）
+ */
+router.delete('/materials/:id', async (req, res) => {
+  try {
+    const matId = parseInt(req.params.id, 10);
+    const { default: db } = await import('./db/index.js');
+    const matRow = db.prepare('SELECT case_id, stored_path FROM "material" WHERE id = ?').get(matId);
+    if (!matRow) {
+      return res.status(404).json({ success: false, message: '材料不存在' });
+    }
+
+    // best-effort 清理本地原件及同目录脱敏产物（不阻断删除）
+    if (matRow.stored_path) {
+      const abs = path.resolve(path.join(__dirname, '..'), matRow.stored_path);
+      if (abs.startsWith(path.resolve(uploadsDir))) {
+        const dir = path.dirname(abs);
+        const base = path.basename(abs, path.extname(abs));
+        const candidates = [
+          abs,
+          path.join(dir, `${base}.raw.md`),
+          path.join(dir, `${base}.redacted.txt`),
+          path.join(dir, `${base}.map.json`),
+          path.join(dir, `${base}.audit.json`),
+        ];
+        await Promise.all(candidates.map((p) => fs.unlink(p).catch(() => {})));
+      }
+    }
+
+    deleteMaterial(matId); // 级联删除 entity（外键 ON DELETE CASCADE）
+
+    await writeAuditLog({
+      case_id: matRow.case_id,
+      action: 'material_delete',
+      source: 'human',
+      model_config: null,
+      human_confirmed: 1,
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete Material Error:', error);
+    res.status(500).json({ success: false, message: '删除材料失败', error: error.message });
   }
 });
 
