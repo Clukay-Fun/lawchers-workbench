@@ -175,6 +175,20 @@ export async function confirmMaterial(materialId) {
 }
 
 /**
+ * 删除材料（连带本地脱敏产物与实体）
+ * @param {number} materialId 材料 ID
+ */
+export async function deleteMaterial(materialId) {
+  const response = await fetch(`${API_BASE}/materials/${materialId}`, {
+    method: 'DELETE',
+  });
+  if (!response.ok) throw new Error('删除材料失败');
+  const result = await response.json();
+  if (!result.success) throw new Error(result.message || '删除材料异常');
+  return result;
+}
+
+/**
  * 从后端获取 NER 脱敏引擎状态
  */
 export async function getNerStatus() {

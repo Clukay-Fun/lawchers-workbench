@@ -2,7 +2,7 @@ import { useState, useMemo, useCallback } from 'react';
 import MaterialList, { buildChunksFromOccurrences } from './workspace/MaterialList';
 import DocEditor from './workspace/DocEditor';
 import CalcPanel from './workspace/CalcPanel';
-import { generateOpinion, redactFile, redactScanFile, confirmMaterial, confirmOpinion, exportRedactedDocx, exportOpinionDocx } from '../api';
+import { generateOpinion, redactFile, redactScanFile, confirmMaterial, confirmOpinion, exportRedactedDocx, exportOpinionDocx, deleteMaterial } from '../api';
 
 /**
  * 描述: 智能办案工作台 Workspace 容器组件
@@ -167,6 +167,26 @@ export default function Workspace({ currentCase, onUpdateCase, onBackHome, sysSe
     onUpdateCase({ ...currentCase, selectedMaterialIndex: idx });
   };
 
+  // 8.5 删除材料（调后端 DELETE 并更新本地状态与选中索引）
+  const handleDeleteMaterial = async (index, materialId) => {
+    const mats = currentCase.materials || [];
+    const target = mats[index];
+    try {
+      if (materialId) await deleteMaterial(materialId);
+    } catch (err) {
+      console.error('删除材料失败:', err);
+      triggerToast(err.message || '删除材料失败');
+      return;
+    }
+    const updated = mats.filter((_, i) => i !== index);
+    const prevIdx = currentCase.selectedMaterialIndex || 0;
+    let nextIdx = prevIdx;
+    if (index < prevIdx) nextIdx = prevIdx - 1;
+    else if (index === prevIdx) nextIdx = Math.max(0, Math.min(prevIdx, updated.length - 1));
+    onUpdateCase({ ...currentCase, materials: updated, selectedMaterialIndex: nextIdx });
+    triggerToast(`材料「${target?.name || ''}」已删除`);
+  };
+
   // 9. 出处定位
   const handleLocateEntity = (fieldId) => {
     setHighlightFieldId(fieldId);
@@ -284,6 +304,7 @@ export default function Workspace({ currentCase, onUpdateCase, onBackHome, sysSe
         materials={currentCase.materials || []}
         activeIndex={currentCase.selectedMaterialIndex || 0}
         onSelect={handleSelectMaterial}
+        onDeleteMaterial={handleDeleteMaterial}
         onAddMaterial={handleAddMaterial}
         onTriggerToast={triggerToast}
         isModalOpen={uploadOpen}

@@ -429,6 +429,16 @@ export default function DocEditor({
       ) : (
         /* 单栏文本校对编辑区 */
         <div className="editor-body" onMouseUp={handleMouseUp}>
+          {chunks.length === 0 && (
+            material?.rawText && material.rawText.trim() ? (
+              /* 兜底：脱敏切片为空但有原始文本时，仍展示原文，避免中间空白 */
+              <span style={{ whiteSpace: 'pre-wrap' }}>{material.rawText}</span>
+            ) : (
+              <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', padding: '1rem 0' }}>
+                未解析到可显示的文本内容。若该文件为扫描件 PDF（无文字层），请改用图片/扫描脱敏方式处理。
+              </div>
+            )
+          )}
           {chunks.map((chunk, index) => {
             if (chunk.isEntity) {
               // 类型匹配过滤

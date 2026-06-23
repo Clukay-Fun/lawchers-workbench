@@ -89,6 +89,7 @@ export default function MaterialList({
   rulesConfig,
   caseId,
   onMaterialStatusChange,
+  onDeleteMaterial,
 }) {
   const [uploading, setUploading] = useState(false);
   const [selectedFile, setSelectedFile] = useState(null);
@@ -211,6 +212,22 @@ export default function MaterialList({
                 {mat.status === 'done' ? '已脱敏' : '待校对'} · {mat.entitiesCount || 0} 处实体
               </div>
             </div>
+            <button
+              className="file-del"
+              title="删除该材料"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (window.confirm(`确认删除材料「${mat.name}」？该操作会一并清除其本地脱敏产物，且不可恢复。`)) {
+                  onDeleteMaterial?.(index, mat.id);
+                }
+              }}
+              style={{
+                border: 'none', background: 'transparent', cursor: 'pointer',
+                color: 'var(--text-muted)', fontSize: '0.9rem', padding: '0 0.25rem', lineHeight: 1,
+              }}
+            >
+              🗑
+            </button>
           </div>
         ))
       )}
