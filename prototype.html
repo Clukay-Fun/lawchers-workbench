@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LAWCHERS 敬法智能办案工作台 - 高保真原型 v2</title>
+  <style>
+    /* #region 1. 设计系统变量 */
+    :root {
+      --primary: #3c4fa0;
+      --primary-hover: #2b3b80;
+      --primary-light: rgba(60, 79, 160, 0.08);
+      --accent: #a3d8f4;
+      --danger: #ef4444;
+      --warning: #d97706;
+      --success: #10b981;
+
+      --bg-main: #f1f5f9;
+      --bg-card: #ffffff;
+      --border-color: #e2e8f0;
+      --text-main: #0f172a;
+      --text-muted: #64748b;
+
+      /* 实体类型配色 */
+      --t-name: #fde68a;     --t-name-b: #f59e0b;
+      --t-phone: #bae6fd;    --t-phone-b: #0ea5e9;
+      --t-company: #ddd6fe;  --t-company-b: #8b5cf6;
+      --t-id: #fecaca;       --t-id-b: #ef4444;
+      --t-addr: #bbf7d0;     --t-addr-b: #22c55e;
+
+      --font-sans: 'Clear Sans', -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif;
+      --transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+      --card-shadow: 0 1px 3px 0 rgba(0,0,0,0.05), 0 1px 2px -1px rgba(0,0,0,0.05);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: var(--font-sans);
+      background-color: var(--bg-main);
+      color: var(--text-main);
+      height: 100vh; overflow: hidden; display: flex;
+      font-size: 14px;
+    }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+    /* #endregion */
+
+    /* #region 2. 侧边导航 */
+    .sidebar {
+      width: 88px; height: 100vh; z-index: 100;
+      background: linear-gradient(180deg, #2b3b80 0%, #1f2d63 100%);
+      display: flex; flex-direction: column; align-items: center;
+      padding: 1.5rem .75rem; gap: .5rem;
+      box-shadow: 2px 0 16px rgba(15,23,42,.12);
+    }
+    .brand-logo {
+      color: #fff; margin-bottom: 1.5rem; display: flex; flex-direction: column;
+      align-items: center; gap: .4rem;
+    }
+    .brand-logo .logo-badge {
+      width: 48px; height: 48px; border-radius: 14px;
+      background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.16);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .brand-logo span { font-size: .58rem; font-weight: 700; letter-spacing: .12em; opacity: .85; }
+
+    .nav-menu { display: flex; flex-direction: column; gap: .35rem; flex: 1; width: 100%; }
+    .nav-item {
+      position: relative; display: flex; flex-direction: column; align-items: center; gap: .35rem;
+      color: rgba(255,255,255,.62); cursor: pointer; padding: .7rem 0; width: 100%;
+      border-radius: 12px; font-size: .7rem; font-weight: 500; transition: var(--transition);
+    }
+    .nav-item svg { width: 22px; height: 22px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    .nav-item:hover { color: #fff; background: rgba(255,255,255,.08); }
+    .nav-item.active { color: #fff; background: rgba(255,255,255,.14); font-weight: 600; }
+    .nav-item.active::before {
+      content: ''; position: absolute; left: -.75rem; top: 50%; transform: translateY(-50%);
+      width: 3px; height: 24px; border-radius: 0 3px 3px 0; background: var(--accent);
+    }
+    .nav-divider { width: 60%; height: 1px; background: rgba(255,255,255,.1); margin: .25rem 0; }
+
+    .user-profile {
+      width: 40px; height: 40px; border-radius: 12px; margin-top: .5rem;
+      background: linear-gradient(135deg, var(--accent), #6ea8d8);
+      display: flex; align-items: center; justify-content: center;
+      color: #1f2d63; font-weight: 700; font-size: .85rem; cursor: pointer;
+      box-shadow: 0 2px 8px rgba(0,0,0,.2); transition: var(--transition);
+    }
+    .user-profile:hover { transform: translateY(-2px); }
+    /* #endregion */
+
+    /* #region 3. 主区结构 */
+    .main-container { flex: 1; display: flex; flex-direction: column; overflow: hidden; height: 100vh; }
+    .top-header {
+      height: 56px; background: var(--bg-card); border-bottom: 1px solid var(--border-color);
+      display: flex; justify-content: space-between; align-items: center; padding: 0 1.5rem;
+    }
+    .top-header h2 { font-size: 1.05rem; font-weight: 600; }
+    .breadcrumb { font-size: .78rem; color: var(--text-muted); }
+    .page-wrapper { flex: 1; overflow: hidden; position: relative; }
+    .page-view { position: absolute; inset: 0; display: none; flex-direction: column; overflow: hidden; }
+    .page-view.active { display: flex; }
+
+    .workspace-grid { display: grid; grid-template-columns: 270px 1fr 380px; height: 100%; overflow: hidden; }
+    .col-left { background: #f8fafc; border-right: 1px solid var(--border-color); display: flex; flex-direction: column; padding: 1rem; overflow-y: auto; }
+    .col-center { background: var(--bg-card); display: flex; flex-direction: column; border-right: 1px solid var(--border-color); overflow: hidden; }
+    /* 右栏：整体固定不滚动，中段要素/测算独立滚动，底部生成按钮常驻 */
+    .col-right { background: #f8fafc; display: flex; flex-direction: column; overflow: hidden; }
+    .right-scroll { flex: 1; overflow-y: auto; padding: 1.2rem 1.2rem .5rem; }
+    .right-footer { padding: 1rem 1.2rem; border-top: 1px solid var(--border-color); background: #fff; }
+    .right-footer .gate-hint { font-size: .72rem; color: var(--warning); text-align: center; margin-bottom: .6rem; display: flex; align-items: center; justify-content: center; gap: .3rem; }
+    .btn:disabled { background: #cbd5e1; cursor: not-allowed; box-shadow: none; }
+
+    /* 材料脱敏进度门控卡（右栏顶部固定） */
+    .mat-gate { margin: 1.2rem 1.2rem 0; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px; box-shadow: var(--card-shadow); padding: .9rem 1rem; }
+    .mat-gate .gate-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: .6rem; }
+    .mat-gate .gate-top h4 { font-size: .8rem; font-weight: 600; }
+    .mat-gate .gate-count { font-size: .75rem; font-weight: 700; color: var(--primary); }
+    .gate-progress { height: 6px; border-radius: 3px; background: #eef2f7; overflow: hidden; margin-bottom: .7rem; }
+    .gate-progress > i { display: block; height: 100%; background: var(--success); transition: var(--transition); }
+    .mat-row { display: flex; align-items: center; gap: .5rem; font-size: .76rem; padding: .3rem 0; }
+    .mat-row .st { margin-left: auto; font-size: .68rem; font-weight: 600; padding: .1rem .4rem; border-radius: 4px; }
+    .mat-row .st.done { background: #d1fae5; color: var(--success); }
+    .mat-row .st.todo { background: #fef3c7; color: var(--warning); cursor: pointer; }
+
+    .solid-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px; box-shadow: var(--card-shadow); padding: 1rem; margin-bottom: .9rem; }
+    .form-title { font-size: .72rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: .75rem; }
+    /* #endregion */
+
+    /* #region 4. 左栏 */
+    .file-item { display: flex; align-items: center; gap: .5rem; padding: .55rem .7rem; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; margin-bottom: .5rem; font-size: .8rem; font-weight: 500; cursor: pointer; transition: var(--transition); }
+    .file-item:hover, .file-item.active { border-color: var(--primary); background: var(--primary-light); }
+    .file-item .meta { font-size: .65rem; color: var(--text-muted); font-weight: 400; }
+    .compact-upload { border: 1.5px dashed rgba(60,79,160,.3); background: rgba(255,255,255,.5); border-radius: 10px; padding: 1rem; text-align: center; cursor: pointer; font-size: .75rem; color: var(--primary); transition: var(--transition); }
+    .compact-upload:hover { border-color: var(--primary); background: var(--primary-light); }
+    /* #endregion */
+
+    /* #region 5. 中栏 脱敏编辑器 */
+    .editor-header { padding: .8rem 1.2rem; border-bottom: 1px solid var(--border-color); background: #fafbfc; }
+    .editor-toolbar { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; margin-top: .6rem; }
+    .chip { font-size: .7rem; padding: .25rem .6rem; border-radius: 999px; border: 1px solid var(--border-color); background: #fff; cursor: pointer; transition: var(--transition); display: inline-flex; align-items: center; gap: .3rem; font-weight: 500; }
+    .chip.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+    .chip .dot { width: 8px; height: 8px; border-radius: 50%; }
+    .editor-stat { font-size: .72rem; color: var(--text-muted); }
+    .editor-stat strong { color: var(--success); }
+    .editor-body { flex: 1; padding: 1.4rem 1.6rem; overflow-y: auto; font-size: .95rem; line-height: 2; color: #334155; white-space: pre-wrap; }
+
+    .ent {
+      padding: .05rem .3rem; border-radius: 4px; font-weight: 600; cursor: pointer;
+      display: inline-flex; align-items: center; gap: .25rem; transition: var(--transition);
+      border: 1px solid transparent;
+    }
+    .ent .tag-label { font-size: .62rem; background: rgba(0,0,0,.1); padding: 0 .2rem; border-radius: 2px; font-weight: 500; }
+    .ent.t-name { background: var(--t-name); border-color: var(--t-name-b); color: #713f12; }
+    .ent.t-phone { background: var(--t-phone); border-color: var(--t-phone-b); color: #075985; }
+    .ent.t-company { background: var(--t-company); border-color: var(--t-company-b); color: #5b21b6; }
+    .ent.t-id { background: var(--t-id); border-color: var(--t-id-b); color: #991b1b; }
+    .ent.t-addr { background: var(--t-addr); border-color: var(--t-addr-b); color: #166534; }
+    /* 临时明文：灰底（沿用旧形式，去掉删除线） */
+    .ent.revealed { background: #f1f5f9 !important; border-color: #cbd5e1 !important; color: #64748b !important; opacity: .8; }
+    .ent.highlight { outline: 3px solid var(--primary); outline-offset: 1px; }
+    .ent.dim { opacity: .25; }
+    /* #endregion */
+
+    /* #region 6. 右栏 表单+测算 */
+    .form-group { margin-bottom: .75rem; display: flex; flex-direction: column; gap: .3rem; }
+    .form-group label { font-size: .73rem; font-weight: 500; color: var(--text-muted); }
+    .form-group input, .form-group select { padding: .45rem .7rem; border: 1px solid var(--border-color); border-radius: 6px; font-size: .85rem; outline: none; transition: var(--transition); background: #fff; }
+    .form-group input:focus, .form-group select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
+    .form-group.linked input { cursor: pointer; }
+    .field-src { font-size: .62rem; color: var(--primary); cursor: pointer; align-self: flex-start; }
+    .field-src:hover { text-decoration: underline; }
+
+    .pricing-card { border-color: var(--primary); }
+    .price-row { display: flex; justify-content: space-between; padding: .5rem 0; border-bottom: 1px solid var(--border-color); font-size: .85rem; align-items: center; }
+    .price-row .law { font-size: .62rem; color: var(--text-muted); cursor: help; border-bottom: 1px dotted var(--text-muted); }
+    .price-row.total { border-bottom: none; font-size: 1.05rem; font-weight: bold; color: var(--primary); padding-top: .7rem; }
+
+    .btn { padding: .6rem 1rem; border-radius: 6px; font-size: .85rem; font-weight: 600; cursor: pointer; border: none; transition: var(--transition); text-align: center; width: 100%; }
+    .btn-primary { background: var(--primary); color: #fff; }
+    .btn-primary:hover { background: var(--primary-hover); }
+    .btn-ghost { background: #f1f5f9; border: 1px solid var(--border-color); color: var(--text-main); }
+    /* #endregion */
+
+    /* #region 6b. 首页 工作台 Dashboard */
+    .home-container { padding: 1.8rem 2rem; overflow-y: auto; flex: 1; }
+    .home-hero { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 1.4rem; }
+    .home-hero h1 { font-size: 1.5rem; font-weight: 700; }
+    .home-hero p { color: var(--text-muted); font-size: .85rem; margin-top: .3rem; }
+    .btn-new { background: var(--primary); color: #fff; border: none; padding: .65rem 1.3rem; border-radius: 10px; font-size: .85rem; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: .4rem; box-shadow: 0 4px 12px rgba(60,79,160,.3); transition: var(--transition); }
+    .btn-new:hover { background: var(--primary-hover); transform: translateY(-1px); }
+
+    .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-bottom: 1.8rem; }
+    .stat-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 14px; padding: 1.1rem 1.2rem; box-shadow: var(--card-shadow); }
+    .stat-card .label { font-size: .75rem; color: var(--text-muted); display: flex; align-items: center; gap: .4rem; }
+    .stat-card .num { font-size: 1.8rem; font-weight: 700; margin-top: .4rem; }
+    .stat-card .num small { font-size: .75rem; font-weight: 500; color: var(--text-muted); }
+    .stat-card .ico { width: 30px; height: 30px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 1rem; }
+
+    .section-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: .9rem; }
+    .section-head h3 { font-size: 1rem; font-weight: 600; }
+    .section-head .more { font-size: .78rem; color: var(--primary); cursor: pointer; }
+
+    .case-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; }
+    .case-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 14px; padding: 1.2rem; box-shadow: var(--card-shadow); cursor: pointer; transition: var(--transition); position: relative; }
+    .case-card:hover { border-color: var(--primary); transform: translateY(-3px); box-shadow: 0 8px 20px rgba(60,79,160,.12); }
+    .case-card .case-no { font-size: .7rem; color: var(--text-muted); font-weight: 600; letter-spacing: .03em; }
+    .case-card .case-title { font-size: 1rem; font-weight: 600; margin: .35rem 0 .15rem; }
+    .case-card .case-party { font-size: .78rem; color: var(--text-muted); margin-bottom: .9rem; }
+    .case-card .case-amount { font-size: 1.15rem; font-weight: 700; color: var(--primary); }
+    .case-card .case-amount small { font-size: .7rem; color: var(--text-muted); font-weight: 500; }
+    .case-foot { display: flex; justify-content: space-between; align-items: center; margin-top: .9rem; padding-top: .8rem; border-top: 1px solid var(--border-color); }
+    .case-date { font-size: .72rem; color: var(--text-muted); }
+    .progress { height: 5px; border-radius: 3px; background: #eef2f7; margin-top: .8rem; overflow: hidden; }
+    .progress > i { display: block; height: 100%; border-radius: 3px; background: var(--primary); }
+    .progress-text { font-size: .68rem; color: var(--text-muted); margin-top: .35rem; }
+    .case-new { border: 1.5px dashed rgba(60,79,160,.35); background: var(--primary-light); display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--primary); font-weight: 600; gap: .5rem; min-height: 180px; }
+    .case-new .plus { width: 44px; height: 44px; border-radius: 50%; background: #fff; display: flex; align-items: center; justify-content: center; font-size: 1.5rem; box-shadow: var(--card-shadow); }
+    /* #endregion */
+
+    /* #region 7. 卷宗库 / 模板 / 设置 */
+    .archive-container { padding: 1.8rem; overflow-y: auto; flex: 1; }
+    .search-bar-row { display: flex; gap: 1rem; margin-bottom: 1.2rem; }
+    .search-input { flex: 1; padding: .6rem 1rem; border: 1px solid var(--border-color); border-radius: 8px; font-size: .85rem; outline: none; }
+    .search-input:focus { border-color: var(--primary); }
+    .flat-table { width: 100%; border-collapse: collapse; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; box-shadow: var(--card-shadow); font-size: .85rem; }
+    .flat-table th, .flat-table td { padding: .75rem 1.1rem; text-align: left; border-bottom: 1px solid var(--border-color); }
+    .flat-table th { background: #fafbfc; font-weight: 600; color: var(--text-muted); }
+    .flat-table tr:last-child td { border-bottom: none; }
+    .flat-table tbody tr { cursor: pointer; transition: var(--transition); }
+    .flat-table tbody tr:hover { background: var(--primary-light); }
+    .badge-stage { padding: .2rem .5rem; border-radius: 4px; font-size: .68rem; font-weight: 600; }
+    .stage-todo { background: #fee2e2; color: #ef4444; }
+    .stage-doing { background: #fef3c7; color: #d97706; }
+    .stage-done { background: #d1fae5; color: #10b981; }
+
+    .templates-grid { display: grid; grid-template-columns: 300px 1fr; height: 100%; overflow: hidden; }
+    .template-sidebar { background: #f8fafc; border-right: 1px solid var(--border-color); padding: 1.2rem; display: flex; flex-direction: column; gap: .6rem; overflow-y: auto; }
+    .template-item { padding: .75rem; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; font-size: .82rem; cursor: pointer; font-weight: 500; transition: var(--transition); }
+    .template-item:hover, .template-item.active { border-color: var(--primary); background: var(--primary-light); }
+    .template-preview-area { background: #0b1120; padding: 2rem; overflow-y: auto; display: flex; justify-content: center; }
+    .preview-paper { background: #fff; width: 100%; max-width: 760px; min-height: 800px; border-radius: 6px; padding: 2.5rem 3.2rem; box-shadow: 0 8px 24px rgba(0,0,0,.25); color: #334155; }
+    .preview-paper h1 { font-size: 1.4rem; text-align: center; margin-bottom: 1.3rem; color: var(--primary); border-bottom: 2px solid var(--border-color); padding-bottom: .5rem; line-height: 1.5; }
+    .preview-paper h3 { font-size: 1.05rem; margin: 1.2rem 0 .5rem; color: #000; }
+    .preview-paper p { font-size: .9rem; line-height: 1.7; margin-bottom: .7rem; }
+
+    .settings-view { padding: 1.8rem; max-width: 620px; overflow-y: auto; flex: 1; }
+    /* #endregion */
+
+    /* #region 8. 抽屉 */
+    .drawer-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,.45); backdrop-filter: blur(4px); z-index: 200; display: none; align-items: center; justify-content: center; }
+    .drawer-backdrop.open { display: flex; }
+    .drawer-content { width: 82vw; max-width: 980px; height: 88vh; background: var(--bg-card); border-radius: 14px; box-shadow: 0 20px 50px rgba(0,0,0,.3); display: flex; flex-direction: column; overflow: hidden; }
+    .drawer-header { background: var(--primary); color: #fff; padding: 1rem 1.4rem; display: flex; justify-content: space-between; align-items: center; }
+    .drawer-body { flex: 1; background: #0b1120; padding: 1.8rem; overflow-y: auto; }
+    /* 通用弹窗 */
+    .modal-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,.45); backdrop-filter: blur(3px); z-index: 220; display: none; align-items: center; justify-content: center; }
+    .modal-backdrop.open { display: flex; }
+    .modal { width: 460px; max-width: 92vw; background: #fff; border-radius: 14px; box-shadow: 0 20px 50px rgba(0,0,0,.3); overflow: hidden; }
+    .modal-head { padding: 1.1rem 1.4rem; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; }
+    .modal-head h3 { font-size: 1rem; font-weight: 600; }
+    .modal-head .x { background: none; border: none; font-size: 1.4rem; color: var(--text-muted); cursor: pointer; }
+    .modal-body { padding: 1.3rem 1.4rem; max-height: 64vh; overflow-y: auto; }
+    .modal-foot { padding: .9rem 1.4rem; border-top: 1px solid var(--border-color); display: flex; gap: .7rem; justify-content: flex-end; }
+    .modal-foot .btn { width: auto; padding: .55rem 1.3rem; }
+    .drop-zone { border: 1.5px dashed rgba(60,79,160,.4); border-radius: 12px; padding: 2.2rem 1rem; text-align: center; color: var(--primary); background: var(--primary-light); cursor: pointer; transition: var(--transition); }
+    .drop-zone:hover { background: rgba(60,79,160,.14); }
+    .drop-zone .big { font-size: 2rem; }
+
+    .sel-popover { position: fixed; display: none; z-index: 250; background: #0f172a; border-radius: 10px; padding: .35rem; gap: .15rem; align-items: center; box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+    .sel-popover::after { content: ''; position: absolute; bottom: -5px; left: 50%; transform: translateX(-50%) rotate(45deg); width: 10px; height: 10px; background: #0f172a; }
+    .sel-popover .sp-label { font-size: .68rem; color: #94a3b8; padding: 0 .35rem; white-space: nowrap; }
+    .sel-popover .sp-btn { position: relative; z-index: 1; font-size: .73rem; color: #fff; padding: .32rem .55rem; border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: .3rem; white-space: nowrap; }
+    .sel-popover .sp-btn:hover { background: rgba(255,255,255,.16); }
+    .sel-popover .sp-btn .dot { width: 8px; height: 8px; border-radius: 50%; }
+    .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px); background: var(--text-main); color: #fff; padding: .7rem 1.2rem; border-radius: 8px; font-size: .82rem; opacity: 0; transition: var(--transition); z-index: 300; }
+    .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+    /* #endregion */
+  </style>
+</head>
+<body>
+
+  <!-- 侧边导航 -->
+  <aside class="sidebar">
+    <div class="brand-logo">
+      <div class="logo-badge">
+        <svg viewBox="0 0 100 100" width="30" height="30" style="fill:none;stroke:currentColor;stroke-width:3;stroke-linecap:round;stroke-linejoin:round;">
+          <polygon points="50,5 90,28 90,72 50,95 10,72 10,28" />
+          <line x1="50" y1="20" x2="50" y2="75" />
+          <path d="M 22 35 L 50 20 L 78 35" />
+          <path d="M 25 35 L 35 55 L 50 60 L 65 55 L 75 35" />
+          <circle cx="28" cy="42" r="5" /><circle cx="72" cy="42" r="5" />
+          <path d="M 40 68 L 50 75 L 60 68" /><path d="M 45 60 L 50 65 L 55 60" />
+        </svg>
+      </div>
+      <span>LAWCHERS</span>
+    </div>
+    <nav class="nav-menu">
+      <div class="nav-item active" onclick="switchPage('home', this)">
+        <svg viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20h14V9.5"/><path d="M9 20v-6h6v6"/></svg>
+        <span>首页</span>
+      </div>
+      <div class="nav-item" onclick="switchPage('workspace', this)">
+        <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>
+        <span>办案区</span>
+      </div>
+      <div class="nav-divider"></div>
+      <div class="nav-item" onclick="switchPage('settings', this)">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        <span>设置</span>
+      </div>
+    </nav>
+    <div class="user-profile" title="Sarah J. | 高级合伙人">SJ</div>
+  </aside>
+
+  <div class="main-container">
+    <header class="top-header">
+      <div>
+        <h2 id="top-title">工作台首页</h2>
+        <div class="breadcrumb" id="breadcrumb" style="display:none">劳动争议 · LC-2026-01 · 王大锤诉北京图强科技</div>
+      </div>
+      <div style="font-size:.8rem;color:var(--text-muted)">承办律师：<strong style="color:var(--primary)">Sarah J. 执业律师</strong></div>
+    </header>
+
+    <div class="page-wrapper">
+
+      <!-- ===== 首页 工作台 ===== -->
+      <section id="view-home" class="page-view active">
+        <div class="home-container">
+          <div class="home-hero">
+            <div>
+              <h1>下午好，Sarah 👋</h1>
+              <p>你有 2 件案件进行中，1 份意见书待出具。今天是 2026 年 6 月 18 日。</p>
+            </div>
+            <button class="btn-new" onclick="newCase()"><span style="font-size:1.1rem">＋</span> 新建案件</button>
+          </div>
+
+          <div class="stat-grid">
+            <div class="stat-card">
+              <div class="label">进行中案件</div>
+              <div class="num">2 <small>件</small></div>
+            </div>
+            <div class="stat-card">
+              <div class="label">待出意见书</div>
+              <div class="num" style="color:var(--danger)">1 <small>件</small></div>
+            </div>
+            <div class="stat-card">
+              <div class="label">本月已归档</div>
+              <div class="num" style="color:var(--success)">5 <small>件</small></div>
+            </div>
+            <div class="stat-card">
+              <div class="label">本月测算标的</div>
+              <div class="num">¥ 28.2 <small>万</small></div>
+            </div>
+          </div>
+
+          <div class="section-head">
+            <h3>我的案件</h3>
+          </div>
+          <div class="case-grid">
+            <div class="case-card" onclick="enterCase()">
+              <div class="case-no">LC-2026-01 · 劳动争议</div>
+              <div class="case-title">王大锤 诉 北京图强科技</div>
+              <div class="case-party">违法解除 + 未签合同二倍工资</div>
+              <div class="case-amount">¥ 225,000 <small>测算索赔</small></div>
+              <div class="progress"><i style="width:70%"></i></div>
+              <div class="progress-text">进度：要素已核对，待生成意见书</div>
+              <div class="case-foot">
+                <span class="badge-stage stage-todo">待出意见书</span>
+                <span class="case-date">更新于 06-18</span>
+              </div>
+            </div>
+
+            <div class="case-card" onclick="enterCase()">
+              <div class="case-no">LC-2026-02 · 劳动争议</div>
+              <div class="case-title">李美丽 诉 迅捷快递</div>
+              <div class="case-party">拖欠工资 + 经济补偿金</div>
+              <div class="case-amount">¥ 45,000 <small>测算索赔</small></div>
+              <div class="progress"><i style="width:45%"></i></div>
+              <div class="progress-text">进度：材料已脱敏，要素核对中</div>
+              <div class="case-foot">
+                <span class="badge-stage stage-doing">要素已核对</span>
+                <span class="case-date">更新于 06-15</span>
+              </div>
+            </div>
+
+            <div class="case-card" onclick="enterCase()">
+              <div class="case-no">LC-2026-03 · 劳动争议</div>
+              <div class="case-title">张伟 诉 天宏百货</div>
+              <div class="case-party">合同期满终止补偿</div>
+              <div class="case-amount">¥ 12,500 <small>测算索赔</small></div>
+              <div class="progress"><i style="width:100%;background:var(--success)"></i></div>
+              <div class="progress-text">进度：意见书已出具并交付</div>
+              <div class="case-foot">
+                <span class="badge-stage stage-done">意见书已发</span>
+                <span class="case-date">归档于 06-10</span>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== 办案区 ===== -->
+      <section id="view-workspace" class="page-view">
+        <div class="workspace-grid">
+
+          <!-- 左栏 -->
+          <div class="col-left">
+            <h4 class="form-title">本案材料</h4>
+            <div class="file-item active">
+              <div style="flex:1;overflow:hidden;">
+                <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">仲裁申请陈述.txt</div>
+                <div class="meta">已脱敏 · 5 处实体</div>
+              </div>
+            </div>
+            <div class="file-item">
+              <div style="flex:1;overflow:hidden;">
+                <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">劳动合同扫描件.pdf</div>
+                <div class="meta">待解析</div>
+              </div>
+            </div>
+            <div class="file-item">
+              <div style="flex:1;overflow:hidden;">
+                <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">工资流水.xlsx</div>
+                <div class="meta">待解析</div>
+              </div>
+            </div>
+            <div class="compact-upload" style="margin-top:.8rem" onclick="openUploadModal()">＋ 拖入或点击追加材料</div>
+
+            <h4 class="form-title" style="margin-top:1.4rem">操作提示</h4>
+            <div style="font-size:.75rem;color:var(--text-muted);line-height:1.9">
+              选中正文文字可手动<strong style="color:var(--primary)">脱敏</strong>；对已脱敏文字<strong style="color:var(--primary)">右键</strong>可直接取消脱敏。
+            </div>
+          </div>
+
+          <!-- 中栏 脱敏编辑器 -->
+          <div class="col-center">
+            <div class="editor-header">
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <span style="font-size:.85rem;font-weight:600;color:var(--text-muted)">仲裁申请陈述.txt · 脱敏校对</span>
+              </div>
+              <div class="editor-toolbar">
+                <span style="font-size:.7rem;color:var(--text-muted)">按类型筛选：</span>
+                <span class="chip active" data-type="all" onclick="filterType('all',this)">全部</span>
+                <span class="chip" data-type="name" onclick="filterType('name',this)"><span class="dot" style="background:var(--t-name-b)"></span>姓名</span>
+                <span class="chip" data-type="phone" onclick="filterType('phone',this)"><span class="dot" style="background:var(--t-phone-b)"></span>手机</span>
+                <span class="chip" data-type="company" onclick="filterType('company',this)"><span class="dot" style="background:var(--t-company-b)"></span>企业</span>
+                <span class="chip" data-type="id" onclick="filterType('id',this)"><span class="dot" style="background:var(--t-id-b)"></span>证件</span>
+                <span class="chip" data-type="addr" onclick="filterType('addr',this)"><span class="dot" style="background:var(--t-addr-b)"></span>住址</span>
+              </div>
+              <div class="editor-toolbar" style="margin-top:.4rem">
+                <span class="chip" onclick="toggleAll()">全部明文/脱敏</span>
+                <span class="chip" onclick="toast('演示：导出脱敏版 .txt')">导出脱敏版</span>
+              </div>
+            </div>
+            <div class="editor-body" id="doc-body">申请人：<span class="ent t-name" data-type="name" data-plain="王大锤" data-mask="王*" data-field="inp-name">王* <span class="tag-label">姓名</span></span>，男，手机号 <span class="ent t-phone" data-type="phone" data-plain="13812345678" data-mask="138****5678">138****5678 <span class="tag-label">手机</span></span>，身份证 <span class="ent t-id" data-type="id" data-plain="110105199003071234" data-mask="1101**********1234">1101**********1234 <span class="tag-label">证件</span></span>，系 <span class="ent t-company" data-type="company" data-plain="北京图强科技有限公司" data-mask="北京****有限公司" data-field="inp-company">北京****有限公司 <span class="tag-label">企业</span></span> 的技术开发工程师。
+
+被申请人因经营策略调整，于 2023 年 10 月 31 日口头通知解除与申请人自 2022 年 3 月 15 日起建立的劳动关系。截至解约当日，双方协商未能达成一致，用人单位自始未与申请人签订书面劳动合同，且未支付任何经济补偿金。
+
+申请人前 12 个月平均工资为 15,000 元，现依法向 <span class="ent t-company" data-type="company" data-plain="北京市朝阳区劳动人事争议仲裁委员会" data-mask="北京市***劳动人事争议仲裁委员会">北京市***劳动人事争议仲裁委员会 <span class="tag-label">企业</span></span> 申请仲裁，主张违法解除赔偿金及未签劳动合同二倍工资差额。</div>
+          </div>
+
+          <!-- 右栏 固定：脱敏门控 + 要素测算(可滚) + 生成(常驻) -->
+          <div class="col-right">
+
+            <!-- 顶部固定：材料脱敏进度门控 -->
+            <div class="mat-gate">
+              <div class="gate-top">
+                <h4>材料脱敏进度</h4>
+                <span class="gate-count"><span id="gate-done">1</span>/<span id="gate-total">3</span> 已完成</span>
+              </div>
+              <div class="gate-progress"><i id="gate-bar" style="width:33%"></i></div>
+              <div class="mat-row">仲裁申请陈述.txt <span class="st done">已脱敏</span></div>
+              <div class="mat-row">劳动合同扫描件.pdf <span class="st todo" onclick="markDone(this)">待脱敏</span></div>
+              <div class="mat-row">工资流水.xlsx <span class="st todo" onclick="markDone(this)">待脱敏</span></div>
+            </div>
+
+            <!-- 中段可滚动：赔偿测算计算器（含输入项 + 测算结果） -->
+            <div class="right-scroll">
+            <div class="solid-card pricing-card">
+              <h5 style="font-size:.85rem;font-weight:600;color:var(--primary);margin-bottom:.8rem">赔偿测算计算器</h5>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">
+                <div class="form-group"><label>入职日期</label><input type="date" value="2022-03-15" id="inp-start" onchange="recalc()"></div>
+                <div class="form-group"><label>离职日期</label><input type="date" value="2023-10-31" id="inp-end" onchange="recalc()"></div>
+              </div>
+              <div class="form-group"><label>前 12 月均薪（元）</label><input type="number" value="15000" id="inp-salary" oninput="recalc()"></div>
+              <div class="form-group"><label>是否签订书面合同</label>
+                <select id="inp-contract" onchange="recalc()"><option value="false" selected>未签订书面合同</option><option value="true">已签订书面合同</option></select>
+              </div>
+              <div class="form-group"><label>解除合同原因</label>
+                <select id="inp-reason" onchange="recalc()">
+                  <option value="dismiss" selected>单位违法/口头解除</option>
+                  <option value="expire">合同期满不续签</option>
+                  <option value="quit">劳动者个人原因辞职</option>
+                </select>
+              </div>
+
+              <div style="border-top:1px dashed var(--border-color);margin:.4rem 0 .6rem"></div>
+
+              <div class="price-row">
+                <span>二倍工资差额 <span class="law" title="《劳动合同法》第82条：用人单位自用工之日起超过1个月不满1年未签书面合同，应每月支付二倍工资，最多11个月。">第82条 ⓘ</span></span>
+                <strong id="val-double">¥ 165,000</strong>
+              </div>
+              <div class="price-row">
+                <span id="label-comp">违法解除赔偿金 <span class="law" title="《劳动合同法》第87条：违法解除按经济补偿标准二倍支付（2N）。第47条：经济补偿按工作年限每满一年支付一个月工资。">第87条 ⓘ</span></span>
+                <strong id="val-comp" style="color:var(--danger)">¥ 60,000</strong>
+              </div>
+              <div class="price-row"><span>在职月数折算</span><strong id="val-months">19.5 个月</strong></div>
+              <div class="price-row total"><span>索赔总额估算</span><strong id="val-total">¥ 225,000</strong></div>
+              <p style="font-size:.65rem;color:var(--text-muted);margin-top:.5rem">* 测算结果由规则引擎初算，仅供参考，最终以律师专业判断为准。</p>
+            </div>
+            </div><!-- /right-scroll -->
+
+            <!-- 底部固定：生成（脱敏未完成时禁用） -->
+            <div class="right-footer">
+              <div class="gate-hint" id="gate-hint">还有 2 份材料待脱敏，完成后方可生成</div>
+              <button class="btn btn-primary" id="gen-btn" onclick="openDrawer()" disabled>生成专业法律意见书</button>
+            </div>
+          </div>
+        </div>
+      </section>
+      <!-- ===== 设置 ===== -->
+      <section id="view-settings" class="page-view">
+        <div class="settings-view">
+          <h3 style="margin-bottom:1.4rem;color:var(--primary)">系统配置与隐私设置</h3>
+          <div class="solid-card">
+            <h4 class="form-title">律师执业落款变量</h4>
+            <div class="form-group"><label>承办律师姓名</label><input type="text" value="Sarah J."></div>
+            <div class="form-group"><label>所属执业律所</label><input type="text" value="敬法律师事务所"></div>
+            <div class="form-group"><label>执业证号</label><input type="text" value="14403202110XXXXXX"></div>
+          </div>
+          <div class="solid-card">
+            <h4 class="form-title">脱敏规则</h4>
+            <div class="form-group"><label>默认掩码符（实时应用到脱敏校对区）</label>
+              <select id="mask-char-sel" onchange="setMaskChar(this.value)">
+                <option value="*" selected>星号　王*锤 / 138*4678</option>
+                <option value="●">方块　王●锤 / 138●4678</option>
+                <option value="_">下划线　王_锤 / 138_4678</option>
+              </select>
+            </div>
+            <div class="form-group" style="margin-bottom:0"><label>默认脱敏实体类型</label>
+              <select multiple style="height:90px"><option selected>姓名</option><option selected>手机号</option><option selected>身份证</option><option selected>企业名称</option><option>家庭住址</option></select>
+            </div>
+          </div>
+          <button class="btn" style="background:#fee2e2;color:#ef4444;border:1px solid #fca5a5;width:auto" onclick="toast('演示：擦除本地缓存并退出登录')">擦除本地缓存并退出登录</button>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- 意见书抽屉 -->
+  <div class="drawer-backdrop" id="drawer">
+    <div class="drawer-content">
+      <div class="drawer-header">
+        <h3 style="font-size:1rem;color:#fff">法律意见书预览（在线微调）</h3>
+        <button onclick="closeDrawer()" style="background:none;border:none;color:#fff;font-size:1.5rem;cursor:pointer">&times;</button>
+      </div>
+      <div class="drawer-body">
+        <div class="preview-paper">
+          <h1>关于 <span class="var-name">王大锤</span> 与 <span class="var-company">北京图强科技有限公司</span><br>劳动争议案之专业法律意见书</h1>
+          <p style="text-align:right;font-size:.8rem;color:var(--text-muted)">日期：2026 年 6 月 18 日</p>
+          <p>致：<span class="var-name">王大锤</span> 阁下</p>
+          <hr style="border:0;border-top:1px solid var(--border-color);margin:1rem 0">
+          <p>经核查，被申请人 <span class="var-company">北京图强科技有限公司</span> 因口头辞退且未签订书面劳动合同，已违反《劳动合同法》相关规定。索赔主张如下：</p>
+          <p>1. 未签劳动合同二倍工资差额：<strong class="var-double">165,000</strong> 元。</p>
+          <p>2. 违法解除劳动合同赔偿金：<strong class="var-comp">60,000</strong> 元。</p>
+          <p style="font-weight:bold;margin-top:1rem">维权主张总额：<span style="color:var(--primary)" class="var-total">225,000</span> 元。</p>
+          <p style="margin-top:1.6rem;color:var(--text-muted);font-size:.75rem">* 本意见书由智能办案助理初拟，正式文书应以律师最终签章为准。</p>
+          <div style="margin-top:1.6rem;display:flex;gap:1rem">
+            <button class="btn btn-primary" style="width:auto" onclick="closeDrawer();toast('已保存意见书草稿')">💾 确认并保存</button>
+            <button class="btn btn-ghost" style="width:auto" onclick="closeDrawer()">取消</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 新建案件弹窗 -->
+  <div class="modal-backdrop" id="newcase-modal">
+    <div class="modal">
+      <div class="modal-head">
+        <h3>新建案件</h3>
+        <button class="x" onclick="closeModal('newcase-modal')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group"><label>案由</label>
+          <select><option selected>劳动争议</option></select>
+        </div>
+        <div class="form-group"><label>当事人（劳动者）姓名</label><input type="text" placeholder="如：王大锤"></div>
+        <div class="form-group"><label>被申请人（用人单位）名称</label><input type="text" placeholder="如：北京图强科技有限公司"></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem">
+          <div class="form-group"><label>案件编号</label><input type="text" value="LC-2026-04"></div>
+          <div class="form-group"><label>承办律师</label><input type="text" value="Sarah J."></div>
+        </div>
+        <div class="form-group" style="margin-bottom:0"><label>案件备注（可选）</label><input type="text" placeholder="简要描述争议焦点"></div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-ghost" onclick="closeModal('newcase-modal')">取消</button>
+        <button class="btn btn-primary" onclick="createCase()">创建并进入办案区</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 追加材料弹窗 -->
+  <div class="modal-backdrop" id="upload-modal">
+    <div class="modal">
+      <div class="modal-head">
+        <h3>追加案件材料</h3>
+        <button class="x" onclick="closeModal('upload-modal')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="drop-zone" onclick="toast('演示：唤起本地文件选择')">
+          <div class="big">＋</div>
+          <div style="font-weight:600;margin:.4rem 0">点击选择文件，或拖拽到此处</div>
+          <div style="font-size:.72rem;color:var(--text-muted)">支持 PDF / Word / TXT / 图片，单个 ≤ 10MB</div>
+        </div>
+        <div style="font-size:.72rem;color:var(--text-muted);margin-top:.8rem;line-height:1.8">
+          上传后将自动解析文本并识别敏感信息，需在脱敏校对区确认后方可计入「材料脱敏进度」。
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-ghost" onclick="closeModal('upload-modal')">取消</button>
+        <button class="btn btn-primary" onclick="closeModal('upload-modal');toast('演示：开始上传并解析')">开始上传</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 划词脱敏浮动菜单 -->
+  <div class="sel-popover" id="sel-popover">
+    <span id="sp-mask-group" style="display:flex;align-items:center;gap:.15rem">
+      <span class="sp-label">脱敏为</span>
+      <span class="sp-btn" onclick="applyMask('name')"><i class="dot" style="background:var(--t-name-b)"></i>姓名</span>
+      <span class="sp-btn" onclick="applyMask('phone')"><i class="dot" style="background:var(--t-phone-b)"></i>手机</span>
+      <span class="sp-btn" onclick="applyMask('company')"><i class="dot" style="background:var(--t-company-b)"></i>企业</span>
+      <span class="sp-btn" onclick="applyMask('id')"><i class="dot" style="background:var(--t-id-b)"></i>证件</span>
+      <span class="sp-btn" onclick="applyMask('addr')"><i class="dot" style="background:var(--t-addr-b)"></i>住址</span>
+    </span>
+    <span class="sp-btn" id="sp-cancel" style="display:none;color:#fca5a5" onclick="cancelMask()">✕ 取消脱敏</span>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    /* 导航切换 */
+    function switchPage(pageId, el) {
+      document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+      el.classList.add('active');
+      document.querySelectorAll('.page-view').forEach(v => v.classList.remove('active'));
+      document.getElementById('view-' + pageId).classList.add('active');
+      const titles = { home:'工作台首页', workspace:'智能办案 Workspace', archive:'历史案件卷宗库', templates:'文书模板中心', settings:'系统配置与隐私' };
+      document.getElementById('top-title').innerText = titles[pageId];
+      document.getElementById('breadcrumb').style.display = pageId === 'workspace' ? 'block' : 'none';
+    }
+
+    /* 脱敏：单个切换明文/掩码（抽成可复用，供划词新建的标签共用） */
+    function attachEntToggle(ent) {
+      ent.title = '单击：临时查看明文 / 还原掩码　右键：取消脱敏';
+      ent.addEventListener('click', () => {
+        const revealed = ent.classList.toggle('revealed');
+        ent.firstChild.textContent = (revealed ? ent.dataset.plain : ent.dataset.mask) + ' ';
+        updateMaskRate();
+      });
+      // 右键直接取消脱敏
+      ent.addEventListener('contextmenu', e => {
+        e.preventDefault();
+        targetEnt = ent; savedRange = null;
+        maskGroup.style.display = 'none'; cancelBtn.style.display = 'flex';
+        popover.style.display = 'flex';
+        popover.style.top = (e.clientY - popover.offsetHeight - 10) + 'px';
+        popover.style.left = Math.max(8, e.clientX - popover.offsetWidth / 2) + 'px';
+      });
+    }
+    document.querySelectorAll('.ent').forEach(attachEntToggle);
+
+    /* ===== 划词手动脱敏 ===== */
+    const TYPE_MAP = { name:'姓名', phone:'手机', company:'企业', id:'证件', addr:'住址' };
+    let MASK_CHAR = '*';
+    function maskText(text, type) {
+      const m = MASK_CHAR, n = text.length;
+      if (n <= 1) return m;
+      if (type === 'phone' && n >= 7) return text.slice(0,3) + m.repeat(4) + text.slice(-4);
+      if (n === 2) return text[0] + m;
+      return text[0] + m.repeat(n - 2) + text[n-1];
+    }
+    /* 切换掩码符：重算所有标签掩码并刷新显示 */
+    function setMaskChar(ch) {
+      MASK_CHAR = ch;
+      document.querySelectorAll('.ent').forEach(ent => {
+        ent.dataset.mask = maskText(ent.dataset.plain, ent.dataset.type);
+        if (!ent.classList.contains('revealed')) ent.firstChild.textContent = ent.dataset.mask + ' ';
+      });
+      toast('已切换掩码符');
+    }
+    function makeEnt(text, type) {
+      const span = document.createElement('span');
+      span.className = 'ent t-' + type;
+      span.dataset.type = type;
+      span.dataset.plain = text;
+      span.dataset.mask = maskText(text, type);
+      span.textContent = span.dataset.mask + ' ';
+      const lbl = document.createElement('span');
+      lbl.className = 'tag-label';
+      lbl.textContent = TYPE_MAP[type];
+      span.appendChild(lbl);
+      attachEntToggle(span);
+      return span;
+    }
+
+    const popover = document.getElementById('sel-popover');
+    const maskGroup = document.getElementById('sp-mask-group');
+    const cancelBtn = document.getElementById('sp-cancel');
+    const docBody = document.getElementById('doc-body');
+    let savedRange = null, targetEnt = null;
+
+    docBody.addEventListener('mouseup', (ev) => {
+      if (ev.button === 2) return; // 右键交给 contextmenu 处理，避免把菜单关掉
+      setTimeout(() => {
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed || !sel.toString().trim()) { hidePopover(); return; }
+        const range = sel.getRangeAt(0);
+        if (!docBody.contains(range.commonAncestorContainer)) { hidePopover(); return; }
+
+        const node = range.commonAncestorContainer;
+        const ent = (node.nodeType === 1 ? node : node.parentElement)?.closest('.ent');
+        if (ent) {
+          // 选区落在已有标签内 → 显示「取消脱敏」
+          targetEnt = ent; savedRange = null;
+          maskGroup.style.display = 'none'; cancelBtn.style.display = 'flex';
+          showPopoverAt(ent.getBoundingClientRect());
+        } else {
+          // 普通文字 → 显示脱敏类型菜单
+          savedRange = range.cloneRange(); targetEnt = null;
+          maskGroup.style.display = 'flex'; cancelBtn.style.display = 'none';
+          showPopoverAt(range.getBoundingClientRect());
+        }
+      }, 0);
+    });
+    function showPopoverAt(r) {
+      popover.style.display = 'flex';
+      popover.style.top = (r.top - popover.offsetHeight - 10) + 'px';
+      popover.style.left = Math.max(8, r.left + r.width/2 - popover.offsetWidth/2) + 'px';
+    }
+    document.addEventListener('mousedown', e => { if (!popover.contains(e.target)) hidePopover(); });
+    function hidePopover() { popover.style.display = 'none'; }
+
+    function applyMask(type) {
+      if (!savedRange) return;
+      const span = makeEnt(savedRange.toString().trim(), type);
+      savedRange.deleteContents();
+      savedRange.insertNode(span);
+      window.getSelection().removeAllRanges();
+      savedRange = null;
+      hidePopover();
+      toast('已添加脱敏标签：' + TYPE_MAP[type]);
+    }
+    function cancelMask() {
+      if (!targetEnt) return;
+      // 拆掉标签，还原为明文文本
+      targetEnt.replaceWith(document.createTextNode(targetEnt.dataset.plain));
+      targetEnt = null;
+      window.getSelection().removeAllRanges();
+      hidePopover();
+      updateMaskRate();
+      toast('已取消该处脱敏，还原为明文');
+    }
+
+    /* 按类型筛选 + 批量放行：被筛选类型高亮，其余 dim；双击 chip 批量放行该类型 */
+    let activeFilter = 'all';
+    function filterType(type, chip) {
+      document.querySelectorAll('.chip[data-type]').forEach(c => c.classList.remove('active'));
+      chip.classList.add('active');
+      activeFilter = type;
+      document.querySelectorAll('.ent').forEach(e => {
+        e.classList.toggle('dim', type !== 'all' && e.dataset.type !== type);
+      });
+    }
+    function toggleAll() {
+      const anyMasked = [...document.querySelectorAll('.ent')].some(e => !e.classList.contains('revealed'));
+      document.querySelectorAll('.ent').forEach(e => {
+        const label = e.querySelector('.tag-label').outerHTML;
+        e.classList.toggle('revealed', anyMasked);
+        e.firstChild.textContent = (anyMasked ? e.dataset.plain : e.dataset.mask) + ' ';
+      });
+      updateMaskRate();
+    }
+    function updateMaskRate() { /* 脱敏覆盖率显示已移除 */ }
+
+    /* 表单字段 ↔ 原文实体 双向定位 */
+    function locateEntity(fieldId) {
+      const ent = document.querySelector(`.ent[data-field="${fieldId}"]`);
+      if (!ent) return toast('该字段暂无原文出处映射');
+      ent.scrollIntoView({ behavior:'smooth', block:'center' });
+      ent.classList.add('highlight');
+      setTimeout(() => ent.classList.remove('highlight'), 1600);
+    }
+    document.querySelectorAll('.ent[data-field]').forEach(ent => {
+      ent.addEventListener('dblclick', e => {
+        e.stopPropagation();
+        const inp = document.getElementById(ent.dataset.field);
+        if (!inp) return;
+        inp.scrollIntoView({ behavior:'smooth', block:'center' });
+        inp.focus();
+      });
+    });
+
+    /* 测算引擎（劳动合同法 47/82/87） */
+    function recalc() {
+      const salary = parseFloat(val('inp-salary')) || 0;
+      const hasContract = val('inp-contract') === 'true';
+      const reason = val('inp-reason');
+      const s = new Date(val('inp-start')), e = new Date(val('inp-end'));
+      let months = (e.getFullYear()-s.getFullYear())*12 + (e.getMonth()-s.getMonth());
+      const d = e.getDate()-s.getDate();
+      if (d > 15) months += 1; else if (d > 0) months += 0.5;
+      months = Math.max(0, Math.round(months*10)/10);
+      document.getElementById('val-months').innerText = months + ' 个月';
+
+      let dbl = 0;
+      if (!hasContract && months > 1) dbl = Math.min(11, months-1) * salary;
+      setText('val-double', '¥ ' + dbl.toLocaleString());
+
+      const years = Math.floor(months/12), rem = months%12;
+      let mult = years; if (rem >= 6) mult += 1; else if (rem > 0) mult += 0.5;
+      const comp = mult * salary;
+      let damages = 0;
+      if (reason === 'dismiss') { damages = comp*2; lbl('违法解除赔偿金', 'var(--danger)'); }
+      else if (reason === 'expire') { damages = comp; lbl('期满终止补偿金', 'var(--text-main)'); }
+      else { damages = 0; lbl('辞职经济补偿金', 'var(--text-muted)'); }
+      setText('val-comp', '¥ ' + damages.toLocaleString());
+      document.getElementById('val-comp').style.color = reason==='dismiss'?'var(--danger)':(reason==='expire'?'var(--text-main)':'var(--text-muted)');
+
+      const total = dbl + damages;
+      setText('val-total', '¥ ' + total.toLocaleString());
+
+      bind('var-double', dbl.toLocaleString()); bind('var-comp', damages.toLocaleString()); bind('var-total', total.toLocaleString());
+    }
+    const val = id => document.getElementById(id).value;
+    const setText = (id,t) => document.getElementById(id).innerText = t;
+    const lbl = (t,c) => { const el = document.getElementById('label-comp'); el.childNodes[0].textContent = t + ' '; };
+    const bind = (cls,t) => document.querySelectorAll('.'+cls).forEach(el => el.innerText = t);
+
+    /* 材料脱敏门控：标记某份材料脱敏完成，全部完成后解锁生成按钮 */
+    function markDone(el) {
+      el.classList.replace('todo', 'done');
+      el.classList.remove('todo');
+      el.textContent = '已脱敏';
+      el.onclick = null;
+      updateGate();
+    }
+    function updateGate() {
+      const total = document.querySelectorAll('.mat-gate .mat-row').length;
+      const done = document.querySelectorAll('.mat-gate .st.done').length;
+      document.getElementById('gate-done').innerText = done;
+      document.getElementById('gate-total').innerText = total;
+      document.getElementById('gate-bar').style.width = Math.round(done/total*100) + '%';
+      const remain = total - done;
+      const btn = document.getElementById('gen-btn'), hint = document.getElementById('gate-hint');
+      if (remain === 0) {
+        btn.disabled = false;
+        hint.style.color = 'var(--success)';
+        hint.innerHTML = '全部材料已脱敏，可生成意见书';
+      } else {
+        btn.disabled = true;
+        hint.style.color = 'var(--warning)';
+        hint.innerHTML = `还有 ${remain} 份材料待脱敏，完成后方可生成`;
+      }
+    }
+
+    function openDrawer() { if (document.getElementById('gen-btn').disabled) return; recalc(); document.getElementById('drawer').classList.add('open'); }
+    function closeDrawer() { document.getElementById('drawer').classList.remove('open'); }
+    function enterCase() { switchPage('workspace', document.querySelectorAll('.nav-item')[1]); }
+    function openModal(id) { document.getElementById(id).classList.add('open'); }
+    function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+    function newCase() { openModal('newcase-modal'); }
+    function createCase() { closeModal('newcase-modal'); enterCase(); toast('案件已创建，进入办案区'); }
+    function openUploadModal() { openModal('upload-modal'); }
+    document.querySelectorAll('.modal-backdrop').forEach(m => m.addEventListener('mousedown', e => { if (e.target === m) m.classList.remove('open'); }));
+    function filterArchive(q) {
+      q = q.trim();
+      document.querySelectorAll('#archive-body tr').forEach(tr => {
+        tr.style.display = !q || tr.innerText.includes(q) ? '' : 'none';
+      });
+    }
+    let toastTimer;
+    function toast(msg) {
+      const t = document.getElementById('toast');
+      t.innerText = msg; t.classList.add('show');
+      clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+    }
+    recalc();
+    updateGate();
+  </script>
+</body>
+</html>
