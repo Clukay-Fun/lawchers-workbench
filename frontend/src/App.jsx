@@ -65,7 +65,9 @@ export default function App() {
     setLoadingCaseDetail(true);
     try {
       const detail = await getCaseDetail(caseId);
-      setActiveCaseDetail(detail);
+      // 仅在加载时映射一次为 Workspace 结构；后续 onUpdateCase 直接写回该结构，
+      // 避免对已映射对象重复映射导致 chunks 丢失（中间区空白）。
+      setActiveCaseDetail(mapCaseForWorkspace(detail));
     } catch (err) {
       console.error('[ERROR] 加载案件详情失败:', err);
       setActiveCaseDetail(null);
@@ -266,7 +268,7 @@ export default function App() {
   // 渲染顶部 Header
   const renderHeader = () => {
     if (currentView === 'workspace') {
-      const ws = activeCaseDetail ? mapCaseForWorkspace(activeCaseDetail) : null;
+      const ws = activeCaseDetail; // 已在加载时映射，勿重复映射
       return (
         <header className="top-header">
           <div>
@@ -401,7 +403,7 @@ export default function App() {
     calculatorInput: {},
   }));
 
-  const workspaceCase = activeCaseDetail ? mapCaseForWorkspace(activeCaseDetail) : null;
+  const workspaceCase = activeCaseDetail; // 已在加载时映射，勿重复映射
 
   return (
     <div style={{ display: 'flex', width: '100vw', height: '100vh', overflow: 'hidden' }}>

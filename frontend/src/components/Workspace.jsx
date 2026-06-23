@@ -158,7 +158,8 @@ export default function Workspace({ currentCase, onUpdateCase, onBackHome, sysSe
   // 7. 追加材料
   const handleAddMaterial = (newMat) => {
     const updatedMaterials = [...(currentCase.materials || []), newMat];
-    onUpdateCase({ ...currentCase, materials: updatedMaterials });
+    // 自动选中刚上传的材料，便于立即查看其脱敏校对内容
+    onUpdateCase({ ...currentCase, materials: updatedMaterials, selectedMaterialIndex: updatedMaterials.length - 1 });
     triggerToast(`材料「${newMat.name}」已成功解析并追加至本案`);
   };
 
