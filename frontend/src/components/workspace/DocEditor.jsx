@@ -31,43 +31,69 @@ function sensitiveTerms(material) {
 }
 
 function applyRedactionsToDom(root, terms) {
-  const candidates = terms.flatMap((term) => [
-    { match: term.text, replacement: term.replacement },
-    ...(term.replacement && term.replacement !== term.text
-      ? [{ match: term.replacement, replacement: term.replacement }]
-      : []),
-  ]).sort((a, b) => b.match.length - a.match.length);
+  const candidates = terms
+    .map((term) => ({ match: term.text, replacement: term.replacement || '***' }))
+    .filter((c) => c.match)
+    .sort((a, b) => b.match.length - a.match.length);
+  if (!candidates.length) return;
+
+  // 1. 收集文本节点（跳过空白与已脱敏区域）
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  const nodes = [];
-  while (walker.nextNode()) nodes.push(walker.currentNode);
+  const segs = []; // { node, start, end }
+  let full = '';
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    if (!node.data || node.parentElement?.closest('.redaction-mark')) continue;
+    const start = full.length;
+    full += node.data;
+    segs.push({ node, start, end: full.length });
+  }
+  if (!segs.length) return;
 
-  for (const node of nodes) {
-    if (!node.data.trim() || node.parentElement?.closest('.redaction-mark')) continue;
-    let remaining = node.data;
-    const fragment = document.createDocumentFragment();
-    let changed = false;
-
-    while (remaining) {
-      let earliest = null;
-      for (const candidate of candidates) {
-        const index = remaining.indexOf(candidate.match);
-        if (index >= 0 && (!earliest || index < earliest.index || (index === earliest.index && candidate.match.length > earliest.candidate.match.length))) {
-          earliest = { index, candidate };
-        }
+  // 2. 在拼接后的全文里按全局偏移定位命中区间（最长优先、不重叠、可跨节点）
+  const taken = new Array(full.length).fill(false);
+  const ranges = []; // { start, end, replacement }
+  for (const cand of candidates) {
+    let from = 0;
+    while (from <= full.length - cand.match.length) {
+      const idx = full.indexOf(cand.match, from);
+      if (idx < 0) break;
+      let free = true;
+      for (let i = idx; i < idx + cand.match.length; i += 1) { if (taken[i]) { free = false; break; } }
+      if (free) {
+        for (let i = idx; i < idx + cand.match.length; i += 1) taken[i] = true;
+        ranges.push({ start: idx, end: idx + cand.match.length, replacement: cand.replacement });
+        from = idx + cand.match.length;
+      } else {
+        from = idx + 1;
       }
-      if (!earliest) {
-        fragment.append(document.createTextNode(remaining));
-        break;
-      }
-      changed = true;
-      if (earliest.index > 0) fragment.append(document.createTextNode(remaining.slice(0, earliest.index)));
-      const mark = document.createElement('span');
-      mark.className = 'redaction-mark';
-      mark.textContent = earliest.candidate.replacement;
-      fragment.append(mark);
-      remaining = remaining.slice(earliest.index + earliest.candidate.match.length);
     }
-    if (changed) node.replaceWith(fragment);
+  }
+  if (!ranges.length) return;
+  ranges.sort((a, b) => a.start - b.start);
+
+  // 3. 逐节点按与命中区间的交集切分包裹；跨节点时替换文本只放在起始节点，后续节点的原文丢弃
+  for (const seg of segs) {
+    const overlaps = ranges.filter((r) => r.start < seg.end && r.end > seg.start);
+    if (!overlaps.length) continue;
+    const frag = document.createDocumentFragment();
+    let cursor = seg.start;
+    for (const r of overlaps) {
+      const s = Math.max(r.start, seg.start);
+      const e = Math.min(r.end, seg.end);
+      if (s > cursor) frag.append(document.createTextNode(full.slice(cursor, s)));
+      if (r.start >= seg.start) {
+        // 区间从本节点开始：放置脱敏替换文本
+        const mark = document.createElement('span');
+        mark.className = 'redaction-mark';
+        mark.textContent = r.replacement;
+        frag.append(mark);
+      }
+      // 否则为跨节点续段：直接丢弃这段原文（不渲染），避免重复掩码
+      cursor = e;
+    }
+    if (cursor < seg.end) frag.append(document.createTextNode(full.slice(cursor, seg.end)));
+    seg.node.replaceWith(frag);
   }
 }
 
