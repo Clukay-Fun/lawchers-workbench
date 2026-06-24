@@ -54,10 +54,6 @@ export default function Home({ cases, onSelectCase, onCreateCase, onDeleteCase }
   return (
     <div className="home-container">
       <div className="case-register-head">
-        <div className="register-heading">
-          <h2>案件</h2>
-          {cases.length > 0 && <span>{cases.length}</span>}
-        </div>
         <Button variant="default" onClick={() => setIsModalOpen(true)}>新建案件</Button>
       </div>
 
@@ -70,7 +66,6 @@ export default function Home({ cases, onSelectCase, onCreateCase, onDeleteCase }
             <span className="empty-icon"><FilePlus2 /></span>
             <strong>暂无案件</strong>
             <p>新建案件并上传材料，在原格式文档上脱敏校对。</p>
-            <Button variant="default" onClick={() => setIsModalOpen(true)}>新建案件</Button>
           </div>
         ) : cases.map((item) => {
           const materialText = `${item.materialCount || 0} 份材料 · ${formatUpdatedAt(item.updatedAt)} 更新`;
