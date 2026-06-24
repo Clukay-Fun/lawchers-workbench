@@ -1,23 +1,45 @@
-# lawchers-workbench（敬法智能办案工作台）
+# lawchers-workbench（LAWCHERS 案件材料脱敏工作台）
 
-面向**单个律师本地自用**的劳动争议办案工作台。核心闭环：
+面向**单个律师本地自用**的案件材料**脱敏工作台**。核心闭环：
 
-> 上传材料 → 自动脱敏（可划词增删）→ 提取案件要素 → 劳动法算费测算 → 生成法律意见书
+> 登记案件 → 上传材料（原件只读）→ 原格式预览中检测/人工标注敏感信息 → 按原格式导出脱敏副本（导出前残留复检）
 
-开发与提交规范见 [AGENTS.md](AGENTS.md)（最高优先级约定，OVERRIDE 一切默认行为）。
+界面与设计规范见 [docs/brand-spec.md](docs/brand-spec.md)；开发与提交规范见 [AGENTS.md](AGENTS.md)（最高优先级约定）。
 
 ---
 
-## 形态与架构决策（2026-06-20 确认）
+## 产品边界（重要）
+
+LAWCHERS 是**本地优先的案件材料脱敏工作区**，**不是**律所管理后台。界面**不包含**：
+
+- 律师身份 / 律所 / 执业证号
+- 赔偿测算计算器
+- 法律意见书生成
+
+> 历史版本曾包含测算与意见书功能。当前已从界面移除；相关后端代码（`analyzeService`/`generateService` 及对应路由）暂时保留但**已脱离界面**，后续可清理。详见路线图。
+
+---
+
+## 形态与架构决策
 
 | 决策项 | 选择 | 理由 |
 |---|---|---|
 | **工作台形态** | 本地运行的 Web 应用（localhost） | 数据全留本地、不出机器，契合 AGENTS.md「法律数据优先、不外传」 |
-| **使用规模** | 单律师本地自用（暂不做账号体系） | 先打磨核心办案闭环，协作/多租户以后再说 |
-| **本地存储** | 后端 SQLite + 本地文件目录 | 结构化数据可追溯/可备份/可全文检索；脱敏 map.json、audit.json、意见书落本地文件 |
-| **脱敏引擎** | 接入 `legal-desens` CLI（非后端手写正则） | 生产级可逆脱敏（位置映射 + SHA256 + 审计），见下文 |
+| **使用规模** | 单律师本地自用（暂不做账号体系） | 聚焦脱敏核心闭环 |
+| **本地存储** | 后端 SQLite + 本地文件目录 | 案件/材料/实体/审计可追溯；原件、脱敏副本、map.json 落本地文件 |
+| **脱敏引擎** | 接入 `legal-desens` CLI（非自写正则） | 生产级可逆脱敏（位置映射 + SHA256 + 审计） |
+| **界面风格** | Solarized Light，文档优先，无 emoji/渐变 | 见 brand-spec.md |
 
-> ⚠️ 这是**本地自用工具**：所有案件数据、脱敏映射、意见书都只存在运行这台机器上，不上云、不入库到远端、不提交进 git（见 `.gitignore`）。
+> ⚠️ **本地自用工具**：所有案件数据、原件、脱敏映射只存在运行这台机器上，不上云、不提交进 git（见 `.gitignore`）。
+
+---
+
+## 交互规则（摘自 brand-spec.md）
+
+- **原件不可变**。所有标注只写入本地映射；导出时从原件重新生成副本。
+- 文档默认以**脱敏预览**模式呈现。
+- 所有实体类别共用**同一种视觉脱敏处理**；类别信息仅保留给检测层与审计层。
+- **导出始终生成原格式的派生副本**，并在释放文件前运行**残留敏感数据复检**。
 
 ---
 
@@ -25,112 +47,101 @@
 
 **前端** `frontend/`
 - React 19 + Vite
-- 视图：首页仪表盘（案件项目卡）/ 三栏办案区 / 设置
-- 暂不引入路由库与状态库（单页视图切换 + 组件状态足够；规模变大再评估）
+- 视图：案件登记簿（Home）/ 双栏文档工作区（Workspace）/ 精简设置
+- 文档预览：
+  - **DOCX**：`docx-preview` 高保真渲染 + DOM 文本标注
+  - **PDF**：`pdfjs-dist` 渲染原页 + 文字层标注（按字符归一化定位）
+  - **Markdown / TXT**：独立可编辑工作副本，原件不变
+- 暂不引入路由库与状态库（视图切换 + 组件状态足够）
 
 **后端** `backend/`
-- Node.js + Express（ESM）
+- Node.js + Express（ESM）+ SQLite（`better-sqlite3`）
 - 文档解析：`pdf-parse`（PDF）、`mammoth`（.docx）、原生（.txt/.md）
 - 脱敏：shell out 调用 `legal-desens` CLI（`redactService.js`）
-- 算费：劳动合同法 47/82/87 条规则引擎（`analyzeService.js`）
-- 意见书：Markdown 模板变量渲染（`generateService.js`）
-- **存储（待建）**：SQLite（建议 `better-sqlite3`，本地同步、零配置）
+- 人工标注持久化、按原格式导出 + 残留复检
 
 **脱敏引擎** `legal-desens` CLI（独立项目）
 - 位置：`/Users/clukay/Program/lawchers-skills/legal-desensitizer`
-- 后端调用 `legal-desens redact --level strict`，读回 `redacted.md` + `map.json` + `audit.json`
-- 中间区统一转 **Markdown**，不在原版 PDF/Word 上做划词
-- 显示态用**星号掩码**（王*锤 / 138****5678）；map 保留可逆还原能力
+- 可逆格式（txt/md/csv/docx/xlsx）：`redact` → `redacted.ext` + `map.json` + `audit.json`
+- 图片/扫描 PDF：`redact-scan` → 白框遮盖（不可逆）+ OCR markdown 中间产物
+- NER 模型：`bash scripts/install_with_model.sh`；无模型降级 `--regex-only`
 
 ---
 
-## 数据模型（SQLite，规划中）
+## 数据模型（SQLite）
 
 ```
-case            案件        id, case_no, title, cause(案由,先固定"劳动争议"),
-                            employee, company, stage, claim_amount,
-                            created_at, updated_at
+case            案件        id, case_no, title, cause, employee, company,
+                            stage, created_at, updated_at
 material        材料        id, case_id, filename, ext, stored_path,
-                            raw_md_path, redacted_md_path, redact_status, uploaded_at
-entity          脱敏实体     id, material_id, type, original(仅本地), masked,
-                            start, end, revealed(bool)   ← 对应 legal-desens map.json
-case_element    案件要素     case_id, entry_date, leave_date, salary,
-                            has_contract, leave_reason, working_months
-opinion         意见书       id, case_id, template_type, content_md,
-                            status(draft/confirmed), created_at
+                            display_mode, redacted_md, map_json,
+                            occurrences_json, redact_status, uploaded_at
+entity          脱敏实体     id, material_id, entity_id, entity_type, masked,
+                            start, end, revealed   ← 不存明文
+manual_redaction 人工标注    material 上的人工框选文本（持久化到本地映射）
 audit           审计        id, case_id, action, source, model_config,
-                            human_confirmed, created_at   ← AI 可追溯要求
+                            human_confirmed, created_at
 ```
+
+> **明文不入库**：`entity` 不存原文，可逆还原依赖 legal-desens 的 `map.json`。
 
 本地文件目录（均在 `.gitignore` 内）：
 
 ```
-data/
-  lawchers.sqlite          结构化数据
-uploads/<case_id>/
-  <原始材料>                上传原件
-  raw.md / redacted.md     解析与脱敏产物
-  map.json / audit.json    legal-desens 可逆映射与审计
-exports/
-  legal-opinion-*.md/.docx 生成的意见书
+data/lawchers.sqlite        结构化数据
+uploads/<case_id>/          原件 + raw.md + redacted/map/audit 产物
+exports/                    原格式脱敏副本（导出时生成）
 ```
+
+> 案号规则：`LC-<年份>-<4位自增>`（如 `LC-2026-0001`），按年重置。
 
 ---
 
 ## 本地开发
 
 ```bash
-# 安装（workspace 根目录）
-npm install
-
-# 同时起前后端
-npm run dev
-
-# 或分别起
-npm run dev:frontend   # Vite 开发服务器
-npm run dev:backend    # Express @ http://localhost:3001
+npm install            # workspace 根目录
+npm run dev            # 同时起前后端
+npm run dev:frontend   # 仅前端（Vite）
+npm run dev:backend    # 仅后端（Express @ :3001）
 ```
 
-环境依赖：
-- Node.js（建议 ≥ 18）
-- `legal-desens` CLI 已安装并可运行（NER ONNX 模型在 `~/.legal-desens/models/`）；后端启动时会跑脱敏环境自检
+环境依赖：Node.js ≥ 18；`legal-desens` CLI 已安装并可运行（NER 模型在 `~/.legal-desens/models/`，后端启动会自检）。
 
 ---
 
-## API（后端 `/api`）
+## API（后端 `/api`，与当前界面相关的核心）
 
-| 方法 | 路径 | 功能 | 状态 |
-|---|---|---|---|
-| POST | `/upload` | 上传并解析文档（pdf/docx/txt/md）为文本 | ✅ |
-| POST | `/desensitize` | 旧版手写正则脱敏 | ⚠️ 待废弃 |
-| POST | `/redact` | 接 legal-desens 的可逆脱敏 | 🚧 接入中 |
-| POST | `/analyze` | 提取劳动争议要素 + 算费 | ✅ |
-| POST | `/generate` | 按要素与模板生成意见书 Markdown | ✅ |
-| GET | `/health` | 健康检查 | ✅ |
+| 方法 | 路径 | 功能 |
+|---|---|---|
+| GET/POST | `/cases` · `/cases/:id` | 案件登记簿 CRUD |
+| POST | `/upload` | 上传原件（存 uploads/<case_id>/）、解析、写 material |
+| POST | `/redact` | 可逆格式脱敏（legal-desens），写回 material/entity |
+| POST | `/redact-scan` | 图片/扫描 PDF 不可逆白框脱敏 |
+| POST | `/materials/:id/manual-redactions` | 人工框选标注持久化 |
+| PATCH | `/materials/:id/text` | TXT/MD 工作副本保存 |
+| POST | `/materials/:id/confirm` · DELETE `/materials/:id` | 确认 / 删除材料 |
+| POST | `/export/redacted` · `/export/redacted-docx` | 按原格式导出脱敏副本 + 残留复检 |
+| GET | `/redact/status` · `/cases/:id/audit` | NER 状态 / 审计日志 |
+
+> 已脱离界面的遗留路由：`/analyze`、`/generate`、`/opinions/:id/confirm`、`/export/opinion-docx`（测算/意见书，保留待清理）。
 
 ---
 
 ## 当前状态
 
-- ✅ 前端：首页 / 三栏办案区 / 脱敏编辑器（自动识别 + 划词增删脱敏）/ 设置
-- ✅ 后端：4 个核心 API 跑通；`redactService` 已接 legal-desens
-- ✅ 交互原型：`prototype.html`（高保真单文件，供视觉/交互参考）
-- 🚧 **存储层未建**：案件数据仍在前端内存，刷新即丢 → 下一优先级
-- 🚧 算费规则前端/后端两套，需统一到后端
-- ⚠️ `analyzeService` 内有硬编码默认值（王* / 某某科技），需与真实要素打通
-
-## 路线图（建议顺序）
-
-1. **建 SQLite 存储层**：案件/材料/要素/意见书落盘，新建·列表·详情打通持久化
-2. 脱敏流程切到 `/redact`（legal-desens），中间区消费 redacted markdown + map
-3. 算费规则统一到后端，前端只展示
-4. 意见书生成接审计记录（来源/模型/人工确认状态）
-5. 导出 .docx / 打印 PDF
+- ✅ 案件登记簿 + 双栏文档工作区（Solarized Light）
+- ✅ DOCX 高保真预览；PDF 原页 + 文字标注层；TXT/MD 工作副本
+- ✅ 自动检测（legal-desens regex+ner）+ 人工框选标注，持久化本地映射
+- ✅ 按原格式导出（从原件重脱敏）+ 残留复检
+- ✅ SQLite 持久化（案件/材料/实体/审计）
+- ⚠️ PDF.js 使前端包偏大（~795K），后续可做按需加载（非阻断）
+- ⚠️ 测算/意见书旧代码保留但已脱离界面，待清理
 
 ---
 
 ## 开发约定（摘自 AGENTS.md）
 
 - 不提交真实客户数据、案件材料、日志、数据库或密钥；测试用合成/脱敏数据。
-- AI 输出标记为草稿/建议，保留来源与人工确认状态，不伪装成最终法律意见。
+- 原件不可变；导出前必须残留复检。
 - 提交遵循 Conventional Commits；每个 PR 写明 Summary、Verification、Risk。
