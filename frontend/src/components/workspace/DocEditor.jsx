@@ -2,6 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { renderAsync } from 'docx-preview';
 import { getDocument, GlobalWorkerOptions, Util } from 'pdfjs-dist';
 import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuLabel,
+} from '@/components/ui/dropdown-menu';
 
 GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
 
@@ -282,7 +290,6 @@ export default function DocEditor({
   const viewportRef = useRef(null);
   const [mode, setMode] = useState(defaultView || 'redacted');
   const [selection, setSelection] = useState(null);
-  const [moreOpen, setMoreOpen] = useState(false);
   const terms = useMemo(() => sensitiveTerms(material), [material]);
 
   const manualItems = material?.manualRedactions || [];
@@ -346,16 +353,20 @@ export default function DocEditor({
         <div className="document-toolbar-actions">
           <span className="annotation-count">{terms.length} 处标注</span>
           <Button variant="default" onClick={onExport} disabled={exporting}>{exporting ? '复检中…' : '导出'}</Button>
-          <div className="more-wrap">
-            <Button variant="ghost" size="icon" onClick={() => setMoreOpen(!moreOpen)} aria-label="更多操作" aria-expanded={moreOpen}>•••</Button>
-            {moreOpen && (
-              <div className="more-menu">
-                <Button variant="ghost" className="w-full justify-start text-left text-sm hover:bg-secondary" onClick={() => { setMoreOpen(false); onReRedact(); }} disabled={redacting}>{redacting ? '正在重新识别…' : '重新识别敏感信息'}</Button>
-                <div className="menu-separator" />
-                <span className="px-2.5 py-1.5 block text-xs text-muted-foreground">人工标注 {manualItems.length} 处</span>
-              </div>
-            )}
-          </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" aria-label="更多操作">•••</Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem disabled={redacting} onClick={onReRedact} className="cursor-pointer">
+                {redacting ? '正在重新识别…' : '重新识别敏感信息'}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>
+                人工标注 {manualItems.length} 处
+              </DropdownMenuLabel>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
 
@@ -370,9 +381,9 @@ export default function DocEditor({
       {mode === 'original' && <div className="selection-hint">框选原文即可添加人工脱敏标注</div>}
       {selection && (
         <div className="selection-popover" style={{ left: selection.x, top: selection.y }}>
-          <button onClick={toggleManualSelection}>
+          <Button variant="ghost" onClick={toggleManualSelection} className="text-[#f7f4ee] hover:bg-[#f7f4ee]/10 hover:text-[#f7f4ee] px-2.5 py-1.5 h-auto text-xs font-normal">
             {manualItems.some((item) => (typeof item === 'string' ? item : item.text) === selection.text) ? '取消标注' : '标记脱敏'}
-          </button>
+          </Button>
         </div>
       )}
     </section>

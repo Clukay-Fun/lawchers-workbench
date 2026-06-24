@@ -2,6 +2,20 @@ import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogClose,
+} from '@/components/ui/dialog';
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from '@/components/ui/dropdown-menu';
 
 function formatUpdatedAt(value) {
   if (!value) return '最近更新';
@@ -65,46 +79,51 @@ export default function Home({ cases, onSelectCase, onCreateCase, onDeleteCase }
               <span className="case-register-meta">{materialText}</span>
               <Badge variant={item.status === 'done' ? 'success' : 'warning'}>{item.status === 'done' ? '已完成' : '待校对'}</Badge>
               <div className="row-menu-wrap">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="row-menu-button"
-                  aria-label="案件操作"
-                  aria-expanded={openMenuId === item.id}
-                  onClick={(event) => { event.stopPropagation(); setOpenMenuId(openMenuId === item.id ? null : item.id); }}
-                >•••</Button>
-                {openMenuId === item.id && (
-                  <div className="row-menu" onClick={(event) => event.stopPropagation()}>
-                    <Button variant="ghost" className="w-full justify-start text-destructive hover:bg-secondary" onClick={() => handleDelete(item)}>删除案件</Button>
-                  </div>
-                )}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="row-menu-button"
+                      aria-label="案件操作"
+                      onClick={(event) => event.stopPropagation()}
+                    >•••</Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent onClick={(event) => event.stopPropagation()} align="end">
+                    <DropdownMenuItem className="text-destructive focus:text-destructive focus:bg-destructive/10 cursor-pointer" onClick={() => handleDelete(item)}>
+                      删除案件
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
             </Card>
           );
         })}
       </div>
 
-      {isModalOpen && (
-        <div className="modal-backdrop open" onMouseDown={(event) => { if (event.target === event.currentTarget) setIsModalOpen(false); }}>
-          <div className="modal compact-modal" role="dialog" aria-modal="true" aria-labelledby="new-case-title">
-            <div className="modal-head">
-              <h2 id="new-case-title">新建案件</h2>
-              <Button variant="ghost" size="icon" onClick={() => setIsModalOpen(false)} aria-label="关闭">×</Button>
+      <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
+        <DialogContent className="compact-modal">
+          <DialogHeader>
+            <DialogTitle id="new-case-title">新建案件</DialogTitle>
+            <DialogClose asChild>
+              <Button variant="ghost" size="icon" aria-label="关闭">×</Button>
+            </DialogClose>
+          </DialogHeader>
+          <form onSubmit={handleSubmit}>
+            <div className="modal-body p-0 py-4">
+              <label className="form-group"><span>案由</span><select value={newCaseData.reason} onChange={(event) => setNewCaseData({ ...newCaseData, reason: event.target.value })}><option>劳动争议</option></select></label>
+              <label className="form-group"><span>当事人</span><input autoFocus value={newCaseData.employeeName} onChange={(event) => setNewCaseData({ ...newCaseData, employeeName: event.target.value })} placeholder="劳动者姓名" required /></label>
+              <label className="form-group"><span>相对方</span><input value={newCaseData.companyName} onChange={(event) => setNewCaseData({ ...newCaseData, companyName: event.target.value })} placeholder="用人单位名称" required /></label>
             </div>
-            <form onSubmit={handleSubmit}>
-              <div className="modal-body">
-                <label className="form-group"><span>案由</span><select value={newCaseData.reason} onChange={(event) => setNewCaseData({ ...newCaseData, reason: event.target.value })}><option>劳动争议</option></select></label>
-                <label className="form-group"><span>当事人</span><input autoFocus value={newCaseData.employeeName} onChange={(event) => setNewCaseData({ ...newCaseData, employeeName: event.target.value })} placeholder="劳动者姓名" required /></label>
-                <label className="form-group"><span>相对方</span><input value={newCaseData.companyName} onChange={(event) => setNewCaseData({ ...newCaseData, companyName: event.target.value })} placeholder="用人单位名称" required /></label>
-              </div>
-              <div className="modal-foot">
-                <Button type="button" variant="ghost" onClick={() => setIsModalOpen(false)}>取消</Button>
-                <Button type="submit" variant="default" disabled={submitting}>{submitting ? '正在创建…' : '创建案件'}</Button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+            <DialogFooter className="p-0 pt-4">
+              <DialogClose asChild>
+                <Button type="button" variant="ghost">取消</Button>
+              </DialogClose>
+              <Button type="submit" variant="default" disabled={submitting}>{submitting ? '正在创建…' : '创建案件'}</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

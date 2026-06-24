@@ -1,12 +1,18 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import Sidebar from './components/Sidebar';
 import Home from './components/Home';
 import Workspace from './components/Workspace';
-import { getNerStatus, getCases, getCaseDetail, createCase as apiCreateCase } from './api';
+import {
+  createCase as apiCreateCase,
+  deleteCase as apiDeleteCase,
+  getCaseDetail,
+  getCases,
+} from './api';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
 
-// 内置可供开关的脱敏实体规则定义
 const availableRules = [
-  { key: 'PERSON', label: '姓名（NER）' },
+  { key: 'PERSON', label: '姓名' },
   { key: 'PHONE', label: '手机号' },
   { key: 'LANDLINE', label: '固定电话' },
   { key: 'ID_CARD', label: '身份证号' },
@@ -16,22 +22,54 @@ const availableRules = [
   { key: 'ORG_CODE', label: '统一社会信用代码' },
   { key: 'BANK_CARD', label: '银行卡号' },
   { key: 'BANK_BRANCH', label: '银行网点' },
-  { key: 'MONEY', label: '中文金额' },
-  { key: 'PLATE', label: '车牌号' },
-  { key: 'PROPERTY_CERT', label: '不动产权证号' },
-  { key: 'API_TOKEN', label: 'API Token/密钥' },
-  { key: 'ORG', label: '机构（NER）' },
-  { key: 'LOC', label: '地点/地址（NER）' },
-  { key: 'TIME', label: '时间（NER）' },
-  { key: 'DATE', label: '中文日期' },
-  { key: 'BANK_ACCOUNT', label: '银行账号' }
+  { key: 'MONEY', label: '金额' },
+  { key: 'API_TOKEN', label: 'API Token / 密钥' },
+  { key: 'ORG', label: '机构' },
+  { key: 'LOC', label: '地点 / 地址' },
+  { key: 'DATE', label: '日期' },
 ];
 
-/**
- * 描述: 敬法智能办案工作台主应用顶层入口组件
- */
+const defaultRules = Object.fromEntries(availableRules.map((rule) => [rule.key, true]));
+defaultRules.DATE = false;
 
-// #region App 主组件实现
+function parseJson(value, fallback) {
+  try {
+    return JSON.parse(value || '');
+  } catch {
+    return fallback;
+  }
+}
+
+function buildTextChunks(redactedText, entities, occurrences) {
+  if (!redactedText) return [];
+  const entityMap = Object.fromEntries(entities.map((entity) => [entity.id, entity]));
+  const positional = occurrences
+    .filter((item) => Number.isFinite(item.redacted_start) && Number.isFinite(item.redacted_end))
+    .sort((a, b) => a.redacted_start - b.redacted_start);
+  if (!positional.length) return [{ text: redactedText, isEntity: false }];
+
+  const chunks = [];
+  let cursor = 0;
+  for (const occurrence of positional) {
+    if (occurrence.redacted_start < cursor) continue;
+    const entity = entityMap[occurrence.entity_id];
+    if (!entity) continue;
+    if (occurrence.redacted_start > cursor) {
+      chunks.push({ text: redactedText.slice(cursor, occurrence.redacted_start), isEntity: false });
+    }
+    chunks.push({
+      text: entity.original || occurrence.original_text || '',
+      replacement: entity.replacement || '***',
+      isEntity: true,
+      type: entity.entity_type || 'SENSITIVE',
+      entityId: entity.id,
+      revealed: false,
+    });
+    cursor = occurrence.redacted_end;
+  }
+  if (cursor < redactedText.length) chunks.push({ text: redactedText.slice(cursor), isEntity: false });
+  return chunks;
+}
 
 export default function App() {
   const [currentView, setCurrentView] = useState('home');
@@ -39,419 +77,245 @@ export default function App() {
   const [activeCaseId, setActiveCaseId] = useState(null);
   const [activeCaseDetail, setActiveCaseDetail] = useState(null);
   const [loadingCaseDetail, setLoadingCaseDetail] = useState(false);
-  const [nerEnabled, setNerEnabled] = useState(false);
+  const [advancedRulesOpen, setAdvancedRulesOpen] = useState(false);
+  const [settings, setSettings] = useState({
+    maskChar: '*',
+    defaultView: 'redacted',
+    preserveFormat: true,
+    verifyBeforeExport: true,
+    rulesConfig: defaultRules,
+  });
 
-  // 初始化拉取 NER 状态和案件列表
-  useEffect(() => {
-    getNerStatus()
-      .then((data) => setNerEnabled(data.nerEnabled))
-      .catch(() => setNerEnabled(false));
-
-    loadCases();
-  }, []);
-
-  // 从后端加载案件列表
   const loadCases = async () => {
     try {
-      const data = await getCases();
-      setCases(data || []);
-    } catch (err) {
-      console.error('[ERROR] 加载案件列表失败:', err);
+      setCases(await getCases() || []);
+    } catch (error) {
+      console.error('[ERROR] 加载案件列表失败:', error);
     }
   };
 
-  // 加载案件详情
+  useEffect(() => {
+    let cancelled = false;
+    getCases()
+      .then((items) => { if (!cancelled) setCases(items || []); })
+      .catch((error) => console.error('[ERROR] 加载案件列表失败:', error));
+    return () => { cancelled = true; };
+  }, []);
+
+  const mapCaseForWorkspace = (detail) => {
+    if (!detail) return null;
+    const backendOrigin = import.meta.env.VITE_BACKEND_ORIGIN || `${window.location.protocol}//${window.location.hostname}:3001`;
+    const materials = (detail.materials || []).map((material) => {
+      const mapData = parseJson(material.map_json, {});
+      const entities = (mapData.entities || material.entities || []).map((entity) => ({
+        ...entity,
+        id: entity.id || entity.entity_id,
+        entity_type: entity.entity_type,
+        original: entity.original || '',
+        replacement: entity.replacement || entity.masked || '***',
+      }));
+      const occurrences = mapData.occurrences || parseJson(material.occurrences_json, []);
+      const storedPath = String(material.stored_path || '').split('\\').join('/');
+      const redactedPath = String(material.redacted_path || '').split('\\').join('/');
+      return {
+        id: material.id,
+        name: material.filename,
+        ext: material.ext,
+        status: material.redact_status || 'todo',
+        displayMode: material.display_mode || 'text',
+        filePath: storedPath ? `${backendOrigin}/${storedPath}` : '',
+        redactedFileUrl: redactedPath ? `${backendOrigin}/${redactedPath}` : '',
+        redactedText: material.redacted_md || '',
+        workingText: material.working_text || '',
+        rawText: '',
+        entities,
+        occurrences,
+        chunks: buildTextChunks(material.redacted_md || '', entities, occurrences),
+        entitiesCount: occurrences.length || entities.length,
+        manualRedactions: parseJson(material.manual_redactions_json, []),
+        audit: parseJson(material.audit_json, {}),
+      };
+    });
+
+    return {
+      id: detail.id,
+      caseNo: detail.case_no,
+      title: detail.title,
+      reason: detail.cause || '劳动争议',
+      employeeName: detail.employee,
+      companyName: detail.company,
+      status: detail.stage || 'todo',
+      selectedMaterialIndex: 0,
+      materials,
+    };
+  };
+
   const loadCaseDetail = async (caseId) => {
     setLoadingCaseDetail(true);
     try {
-      const detail = await getCaseDetail(caseId);
-      // 仅在加载时映射一次为 Workspace 结构；后续 onUpdateCase 直接写回该结构，
-      // 避免对已映射对象重复映射导致 chunks 丢失（中间区空白）。
-      setActiveCaseDetail(mapCaseForWorkspace(detail));
-    } catch (err) {
-      console.error('[ERROR] 加载案件详情失败:', err);
+      setActiveCaseDetail(mapCaseForWorkspace(await getCaseDetail(caseId)));
+    } catch (error) {
+      console.error('[ERROR] 加载案件详情失败:', error);
       setActiveCaseDetail(null);
     } finally {
       setLoadingCaseDetail(false);
     }
   };
 
-  // 全局律师配置
-  const [sysSettings, setSysSettings] = useState({
-    lawyerName: 'Sarah J.',
-    lawfirm: '敬法律师事务所',
-    lawyerCard: '14403202110XXXXXX',
-    maskChar: '*',
-    rulesConfig: {
-      PHONE: true,
-      LANDLINE: true,
-      ID_CARD: true,
-      PASSPORT: true,
-      EMAIL: true,
-      CASE_NO: true,
-      ORG_CODE: true,
-      BANK_CARD: true,
-      BANK_BRANCH: true,
-      MONEY: true,
-      PLATE: true,
-      PROPERTY_CERT: true,
-      API_TOKEN: true,
-      PERSON: true,
-      ORG: true,
-      LOC: true,
-      TIME: true,
-      DATE: false,
-      BANK_ACCOUNT: false
-    }
-  });
-
-  const handleSettingsChange = (field, val) => {
-    setSysSettings((prev) => ({ ...prev, [field]: val }));
-  };
-
-  // 1. 切换案件并跳转到 Workspace
-  const handleSelectCase = async (c) => {
-    setActiveCaseId(c.id);
+  const handleSelectCase = async (item) => {
+    setActiveCaseId(item.id);
     setCurrentView('workspace');
-    await loadCaseDetail(c.id);
+    await loadCaseDetail(item.id);
   };
 
-  // 2. 新建案件（调后端 API）
-  const handleCreateCase = async (newCaseData) => {
-    try {
-      const result = await apiCreateCase({
-        employee: newCaseData.employeeName,
-        company: newCaseData.companyName,
-        title: `${newCaseData.employeeName}诉${newCaseData.companyName}劳动争议案`,
-        cause: newCaseData.reason || '劳动争议',
-      });
-
-      // 刷新列表
-      await loadCases();
-
-      // 自动切入 Workspace
-      setActiveCaseId(result.id);
-      setCurrentView('workspace');
-      await loadCaseDetail(result.id);
-    } catch (err) {
-      console.error('[ERROR] 创建案件失败:', err);
-      alert('创建案件失败: ' + (err.message || '未知错误'));
-    }
+  const handleCreateCase = async (caseData) => {
+    const result = await apiCreateCase({
+      employee: caseData.employeeName,
+      company: caseData.companyName,
+      title: `${caseData.employeeName}诉${caseData.companyName}${caseData.reason || '劳动争议'}案`,
+      cause: caseData.reason || '劳动争议',
+    });
+    await loadCases();
+    setActiveCaseId(result.id);
+    setCurrentView('workspace');
+    await loadCaseDetail(result.id);
   };
 
-  // 3. 更新案件（刷新详情）
-  const handleUpdateCase = async (updatedCase) => {
-    // 更新本地缓存的详情
-    setActiveCaseDetail(updatedCase);
-    // 刷新列表中的摘要信息
+  const handleDeleteCase = async (id) => {
+    await apiDeleteCase(id);
     await loadCases();
   };
 
-  // 刷新当前案件详情（用于脱敏/确认后更新材料状态）
   const refreshCurrentCase = async () => {
-    if (activeCaseId) {
-      await loadCaseDetail(activeCaseId);
-    }
+    if (activeCaseId) await loadCaseDetail(activeCaseId);
   };
 
-  // 将后端案件详情转换为 Workspace 所需的前端格式
-  const mapCaseForWorkspace = (detail) => {
-    if (!detail) return null;
+  const casesForHome = cases.map((item) => ({
+    id: item.id,
+    caseNo: item.case_no,
+    title: item.title,
+    employeeName: item.employee,
+    companyName: item.company,
+    reason: item.cause || '劳动争议',
+    status: item.stage || 'todo',
+    materialCount: item.material_count || 0,
+    updatedAt: item.updated_at,
+  }));
 
-    const materials = (detail.materials || []).map((mat, idx) => {
-      // 从存储的 redacted_md + entities + occurrences_json 重建 chunks
-      let chunks = [];
-      let entities = (mat.entities || []).map(ent => ({
-        id: ent.entity_id,
-        entity_type: ent.entity_type,
-        original: '', // 明文不入库
-        replacement: ent.masked,
-        redacted_start: ent.start,
-        redacted_end: ent.end,
-      }));
-
-      let occurrences = [];
-      try {
-        occurrences = JSON.parse(mat.occurrences_json || '[]');
-      } catch { occurrences = []; }
-
-      // 如果有 redacted_md 和 occurrences，重建 chunks
-      if (mat.redacted_md && occurrences.length > 0) {
-        const entityMap = {};
-        for (const ent of entities) {
-          entityMap[ent.id] = ent;
-        }
-
-        const sorted = [...occurrences].sort((a, b) => a.redacted_start - b.redacted_start);
-        let cursor = 0;
-        for (const occ of sorted) {
-          if (occ.redacted_start < cursor) continue;
-          const entity = entityMap[occ.entity_id];
-          if (!entity) continue;
-
-          if (occ.redacted_start > cursor) {
-            chunks.push({
-              text: mat.redacted_md.substring(cursor, occ.redacted_start),
-              isEntity: false,
-            });
-          }
-
-          chunks.push({
-            text: entity.original || '',
-            isEntity: true,
-            type: entity.entity_type,
-            entityId: entity.id,
-            entityType: entity.entity_type,
-            replacement: entity.replacement,
-            revealed: false,
-          });
-
-          cursor = occ.redacted_end;
-        }
-
-        if (cursor < mat.redacted_md.length) {
-          chunks.push({
-            text: mat.redacted_md.substring(cursor),
-            isEntity: false,
-          });
-        }
-      } else if (mat.redacted_md) {
-        chunks = [{ text: mat.redacted_md, isEntity: false }];
-      }
-
-      return {
-        id: mat.id,
-        name: mat.filename,
-        filePath: mat.stored_path ? `${window.location.protocol}//${window.location.hostname}:3001/${mat.stored_path}` : '',
-        status: mat.redact_status || 'todo',
-        rawText: '',
-        redactedText: mat.redacted_md || '',
-        chunks,
-        entities,
-        occurrences,
-        entitiesCount: (mat.entities || []).length,
-        audit: {},
-        displayMode: mat.display_mode || 'text',
-        redactedImageUrl: null,
-      };
-    });
-
-    const calc = detail.calculatorInput || {};
-
-    return {
-      id: detail.id,
-      caseNo: detail.case_no,
-      employeeName: calc.employeeName || detail.employee,
-      companyName: calc.companyName || detail.company,
-      status: detail.stage === 'done' ? 'done' : detail.stage === 'archived' ? 'done' : 'todo',
-      lawyerName: sysSettings.lawyerName,
-      notes: detail.title,
-      materials,
-      selectedMaterialIndex: 0,
-      calculatorInput: {
-        employeeName: calc.employeeName || detail.employee,
-        companyName: calc.companyName || detail.company,
-        entryDate: calc.entryDate || '',
-        leaveDate: calc.leaveDate || '',
-        salary: calc.salary || 0,
-        hasContract: calc.hasContract !== undefined ? calc.hasContract : true,
-        leaveReason: calc.leaveReason || 'dismiss',
-        workingMonths: calc.workingMonths || 0,
-        jobTitle: calc.jobTitle || '技术开发岗',
-      },
-      totalAmount: detail.claim_amount || 0,
-      opinions: detail.opinions || [],
-      auditLogs: detail.auditLogs || [],
-    };
-  };
-
-  // 渲染顶部 Header
-  const renderHeader = () => {
-    if (currentView === 'workspace') {
-      const ws = activeCaseDetail; // 已在加载时映射，勿重复映射
+  const header = (() => {
+    if (currentView === 'workspace' && activeCaseDetail) {
       return (
-        <header className="top-header">
+        <header className="top-header case-header">
           <div>
-            <h2>智能办案 Workspace</h2>
-            <div className="breadcrumb" style={{ display: 'block' }}>
-              劳动争议 · {ws?.caseNo} · {ws?.employeeName} 诉 {ws?.companyName}
-            </div>
-          </div>
-          <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.8rem' }}>
-            <span>承办律师：<strong style={{ color: 'var(--primary)' }}>{sysSettings.lawyerName} 执业律师</strong></span>
-            {nerEnabled ? (
-              <span className="ner-badge" style={{ backgroundColor: '#ecfdf5', color: '#10b981', padding: '2px 8px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: 600 }}>NER 模型已就绪</span>
-            ) : (
-              <span className="ner-badge" style={{ backgroundColor: '#fef2f2', color: '#ef4444', padding: '2px 8px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: 600 }}>NER 降级仅正则</span>
-            )}
+            <h1>{activeCaseDetail.employeeName} 诉 {activeCaseDetail.companyName}</h1>
+            <p className="case-meta">{activeCaseDetail.caseNo} · {activeCaseDetail.reason}</p>
           </div>
         </header>
       );
     }
-
-    const titleMap = {
-      home: '工作台首页',
-      settings: '系统配置与隐私',
-    };
-
     return (
       <header className="top-header">
-        <div>
-          <h2>{titleMap[currentView] || '工作台首页'}</h2>
-        </div>
-        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.8rem' }}>
-          <span>承办律师：<strong style={{ color: 'var(--primary)' }}>{sysSettings.lawyerName} 执业律师</strong></span>
-          {nerEnabled ? (
-            <span className="ner-badge" style={{ backgroundColor: '#ecfdf5', color: '#10b981', padding: '2px 8px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: 600 }}>NER 模型已就绪</span>
-          ) : (
-            <span className="ner-badge" style={{ backgroundColor: '#fef2f2', color: '#ef4444', padding: '2px 8px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: 600 }}>NER 降级仅正则</span>
-          )}
-        </div>
+        <h1>{currentView === 'settings' ? '设置' : '案件'}</h1>
       </header>
     );
-  };
-
-  // 渲染设置页面
-  const renderSettingsView = () => {
-    return (
-      <div className="settings-view">
-        <h3 style={{ marginBottom: '1.4rem', color: 'var(--primary)' }}>系统配置与隐私设置</h3>
-        <div className="solid-card">
-          <h4 className="form-title">律师执业落款变量</h4>
-          <div className="form-group">
-            <label>承办律师姓名</label>
-            <input type="text" value={sysSettings.lawyerName} onChange={(e) => handleSettingsChange('lawyerName', e.target.value)} />
-          </div>
-          <div className="form-group">
-            <label>所属执业律所</label>
-            <input type="text" value={sysSettings.lawfirm} onChange={(e) => handleSettingsChange('lawfirm', e.target.value)} />
-          </div>
-          <div className="form-group">
-            <label>执业证号</label>
-            <input type="text" value={sysSettings.lawyerCard} onChange={(e) => handleSettingsChange('lawyerCard', e.target.value)} />
-          </div>
-        </div>
-        <div className="solid-card">
-          <h4 className="form-title">脱敏规则</h4>
-          <div className="form-group" style={{ marginBottom: '1.2rem' }}>
-            <label>默认掩码符（实时应用到脱敏校对区）</label>
-            <select value={sysSettings.maskChar} onChange={(e) => handleSettingsChange('maskChar', e.target.value)}>
-              <option value="*">星号 王*锤 / 138*4678</option>
-              <option value="●">方块 王●锤 / 138●4678</option>
-              <option value="_">下划线 王_锤 / 138_4678</option>
-            </select>
-          </div>
-          <div className="form-group" style={{ marginBottom: 0 }}>
-            <label style={{ fontWeight: 600, display: 'block', marginBottom: '0.6rem' }}>实体类型细粒度脱敏开关（生效于脱敏及重脱敏流程）</label>
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
-              gap: '0.6rem 1rem',
-              padding: '0.8rem',
-              backgroundColor: '#f8fafc',
-              borderRadius: '6px',
-              border: '1px solid #e2e8f0',
-              maxHeight: '260px',
-              overflowY: 'auto'
-            }}>
-              {availableRules.map((rule) => {
-                const isChecked = !!sysSettings.rulesConfig?.[rule.key];
-                return (
-                  <label key={rule.key} style={{
-                    display: 'flex', alignItems: 'center', gap: '0.5rem',
-                    fontSize: '0.85rem', color: '#334155', cursor: 'pointer', userSelect: 'none'
-                  }}>
-                    <input
-                      type="checkbox"
-                      checked={isChecked}
-                      style={{ cursor: 'pointer' }}
-                      onChange={(e) => {
-                        const newConfig = { ...sysSettings.rulesConfig, [rule.key]: e.target.checked };
-                        handleSettingsChange('rulesConfig', newConfig);
-                      }}
-                    />
-                    <span>{rule.label}</span>
-                  </label>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-        <button
-          className="btn"
-          style={{ backgroundColor: '#fee2e2', color: '#ef4444', border: '1px solid #fca5a5', width: 'auto' }}
-          onClick={() => alert('演示：已擦除本地缓存并退出登录')}
-        >
-          擦除本地缓存并退出登录
-        </button>
-      </div>
-    );
-  };
-
-  // 映射案件列表为 Home 组件所需的格式
-  const casesForHome = cases.map(c => ({
-    id: c.id,
-    caseNo: c.case_no,
-    employeeName: c.employee,
-    companyName: c.company,
-    reason: c.cause || '劳动争议',
-    status: c.stage === 'done' ? 'done' : c.stage === 'archived' ? 'done' : 'todo',
-    notes: c.title,
-    totalAmount: c.claim_amount || 0,
-    selectedMaterialIndex: 0,
-    materials: [],
-    calculatorInput: {},
-  }));
-
-  const workspaceCase = activeCaseDetail; // 已在加载时映射，勿重复映射
+  })();
 
   return (
-    <div style={{ display: 'flex', width: '100vw', height: '100vh', overflow: 'hidden' }}>
-      <Sidebar
-        currentView={currentView}
-        onViewChange={setCurrentView}
-        sysSettings={sysSettings}
-      />
-
-      <div className="main-container">
-        {renderHeader()}
-
+    <div className="app-shell">
+      <Sidebar currentView={currentView} onViewChange={setCurrentView} />
+      <main className="main-container">
+        {header}
         <div className="page-wrapper">
           <section className={`page-view ${currentView === 'home' ? 'active' : ''}`}>
             <Home
               cases={casesForHome}
               onSelectCase={handleSelectCase}
               onCreateCase={handleCreateCase}
-              sysSettings={sysSettings}
+              onDeleteCase={handleDeleteCase}
             />
           </section>
 
           <section className={`page-view ${currentView === 'workspace' ? 'active' : ''}`}>
             {loadingCaseDetail ? (
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)' }}>
-                正在加载案件详情...
-              </div>
-            ) : workspaceCase ? (
+              <div className="page-state">正在加载案件材料…</div>
+            ) : activeCaseDetail ? (
               <Workspace
-                currentCase={workspaceCase}
-                onUpdateCase={handleUpdateCase}
-                onBackHome={() => { setCurrentView('home'); loadCases(); }}
-                sysSettings={sysSettings}
+                currentCase={activeCaseDetail}
+                onUpdateCase={setActiveCaseDetail}
+                settings={settings}
                 caseId={activeCaseId}
                 onRefreshCase={refreshCurrentCase}
               />
             ) : (
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)' }}>
-                暂无进行中的案件。请先前往首页「新建案件」以开启智能办案工作区。
-              </div>
+              <div className="page-state">请先在案件列表中选择一个案件。</div>
             )}
           </section>
 
           <section className={`page-view ${currentView === 'settings' ? 'active' : ''}`}>
-            {renderSettingsView()}
+            <div className="settings-view">
+              <section className="settings-section">
+                <h2>脱敏配置</h2>
+                <label className="settings-row">
+                  <span><strong>默认掩码样式</strong><small>用于文本预览中的统一脱敏标记</small></span>
+                  <Select value={settings.maskChar} onValueChange={(val) => setSettings({ ...settings, maskChar: val })}>
+                    <SelectTrigger className="w-[440px] justify-self-end bg-card border-input">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="*">星号（王*锤 / 138****5678）</SelectItem>
+                      <SelectItem value="●">圆点（王●锤 / 138●●●●5678）</SelectItem>
+                      <SelectItem value="_">下划线（王_锤 / 138____5678）</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </label>
+                <div className="settings-row">
+                  <span><strong>默认显示模式</strong><small>进入材料时优先保护敏感内容</small></span>
+                  <div className="segmented-control">
+                    <button className={settings.defaultView === 'redacted' ? 'active' : ''} onClick={() => setSettings({ ...settings, defaultView: 'redacted' })}>脱敏预览</button>
+                    <button className={settings.defaultView === 'original' ? 'active' : ''} onClick={() => setSettings({ ...settings, defaultView: 'original' })}>原文</button>
+                  </div>
+                </div>
+              </section>
+
+              <section className="settings-section">
+                <h2>导出</h2>
+                <div className="settings-row">
+                  <span><strong>保持原文件格式</strong><small>DOCX、PDF、Markdown 与 TXT 均生成同格式副本</small></span>
+                  <Switch checked={settings.preserveFormat} onCheckedChange={(val) => setSettings({ ...settings, preserveFormat: val })} className="justify-self-end" />
+                </div>
+                <div className="settings-row">
+                  <span><strong>导出前再次检查敏感信息</strong><small>复检失败时阻止下载</small></span>
+                  <Switch checked={settings.verifyBeforeExport} onCheckedChange={(val) => setSettings({ ...settings, verifyBeforeExport: val })} className="justify-self-end" />
+                </div>
+              </section>
+
+              <section className="settings-section disclosure-section">
+                <button className="disclosure" onClick={() => setAdvancedRulesOpen(!advancedRulesOpen)} aria-expanded={advancedRulesOpen}>
+                  <span><strong>高级脱敏规则</strong><small>类型只影响识别与审计，文档中始终统一显示</small></span>
+                  <span aria-hidden="true">{advancedRulesOpen ? '−' : '+'}</span>
+                </button>
+                {advancedRulesOpen && (
+                  <div className="rules-grid">
+                    {availableRules.map((rule) => (
+                      <label key={rule.key}>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(settings.rulesConfig[rule.key])}
+                          onChange={(event) => setSettings({
+                            ...settings,
+                            rulesConfig: { ...settings.rulesConfig, [rule.key]: event.target.checked },
+                          })}
+                        />
+                        {rule.label}
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </section>
+            </div>
           </section>
         </div>
-      </div>
+      </main>
     </div>
   );
 }
