@@ -212,10 +212,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .pdf-text-layer > span { position: absolute; color: transparent; white-space: pre; cursor: text; }
 .pdf-text-layer ::selection { color: transparent; background: rgba(38, 139, 210, .28); }
 .redaction-mark {
-  padding: 0 .08em; color: var(--base02) !important; background: rgba(42, 140, 140, .22) !important;
-  box-shadow: inset 0 -2px 0 var(--cyan); border-radius: 2px;
+  display: inline-block; min-width: 1.5em; padding: 0 .4em;
+  color: #0c3b3b !important; background: rgba(42, 140, 140, .32) !important;
+  box-shadow: inset 0 -2px 0 var(--cyan); border-radius: 3px;
+  font-weight: 600; text-align: center; vertical-align: baseline;
 }
-.pdf-redaction-mark { color: var(--base02) !important; background: #a9d3d0 !important; box-shadow: none; overflow: hidden; }
+.pdf-redaction-mark { display: inline-block; min-width: 1.5em; color: #0c3b3b !important; background: #9ccfcc !important; box-shadow: none; overflow: hidden; }
 .text-document { max-width: 860px; min-height: calc(100% - 10px); margin: 0 auto; padding: 58px 66px; background: var(--paper); border: 1px solid var(--line); box-shadow: 0 6px 18px rgba(0, 43, 54, .08); color: var(--base02); font: 15px/1.9 var(--font-ui); white-space: pre-wrap; word-break: break-word; }
 .text-editor { display: block; width: min(860px, 100%); height: calc(100% - 10px); resize: none; outline: none; }
 .image-document { height: 100%; display: flex; align-items: flex-start; justify-content: center; }
