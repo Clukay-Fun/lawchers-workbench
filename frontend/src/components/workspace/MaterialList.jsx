@@ -36,9 +36,14 @@ export default function MaterialList({
 
   const handleDelete = async (material, index) => {
     if (!window.confirm(`确认删除材料「${material.name}」？本地原件、脱敏副本和映射将一并清理。`)) return;
-    await deleteMaterial(material.id);
-    await onRefreshCase();
-    if (index === activeIndex) onSelect(Math.max(0, index - 1));
+    try {
+      await deleteMaterial(material.id);
+      await onRefreshCase();
+      if (index === activeIndex) onSelect(Math.max(0, index - 1));
+      else if (index < activeIndex) onSelect(activeIndex - 1);
+    } catch (err) {
+      onTriggerToast(err.message || '删除失败');
+    }
   };
 
   return (
@@ -48,7 +53,7 @@ export default function MaterialList({
           <div key={material.id} className={`material-row ${index === activeIndex ? 'active' : ''}`}>
             <button className="material-select" onClick={() => onSelect(index)}>
               <FileText className="w-[18px] h-[18px] shrink-0 text-muted-foreground" />
-              <span><strong>{material.name}</strong><small>{material.entitiesCount || 0} 处标注 · {material.status === 'done' ? '已导出复检' : '待校对'}</small></span>
+              <span><strong>{material.name}</strong><small>{material.entitiesCount || 0} 处标注</small></span>
             </button>
             <Button variant="ghost" size="icon" className="material-delete" aria-label={`删除 ${material.name}`} onClick={() => handleDelete(material, index)}>×</Button>
           </div>
