@@ -110,7 +110,7 @@ function DocxCanvas({ url, mode, terms }) {
 function PdfCanvas({ url, mode, terms }) {
   const containerRef = useRef(null);
   const [error, setError] = useState('');
-  const [zoom, setZoom] = useState(1); // 1 = 适应宽度
+  const [zoom, setZoom] = useState(0.5); // 默认 50%（适应宽度的一半，宽度更合适）
 
   useEffect(() => {
     let cancelled = false;
