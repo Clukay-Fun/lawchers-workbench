@@ -232,28 +232,17 @@ router.post('/upload', upload.single('file'), async (req, res) => {
       await fs.writeFile(rawMdPath, rawText, 'utf-8');
     }
 
-    // 判断显示模式
-    const isTextFormat = ['.txt', '.md', '.csv', '.docx', '.xlsx'].includes(ext);
-    const isImageFormat = ['.png', '.jpg', '.jpeg', '.tiff', '.bmp'].includes(ext);
-    let displayMode = 'text';
-    if (isImageFormat) {
-      displayMode = 'image';
-    } else if (ext === '.pdf') {
-      displayMode = (rawText && rawText.trim().length > 0) ? 'text' : 'image';
-    } else if (!isTextFormat) {
-      return res.status(400).json({ success: false, message: `暂不支持该文件格式: ${ext}` });
-    }
-
     // 存储相对路径（相对于 backend/ 目录）
     const relativePath = path.relative(path.join(__dirname, '..'), finalPath);
 
     // 写入 material 表
+    // display_mode 已废弃：documentKind 由 prepare 阶段权威判定，不再依赖上传时启发式猜测
     const material = addMaterial({
       case_id: parseInt(caseId, 10),
       filename: originalName,
       ext,
       stored_path: relativePath,
-      display_mode: displayMode,
+      display_mode: 'text', // deprecated，保留列兼容性
     });
 
     res.json({
@@ -263,7 +252,6 @@ router.post('/upload', upload.single('file'), async (req, res) => {
         filename: originalName,
         filePath: finalPath,
         rawText,
-        displayMode,
       }
     });
   } catch (error) {

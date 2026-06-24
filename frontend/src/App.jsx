@@ -122,7 +122,6 @@ export default function App() {
         name: material.filename,
         ext: material.ext,
         status: material.redact_status || 'todo',
-        displayMode: material.display_mode || 'text',
         processingStatus: material.processing_status || 'uploaded',
         documentKind: material.document_kind || '',
         filePath: storedPath ? `${backendOrigin}/${storedPath}` : '',
