@@ -1264,9 +1264,16 @@ router.post('/materials/:id/export', async (req, res) => {
       return res.status(409).json({ success: false, message: '原件自预处理后已变化，请重新预处理' });
     }
 
-    // PDF 暂不支持 decisions 导出（扫描件需 polygon，文本 PDF 需坐标映射）
+    // PDF: only pdf-text supports decisions export; pdf-scan/hybrid not yet implemented
     if (mat.document_kind && mat.document_kind.includes('pdf')) {
-      return res.status(501).json({ success: false, message: 'PDF 文件的按决策导出尚未实现，请使用旧版 /api/export/redacted 接口' });
+      if (mat.document_kind === 'pdf-text') {
+        // pdf-text is supported — continue to export
+      } else if (mat.document_kind === 'pdf-hybrid') {
+        return res.status(501).json({ success: false, message: '混合型 PDF（含扫描页）的按决策导出尚未实现，请拆分或转换为 DOCX' });
+      } else {
+        // pdf-scan
+        return res.status(501).json({ success: false, message: '扫描件 PDF 的按决策导出尚未实现，请使用 redact-scan 或转换为 DOCX' });
+      }
     }
 
     // 决策完整性校验
