@@ -19,7 +19,7 @@ import { fileURLToPath } from 'url';
 import { parseDocument } from './services/parserService.js';
 import { analyzeCaseElements } from './services/analyzeService.js';
 import { generateOpinionDocument } from './services/generateService.js';
-import { redactDocument, redactScanDocument, getIsNerEnabled } from './services/redactService.js';
+import { redactNativeDocument, redactScanDocument, getIsNerEnabled } from './services/redactService.js';
 
 // 导入数据仓储层
 import { createCase, getCasesList, getCaseDetail, updateCase, deleteCase } from './db/caseRepo.js';
@@ -256,33 +256,61 @@ router.post('/upload', upload.single('file'), async (req, res) => {
  */
 router.post('/redact', async (req, res) => {
   try {
-    const { filePath, level, rulesConfig, materialId } = req.body;
-    if (!filePath) {
+    const { filePath, level, rulesConfig, materialId, manualRedactions } = req.body;
+    let finalFilePath = filePath;
+    let matId = null;
+
+    if (materialId) {
+      matId = parseInt(materialId, 10);
+      try {
+        const { default: db } = await import('./db/index.js');
+        const matRow = db.prepare('SELECT stored_path FROM "material" WHERE id = ?').get(matId);
+        if (!matRow) {
+          return res.status(404).json({ success: false, message: '找不到对应的材料记录，请重新上传文件' });
+        }
+        // 基于 stored_path 自动在后端还原出最安全、无瑕疵的绝对物理路径，屏蔽前端传来的含 http:// 的异常路径
+        finalFilePath = path.resolve(path.join(__dirname, '..', matRow.stored_path));
+      } catch (dbErr) {
+        console.error('[WARN] 预校验 materialId 失败:', dbErr.message);
+      }
+    }
+
+    if (!finalFilePath) {
       return res.status(400).json({ success: false, message: '缺少待脱敏文件路径' });
     }
 
     // 安全校验
-    const resolvedPath = path.resolve(filePath);
+    const resolvedPath = path.resolve(finalFilePath);
     if (!resolvedPath.startsWith(path.resolve(uploadsDir))) {
       return res.status(403).json({ success: false, message: '非法文件路径' });
     }
 
-    const result = await redactDocument(resolvedPath, level || 'strict', rulesConfig || {});
+    const result = await redactNativeDocument(
+      resolvedPath,
+      level || 'strict',
+      rulesConfig || {},
+      manualRedactions || [],
+    );
 
-    // 如果提供了 materialId，持久化到 DB
-    if (materialId) {
-      const matId = parseInt(materialId, 10);
+    // 如果提供了 materialId，且获取到了 matId，则持久化到 DB
+    if (matId) {
 
       // 写入脱敏结果到 material 表
-      const mapData = { entities: result.entities, occurrences: result.occurrences };
+      const mapData = result.mapData || { entities: result.entities, occurrences: result.occurrences };
       try {
         const { default: db } = await import('./db/index.js');
         db.prepare(`
-          UPDATE "material" SET redacted_md = ?, map_json = ?, occurrences_json = ? WHERE id = ?
+          UPDATE "material"
+          SET redacted_md = ?, map_json = ?, occurrences_json = ?,
+              redacted_path = ?, audit_json = ?, manual_redactions_json = ?
+          WHERE id = ?
         `).run(
           result.redactedText,
           JSON.stringify(mapData),
           JSON.stringify(result.occurrences),
+          path.relative(path.join(__dirname, '..'), result.redactedPath),
+          JSON.stringify(result.auditData || {}),
+          JSON.stringify(manualRedactions || []),
           matId
         );
       } catch (dbErr) {
@@ -330,10 +358,92 @@ router.post('/redact', async (req, res) => {
       }
     }
 
-    res.json({ success: true, data: result });
+    const redactedRelative = result.redactedPath
+      ? path.relative(path.join(__dirname, '..'), result.redactedPath).split(path.sep).join('/')
+      : '';
+    res.json({
+      success: true,
+      data: {
+        ...result,
+        mapData: undefined,
+        auditData: undefined,
+        mapPath: undefined,
+        auditPath: undefined,
+        redactedPath: undefined,
+        redactedFileUrl: redactedRelative ? `/${redactedRelative}` : null,
+      },
+    });
   } catch (error) {
     console.error('Redact Error:', error);
     res.status(500).json({ success: false, message: '脱敏处理失败', error: error.message });
+  }
+});
+
+/**
+ * POST /api/materials/:id/manual-redactions
+ * 保存人工框选的敏感文本。原件不变；下次预览/导出时从原件重新生成副本。
+ */
+router.post('/materials/:id/manual-redactions', async (req, res) => {
+  try {
+    const materialId = parseInt(req.params.id, 10);
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    const normalized = [...new Set(items
+      .map((item) => typeof item === 'string' ? item : item?.text)
+      .map((text) => String(text || '').trim())
+      .filter((text) => text.length > 0 && text.length <= 500)
+    )].slice(0, 100);
+
+    const { default: db } = await import('./db/index.js');
+    const mat = db.prepare('SELECT case_id FROM "material" WHERE id = ?').get(materialId);
+    if (!mat) return res.status(404).json({ success: false, message: '材料不存在' });
+
+    db.prepare(`
+      UPDATE "material"
+      SET manual_redactions_json = ?, redact_status = 'todo'
+      WHERE id = ?
+    `).run(JSON.stringify(normalized), materialId);
+
+    await writeAuditLog({
+      case_id: mat.case_id,
+      action: 'manual_redactions_update',
+      source: 'human',
+      model_config: { count: normalized.length },
+      human_confirmed: 1,
+    });
+
+    res.json({ success: true, data: { items: normalized } });
+  } catch (error) {
+    console.error('Manual Redactions Error:', error);
+    res.status(500).json({ success: false, message: '保存人工脱敏标注失败', error: error.message });
+  }
+});
+
+/** 保存 Markdown/TXT 的可编辑工作副本；上传原件始终不改写。 */
+router.patch('/materials/:id/text', async (req, res) => {
+  try {
+    const materialId = parseInt(req.params.id, 10);
+    const text = typeof req.body?.text === 'string' ? req.body.text : null;
+    if (text === null) return res.status(400).json({ success: false, message: '缺少文本内容' });
+
+    const { default: db } = await import('./db/index.js');
+    const mat = db.prepare('SELECT case_id, ext FROM "material" WHERE id = ?').get(materialId);
+    if (!mat) return res.status(404).json({ success: false, message: '材料不存在' });
+    if (!['.txt', '.md'].includes(String(mat.ext).toLowerCase())) {
+      return res.status(400).json({ success: false, message: '仅 Markdown/TXT 支持正文编辑' });
+    }
+
+    db.prepare(`UPDATE "material" SET working_text = ?, redact_status = 'todo' WHERE id = ?`).run(text, materialId);
+    await writeAuditLog({
+      case_id: mat.case_id,
+      action: 'working_copy_update',
+      source: 'human',
+      model_config: { format: String(mat.ext).slice(1), length: text.length },
+      human_confirmed: 1,
+    });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Working Text Error:', error);
+    res.status(500).json({ success: false, message: '保存工作副本失败', error: error.message });
   }
 });
 
@@ -650,6 +760,93 @@ router.get('/cases/:id/audit', (req, res) => {
 // #endregion
 
 // #region Stage 7: 导出 .docx
+
+/**
+ * POST /api/export/redacted - 按原格式生成并导出脱敏副本。
+ *
+ * 每次导出都从只读原件重新执行脱敏。legal-desens 会在输出阶段执行
+ * 残留检查；TXT/MD/DOCX 还会再运行一次独立 audit，未通过则不下载。
+ */
+router.post('/export/redacted', async (req, res) => {
+  try {
+    const materialId = parseInt(req.body?.materialId, 10);
+    if (!materialId) {
+      return res.status(400).json({ success: false, message: '缺少材料 ID' });
+    }
+
+    const { default: db } = await import('./db/index.js');
+    const mat = db.prepare('SELECT * FROM "material" WHERE id = ?').get(materialId);
+    if (!mat) return res.status(404).json({ success: false, message: '材料不存在' });
+
+    const sourcePath = path.resolve(path.join(__dirname, '..', mat.stored_path));
+    if (!sourcePath.startsWith(path.resolve(uploadsDir))) {
+      return res.status(403).json({ success: false, message: '非法材料路径' });
+    }
+
+    let manualRedactions = [];
+    try {
+      manualRedactions = JSON.parse(mat.manual_redactions_json || '[]');
+    } catch {
+      manualRedactions = [];
+    }
+
+    let sourceForRedaction = sourcePath;
+    let workingSourcePath = null;
+    if (['.txt', '.md'].includes(String(mat.ext).toLowerCase()) && mat.working_text) {
+      workingSourcePath = path.join(
+        path.dirname(sourcePath),
+        `${path.basename(sourcePath, mat.ext)}.working${mat.ext}`,
+      );
+      await fs.writeFile(workingSourcePath, mat.working_text, 'utf-8');
+      sourceForRedaction = workingSourcePath;
+    }
+
+    let result;
+    try {
+      result = await redactNativeDocument(sourceForRedaction, 'strict', {}, manualRedactions);
+    } finally {
+      if (workingSourcePath) await fs.unlink(workingSourcePath).catch(() => {});
+    }
+    if (!result.audit?.residualScanPassed) {
+      return res.status(409).json({ success: false, message: '导出后敏感信息复检未通过' });
+    }
+
+    const relativeRedactedPath = path.relative(path.join(__dirname, '..'), result.redactedPath);
+    db.prepare(`
+      UPDATE "material"
+      SET redacted_md = ?, map_json = ?, occurrences_json = ?,
+          redacted_path = ?, audit_json = ?, redact_status = 'done'
+      WHERE id = ?
+    `).run(
+      result.redactedText || mat.redacted_md || '',
+      JSON.stringify(result.mapData || {}),
+      JSON.stringify(result.occurrences || []),
+      relativeRedactedPath,
+      JSON.stringify(result.auditData || {}),
+      materialId,
+    );
+
+    await writeAuditLog({
+      case_id: mat.case_id,
+      action: 'redacted_export',
+      source: 'legal-desens',
+      model_config: {
+        format: path.extname(sourcePath).slice(1),
+        residualScanPassed: true,
+        manualRedactionCount: manualRedactions.length,
+      },
+      human_confirmed: 1,
+    });
+
+    const ext = path.extname(mat.filename);
+    const safeBase = path.basename(mat.filename, ext).replace(/[^\p{L}\p{N}._-]+/gu, '-');
+    const downloadName = `${safeBase || 'document'}.redacted${ext}`;
+    res.download(result.redactedPath, downloadName);
+  } catch (error) {
+    console.error('Export Native Redacted Error:', error);
+    res.status(500).json({ success: false, message: '原格式脱敏导出失败', error: error.message });
+  }
+});
 
 /**
  * POST /api/export/redacted-docx - 导出脱敏材料为 .docx

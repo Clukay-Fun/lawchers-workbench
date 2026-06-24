@@ -55,12 +55,13 @@ export function createCase(caseData) {
 
     // 1. 插入主案件记录
     const insertCaseStmt = db.prepare(`
-      INSERT INTO "case" (case_no, title, employee, company, stage, claim_amount)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO "case" (case_no, title, cause, employee, company, stage, claim_amount)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
     const res = insertCaseStmt.run(
       caseNo,
       title,
+      data.cause || '劳动争议',
       data.employee,
       data.company,
       data.stage || 'todo',
@@ -87,7 +88,11 @@ export function createCase(caseData) {
  */
 export function getCasesList() {
   return db.prepare(`
-    SELECT * FROM "case" ORDER BY created_at DESC
+    SELECT c.*, COUNT(m.id) AS material_count
+    FROM "case" c
+    LEFT JOIN "material" m ON m.case_id = c.id
+    GROUP BY c.id
+    ORDER BY c.created_at DESC
   `).all();
 }
 

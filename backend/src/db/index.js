@@ -17,7 +17,8 @@ const __dirname = path.dirname(__filename);
 
 // 规划数据存储目录与文件路径
 const dataDir = path.join(__dirname, '../../data');
-const dbPath = path.join(dataDir, 'lawchers.sqlite');
+const dbName = process.env.NODE_ENV === 'test' ? 'lawchers_test.sqlite' : 'lawchers.sqlite';
+const dbPath = path.join(dataDir, dbName);
 const schemaPath = path.join(__dirname, 'schema.sql');
 
 // 1. 自检并自动创建 data/ 数据库物理目录
@@ -67,6 +68,22 @@ try {
     if (!matColNames.includes('occurrences_json')) {
       db.exec("ALTER TABLE \"material\" ADD COLUMN \"occurrences_json\" TEXT DEFAULT '[]'");
       console.log('[MIGRATE] material 表已添加 occurrences_json 列');
+    }
+    if (!matColNames.includes('manual_redactions_json')) {
+      db.exec("ALTER TABLE \"material\" ADD COLUMN \"manual_redactions_json\" TEXT DEFAULT '[]'");
+      console.log('[MIGRATE] material 表已添加 manual_redactions_json 列');
+    }
+    if (!matColNames.includes('redacted_path')) {
+      db.exec("ALTER TABLE \"material\" ADD COLUMN \"redacted_path\" TEXT DEFAULT ''");
+      console.log('[MIGRATE] material 表已添加 redacted_path 列');
+    }
+    if (!matColNames.includes('audit_json')) {
+      db.exec("ALTER TABLE \"material\" ADD COLUMN \"audit_json\" TEXT DEFAULT '{}'");
+      console.log('[MIGRATE] material 表已添加 audit_json 列');
+    }
+    if (!matColNames.includes('working_text')) {
+      db.exec("ALTER TABLE \"material\" ADD COLUMN \"working_text\" TEXT DEFAULT ''");
+      console.log('[MIGRATE] material 表已添加 working_text 列');
     }
   } catch (migErr) {
     console.warn('[WARN] material 表增量迁移检查异常（可忽略若已存在）:', migErr.message);

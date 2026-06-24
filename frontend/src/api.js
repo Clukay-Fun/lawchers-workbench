@@ -8,7 +8,7 @@
  *     - 导出 API (Stage 7)
  */
 
-const API_BASE = 'http://localhost:3001/api';
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:3001/api';
 
 // #region Stage 4: 案件 CRUD API
 
@@ -125,8 +125,8 @@ export async function uploadFile(file, caseId) {
  * @param {number} [materialId] 材料 ID（传入则持久化到 DB）
  * @returns {Promise<Object>} 脱敏结果
  */
-export async function redactFile(filePath, level = 'strict', rulesConfig = {}, materialId = null) {
-  const body = { filePath, level, rulesConfig };
+export async function redactFile(filePath, level = 'strict', rulesConfig = {}, materialId = null, manualRedactions = []) {
+  const body = { filePath, level, rulesConfig, manualRedactions };
   if (materialId) body.materialId = materialId;
 
   const response = await fetch(`${API_BASE}/redact`, {
@@ -139,6 +139,32 @@ export async function redactFile(filePath, level = 'strict', rulesConfig = {}, m
   const result = await response.json();
   if (!result.success) throw new Error(result.message || '脱敏业务异常');
   return result.data;
+}
+
+/**
+ * 保存用户在原格式预览中框选的人工脱敏文本。
+ */
+export async function saveManualRedactions(materialId, items) {
+  const response = await fetch(`${API_BASE}/materials/${materialId}/manual-redactions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items }),
+  });
+  if (!response.ok) throw new Error('保存人工脱敏标注失败');
+  const result = await response.json();
+  if (!result.success) throw new Error(result.message || '保存人工脱敏标注异常');
+  return result.data;
+}
+
+export async function saveMaterialText(materialId, text) {
+  const response = await fetch(`${API_BASE}/materials/${materialId}/text`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  });
+  if (!response.ok) throw new Error('保存文本工作副本失败');
+  const result = await response.json();
+  if (!result.success) throw new Error(result.message || '保存文本工作副本异常');
 }
 
 /**
@@ -291,6 +317,36 @@ export async function exportRedactedDocx(materialId) {
   const a = document.createElement('a');
   a.href = url;
   a.download = `redacted-${Date.now()}.docx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+}
+
+/**
+ * 按原文件格式导出脱敏副本。服务端会从原件重新生成并执行残留复检。
+ */
+export async function exportRedactedFile(materialId, filename = 'document') {
+  const response = await fetch(`${API_BASE}/export/redacted`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ materialId }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.message || '原格式脱敏导出失败');
+  }
+
+  const blob = await response.blob();
+  const disposition = response.headers.get('content-disposition') || '';
+  const encodedName = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  const fallbackName = filename.replace(/(\.[^.]+)?$/, '.redacted$1');
+  const downloadName = encodedName ? decodeURIComponent(encodedName) : fallbackName;
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = downloadName;
   document.body.appendChild(a);
   a.click();
   a.remove();

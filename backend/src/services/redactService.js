@@ -310,6 +310,154 @@ export async function redactDocument(inputFilePath, level = 'strict', rulesConfi
 }
 
 /**
+ * 直接对原格式文件执行脱敏。
+ *
+ * 与旧的 redactDocument 不同，本函数不会先把 DOCX/PDF 拍平成 TXT：
+ * legal-desens 会在原格式副本中修改 OOXML 文本节点或永久移除 PDF 文本，
+ * 同时输出 map/audit。原件始终只读。
+ */
+export async function redactNativeDocument(
+  inputFilePath,
+  level = 'strict',
+  rulesConfig = {},
+  manualRedactions = [],
+) {
+  const ext = path.extname(inputFilePath).toLowerCase();
+  if (!['.txt', '.md', '.docx', '.pdf'].includes(ext)) {
+    throw new Error(`原格式脱敏暂不支持 ${ext || '未知格式'}`);
+  }
+
+  const dir = path.dirname(inputFilePath);
+  const baseName = path.basename(inputFilePath, ext);
+  const runId = Date.now();
+  const outRedacted = path.join(dir, `${baseName}.${runId}.redacted${ext}`);
+  const outMap = path.join(dir, `${baseName}.${runId}.map.json`);
+  const outAudit = path.join(dir, `${baseName}.${runId}.audit.json`);
+  const outPostAudit = path.join(dir, `${baseName}.${runId}.post-audit.json`);
+  const tempRulesPath = path.join(dir, `${baseName}.${runId}.rules.json`);
+  const defaultRulesPath = path.join(DESENSITIZER_DIR, 'legal_desens/rules/rules.json');
+
+  const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const normalizedManual = [...new Set(
+    (manualRedactions || [])
+      .map((item) => typeof item === 'string' ? item : item?.text)
+      .map((item) => String(item || '').trim())
+      .filter((item) => item.length > 0)
+  )];
+
+  try {
+    const rules = JSON.parse(await fs.readFile(defaultRulesPath, 'utf-8'));
+    for (const rule of rules) {
+      if (rulesConfig?.[rule.entity_type] !== undefined) {
+        rule.enabled = Boolean(rulesConfig[rule.entity_type]);
+      }
+    }
+    normalizedManual.forEach((text, index) => {
+      rules.push({
+        id: `manual_${index + 1}`,
+        name: `人工标注 ${index + 1}`,
+        entity_type: 'MANUAL',
+        label_prefix: '敏感信息',
+        pattern: escapeRegex(text),
+        enabled: true,
+        priority: 1000,
+      });
+    });
+    await fs.writeFile(tempRulesPath, JSON.stringify(rules, null, 2), 'utf-8');
+
+    const args = [
+      '-m', 'legal_desens.cli',
+      '--rules', tempRulesPath,
+      'redact', inputFilePath,
+      '--level', level,
+      '--out', outRedacted,
+      '--map', outMap,
+      '--audit', outAudit,
+    ];
+    if (!isNerEnabled) args.push('--regex-only');
+
+    await execFileAsync(PYTHON_BIN, args, {
+      cwd: DESENSITIZER_DIR,
+      timeout: Math.max(REDACT_TIMEOUT_MS, 120000),
+    });
+
+    const [mapRaw, auditRaw] = await Promise.all([
+      fs.readFile(outMap, 'utf-8'),
+      fs.readFile(outAudit, 'utf-8'),
+    ]);
+    const mapData = JSON.parse(mapRaw);
+    const auditData = JSON.parse(auditRaw);
+
+    // 可逆文本/DOCX 额外跑一次独立残留审计。PDF 的 adapter 已在 redact
+    // 阶段永久移除文本并执行容器残留检查，CLI 不提供二次 audit 命令。
+    let postAuditData = auditData;
+    if (ext !== '.pdf') {
+      const auditArgs = [
+        '-m', 'legal_desens.cli',
+        '--rules', tempRulesPath,
+        'audit', outRedacted,
+        '--map', outMap,
+        '--regex-only',
+        '--out', outPostAudit,
+      ];
+      await execFileAsync(PYTHON_BIN, auditArgs, {
+        cwd: DESENSITIZER_DIR,
+        timeout: Math.max(REDACT_TIMEOUT_MS, 120000),
+      });
+      postAuditData = JSON.parse(await fs.readFile(outPostAudit, 'utf-8'));
+    }
+
+    const residualPassed =
+      postAuditData?.residual_scan?.passed ??
+      postAuditData?.verification?.passed ??
+      auditData?.residual_scan?.passed ??
+      false;
+
+    if (!residualPassed) {
+      throw new Error('导出后敏感信息复检未通过，已阻止发布脱敏副本');
+    }
+
+    let redactedText = '';
+    try {
+      redactedText = await parseDocument(outRedacted, path.basename(outRedacted));
+    } catch {
+      // 预览文本不是发布条件；扫描或复杂 PDF 可能无法再次提取文本。
+    }
+
+    return {
+      redactedText,
+      entities: mapData.entities || [],
+      occurrences: mapData.occurrences || [],
+      mapData,
+      auditData: postAuditData,
+      audit: {
+        totalEntities: postAuditData.summary?.total_entities ?? mapData.entities?.length ?? 0,
+        totalOccurrences: postAuditData.summary?.total_occurrences ?? mapData.occurrences?.length ?? 0,
+        residualScanPassed: residualPassed,
+        mode: mapData.mode || (isNerEnabled ? 'regex+ner' : 'regex-only'),
+        nerEnabled: isNerEnabled,
+        warnings: postAuditData.warnings || [],
+      },
+      redactedPath: outRedacted,
+      mapPath: outMap,
+      auditPath: ext === '.pdf' ? outAudit : outPostAudit,
+      sourceFile: mapData.source_file || path.basename(inputFilePath),
+      documentType: ext.slice(1),
+    };
+  } catch (error) {
+    await Promise.all([
+      fs.unlink(outRedacted).catch(() => {}),
+      fs.unlink(outMap).catch(() => {}),
+      fs.unlink(outAudit).catch(() => {}),
+      fs.unlink(outPostAudit).catch(() => {}),
+    ]);
+    throw new Error(`原格式脱敏失败: ${error.stderr || error.message}`);
+  } finally {
+    await fs.unlink(tempRulesPath).catch(() => {});
+  }
+}
+
+/**
  * 对图片或扫描版 PDF 执行不可逆像素脱敏（白框覆盖）
  * @param {string} inputFilePath 待脱敏文件的绝对路径
  * @param {string} [level='strict'] 脱敏级别
