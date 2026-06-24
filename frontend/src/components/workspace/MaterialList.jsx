@@ -23,13 +23,15 @@ export default function MaterialList({
       setUploadLabel('正在保存原件…');
       const uploaded = await uploadFile(file, caseId);
       setUploadLabel('正在生成复核文本…');
+      let prepared = false;
       try {
         await prepareMaterial(uploaded.materialId, rulesConfig);
+        prepared = true;
       } catch (prepareErr) {
         onTriggerToast(prepareErr.message || '文档预处理失败，可在复核页重试');
       }
       await onRefreshCase();
-      onTriggerToast('材料已保存，可以开始复核');
+      if (prepared) onTriggerToast('材料已保存，可以开始复核');
     } catch (error) {
       onTriggerToast(error.message || '材料处理失败');
     } finally {
@@ -44,7 +46,6 @@ export default function MaterialList({
     try {
       await deleteMaterial(material.id);
       await onRefreshCase();
-      onSelect(0);
     } catch (err) {
       onTriggerToast(err.message || '删除失败');
     }

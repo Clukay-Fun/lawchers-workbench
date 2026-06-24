@@ -467,9 +467,11 @@ export async function completeReview(materialId) {
  * @param {number} materialId 材料 ID
  * @param {string} filename 原始文件名
  */
-export async function exportWithDecisions(materialId, filename) {
+export async function exportWithDecisions(materialId, filename, confirmPending = false) {
   const response = await fetch(`${API_BASE}/materials/${materialId}/export`, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirmPending }),
   });
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));

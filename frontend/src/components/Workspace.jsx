@@ -37,6 +37,7 @@ export default function Workspace({ currentCase, onUpdateCase, settings, caseId,
         <ReviewPanel
           materialId={currentMaterial.id}
           materialName={currentMaterial.name}
+          rulesConfig={settings?.rulesConfig}
         />
       ) : (
         <section className="document-workspace empty-document">

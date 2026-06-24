@@ -795,24 +795,31 @@ router.get('/cases/:id/audit', (req, res) => {
  */
 router.post('/materials/:id/prepare', async (req, res) => {
   let tempDir = null;
+  let workDir = null;
+  let backupDir = null;
+  let installedNewWorkDir = false;
+  let committed = false;
+  let previousStatus = 'uploaded';
+  let hadPreviousReview = false;
   try {
     const matId = parseInt(req.params.id, 10);
     const { rulesConfig } = req.body || {};
     const { default: db } = await import('./db/index.js');
     const mat = db.prepare('SELECT * FROM "material" WHERE id = ?').get(matId);
     if (!mat) return res.status(404).json({ success: false, message: '材料不存在' });
+    previousStatus = mat.processing_status || 'uploaded';
+    hadPreviousReview = Boolean(mat.manifest_path && mat.preview_path);
 
     const sourcePath = path.resolve(path.join(__dirname, '..', mat.stored_path));
     if (!sourcePath.startsWith(path.resolve(uploadsDir))) {
       return res.status(403).json({ success: false, message: '非法材料路径' });
     }
 
-    // A8: 更新处理状态为 preparing
     db.prepare(`UPDATE "material" SET processing_status = 'preparing' WHERE id = ?`).run(matId);
 
-    // A8: 先写临时目录，校验通过后再原子重命名到目标
     const caseDir = path.join(uploadsDir, String(mat.case_id));
-    const workDir = path.join(caseDir, `.work_${matId}`);
+    workDir = path.join(caseDir, `.work_${matId}`);
+    backupDir = `${workDir}.backup`;
     tempDir = path.join(caseDir, `.tmp_prepare_${matId}_${Date.now()}`);
     if (!existsSync(tempDir)) mkdirSync(tempDir, { recursive: true });
 
@@ -820,7 +827,6 @@ router.post('/materials/:id/prepare', async (req, res) => {
     const tempManifest = path.join(tempDir, 'manifest.json');
     const tempSourceMap = path.join(tempDir, 'source-map.json');
 
-    // A7: 构建 CLI 参数，包含 rulesConfig
     const args = [
       '-m', 'legal_desens.cli',
       'prepare', sourcePath,
@@ -834,9 +840,20 @@ router.post('/materials/:id/prepare', async (req, res) => {
       args.push('--regex-only');
     }
 
-    // A7: 日期关闭时，同时保留 DATE 和 TIME
-    // prepare 不支持 --entity-policy，改为后处理过滤候选
-    const dateOff = rulesConfig && rulesConfig.DATE === false;
+    // Apply the workbench switches in the detector itself so the manifest,
+    // persisted decisions and audit all describe the same candidate set.
+    const preserveTypes = [];
+    const typeAliases = { LOC: ['ADDRESS'], DATE: ['DATE', 'TIME'] };
+    for (const [type, enabled] of Object.entries(rulesConfig || {})) {
+      if (enabled !== false) continue;
+      preserveTypes.push(...(typeAliases[type] || [type]));
+    }
+    const dateOff = preserveTypes.includes('DATE') || preserveTypes.includes('TIME');
+    if (preserveTypes.length) {
+      const policyPath = path.join(tempDir, 'entity-policy.json');
+      await fs.writeFile(policyPath, JSON.stringify({ preserve_types: [...new Set(preserveTypes)] }), 'utf-8');
+      args.push('--entity-policy', policyPath);
+    }
 
     const PYTHON_BIN = process.env.PYTHON_BIN || 'python3';
     const DESENSITIZER_DIR = process.env.DESENSITIZER_DIR || '/Users/clukay/Program/lawchers-skills/legal-desensitizer';
@@ -846,7 +863,6 @@ router.post('/materials/:id/prepare', async (req, res) => {
       timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
     });
 
-    // A8: 完整性校验
     const manifestRaw = await fs.readFile(tempManifest, 'utf-8');
     const manifest = JSON.parse(manifestRaw);
     const sourceMap = JSON.parse(await fs.readFile(tempSourceMap, 'utf-8'));
@@ -858,65 +874,64 @@ router.post('/materials/:id/prepare', async (req, res) => {
       throw new Error('预处理输出的预览内容为空');
     }
 
-    // A8: 原子重命名到目标 workDir
+    const candidates = manifest.candidates || [];
+    const decisionRows = candidates.map(c => ({
+      candidateId: c.id,
+      blockId: c.blockId,
+      start: c.start,
+      end: c.end,
+      action: 'redact',
+      origin: 'automatic',
+      entityType: c.entityType,
+      sourceLocator: c.sourceLocator,
+    }));
+
+    // Install the verified files with a rollback copy. SQLite changes are
+    // committed together; any ordinary failure restores the previous review.
+    await fs.rm(backupDir, { recursive: true, force: true });
     if (existsSync(workDir)) {
-      await fs.rm(workDir, { recursive: true, force: true });
+      await fs.rename(workDir, backupDir);
     }
-    await fs.rename(tempDir, workDir);
-    tempDir = null; // 已移交，不再清理
+    try {
+      await fs.rename(tempDir, workDir);
+      installedNewWorkDir = true;
+      tempDir = null;
+    } catch (error) {
+      if (existsSync(backupDir)) await fs.rename(backupDir, workDir);
+      throw error;
+    }
 
     // 更新 material 表
     const relPreview = path.relative(path.join(__dirname, '..'), path.join(workDir, 'preview.md'));
     const relManifest = path.relative(path.join(__dirname, '..'), path.join(workDir, 'manifest.json'));
 
-    db.prepare(`
-      UPDATE "material" SET
-        document_kind = ?,
-        preview_path = ?,
-        manifest_path = ?,
-        source_sha256 = ?,
-        processing_status = 'reviewing',
-        redact_status = 'todo'
-      WHERE id = ?
-    `).run(
-      manifest.documentKind || '',
-      relPreview,
-      relManifest,
-      manifest.sourceSha256 || '',
-      matId,
-    );
-
-    // 自动将 candidates 写入 redaction_decision（全量替换，prepare 初始化专用）
-    // A7: 日期关闭时，过滤掉 DATE/TIME 候选
-    let candidates = manifest.candidates || [];
-    if (dateOff) {
-      candidates = candidates.filter(c => c.entityType !== 'DATE' && c.entityType !== 'TIME');
-    }
-    replaceAllDecisions(matId, candidates.map(c => ({
-        candidateId: c.id,
-        blockId: c.blockId,
-        start: c.start,
-        end: c.end,
-        action: 'redact',
-        origin: 'automatic',
-        entityType: c.entityType,
-        sourceLocator: c.sourceLocator,
-      })));
-
-    // A7: 写审计，包含 rulesConfig
-    await writeAuditLog({
-      case_id: mat.case_id,
-      action: 'prepare',
-      source: 'legal-desens',
-      model_config: {
-        documentKind: manifest.documentKind,
-        blocks: manifest.blocks?.length || 0,
-        candidates: candidates.length,
-        rulesConfig: rulesConfig || {},
-        datePreserved: dateOff,
-      },
-      human_confirmed: 0,
-    });
+    db.transaction(() => {
+      db.prepare(`
+        UPDATE "material" SET
+          document_kind = ?, preview_path = ?, manifest_path = ?,
+          source_sha256 = ?, processing_status = 'reviewing', redact_status = 'todo'
+        WHERE id = ?
+      `).run(
+        manifest.documentKind || '', relPreview, relManifest,
+        manifest.sourceSha256 || '', matId,
+      );
+      replaceAllDecisions(matId, decisionRows);
+      writeAuditLog({
+        case_id: mat.case_id,
+        action: 'prepare',
+        source: 'legal-desens',
+        model_config: {
+          documentKind: manifest.documentKind,
+          blocks: manifest.blocks?.length || 0,
+          candidates: candidates.length,
+          rulesConfig: rulesConfig || {},
+          datePreserved: dateOff,
+        },
+        human_confirmed: 0,
+      });
+    })();
+    committed = true;
+    await fs.rm(backupDir, { recursive: true, force: true }).catch(() => {});
 
     res.json({
       success: true,
@@ -931,14 +946,23 @@ router.post('/materials/:id/prepare', async (req, res) => {
     });
   } catch (error) {
     console.error('Prepare Error:', error);
-    // A8: 补偿清理临时目录
     if (tempDir) {
       await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
     }
-    // 回退状态
+    if (installedNewWorkDir && !committed && workDir) {
+      await fs.rm(workDir, { recursive: true, force: true }).catch(() => {});
+      if (backupDir && existsSync(backupDir)) {
+        await fs.rename(backupDir, workDir).catch(() => {});
+      }
+    }
     try {
       const { default: db } = await import('./db/index.js');
-      db.prepare(`UPDATE "material" SET processing_status = 'failed' WHERE id = ?`).run(parseInt(req.params.id, 10));
+      if (!committed) {
+        db.prepare(`UPDATE "material" SET processing_status = ? WHERE id = ?`).run(
+          hadPreviousReview ? previousStatus : 'failed',
+          parseInt(req.params.id, 10),
+        );
+      }
     } catch {}
     res.status(500).json({ success: false, message: '文档预处理失败', error: error.message });
   }
@@ -1212,6 +1236,7 @@ router.post('/materials/:id/review-complete', async (req, res) => {
 router.post('/materials/:id/export', async (req, res) => {
   try {
     const matId = parseInt(req.params.id, 10);
+    const confirmPending = req.body?.confirmPending === true;
     const { default: db } = await import('./db/index.js');
     const mat = db.prepare('SELECT * FROM "material" WHERE id = ?').get(matId);
     if (!mat) return res.status(404).json({ success: false, message: '材料不存在' });
@@ -1246,7 +1271,8 @@ router.post('/materials/:id/export', async (req, res) => {
 
     // 决策完整性校验
     const counts = getDecisionReviewCounts(matId);
-    if (counts.confirmed !== counts.total) {
+    const pendingCount = counts.total - counts.confirmed;
+    if (pendingCount > 0 && !confirmPending) {
       return res.status(409).json({ success: false, message: `仍有 ${counts.total - counts.confirmed} 处决策未确认，请先逐项确认` });
     }
 
@@ -1324,19 +1350,32 @@ router.post('/materials/:id/export', async (req, res) => {
       return res.status(409).json({ success: false, message: '残留扫描未通过，导出已阻断' });
     }
 
-    // 成功
-    db.prepare(`
-      UPDATE "material" SET
-        verification_status = 'passed', redacted_path = ?,
-        audit_json = ?, processing_status = 'exported', redact_status = 'done'
-      WHERE id = ?
-    `).run(path.relative(path.join(__dirname, '..'), exportPath), JSON.stringify(auditData), matId);
-
-    await writeAuditLog({
-      case_id: mat.case_id, action: 'export', source: 'legal-desens',
-      model_config: { decisionCount: counts.total, format: ext, exportMode: 'decisions' },
-      human_confirmed: 1,
-    });
+    // Persist final confirmation and successful export together. The original
+    // decision origins remain unchanged; this only records human confirmation.
+    db.transaction(() => {
+      if (pendingCount > 0) {
+        db.prepare(`
+          UPDATE "redaction_decision" SET confirmed = 1
+          WHERE material_id = ? AND confirmed = 0
+        `).run(matId);
+      }
+      db.prepare(`
+        UPDATE "material" SET
+          verification_status = 'passed', redacted_path = ?,
+          audit_json = ?, processing_status = 'exported', redact_status = 'done'
+        WHERE id = ?
+      `).run(path.relative(path.join(__dirname, '..'), exportPath), JSON.stringify(auditData), matId);
+      writeAuditLog({
+        case_id: mat.case_id, action: 'export', source: 'legal-desens',
+        model_config: {
+          decisionCount: counts.total,
+          confirmedOnExport: pendingCount,
+          format: ext,
+          exportMode: 'decisions',
+        },
+        human_confirmed: 1,
+      });
+    })();
 
     res.download(exportPath, exportFilename);
   } catch (error) {

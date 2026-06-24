@@ -68,7 +68,7 @@ function maskValue(original, entityType) {
 /**
  * 描述: 脱敏复核面板（内联式）
  */
-export default function ReviewPanel({ materialId, materialName }) {
+export default function ReviewPanel({ materialId, materialName, rulesConfig }) {
   const [loading, setLoading] = useState(true);
   const [preparing, setPreparing] = useState(false);
   const [error, setError] = useState(null);
@@ -130,7 +130,7 @@ export default function ReviewPanel({ materialId, materialName }) {
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 2000); };
 
   const handlePrepare = async () => {
-    try { setPreparing(true); setError(null); await prepareMaterial(materialId); await refreshReview(); }
+    try { setPreparing(true); setError(null); await prepareMaterial(materialId, rulesConfig); await refreshReview(); }
     catch (err) { setError(err.message); }
     finally { setPreparing(false); }
   };
@@ -238,17 +238,7 @@ export default function ReviewPanel({ materialId, materialName }) {
     setShowExportConfirm(false);
     try {
       setExporting(true);
-      // 批量确认所有未确认的候选（按当前状态统一确认，来源记为 human）
-      if (unconfirmedCount > 0) {
-        const toConfirm = decisions
-          .filter((d) => d.action === 'redact' && !d.confirmed)
-          .map((d) => ({ id: d.id, action: 'redact', confirmed: true }));
-        await updateDecisions(materialId, toConfirm);
-        setDecisions((prev) => prev.map((d) =>
-          toConfirm.some((c) => c.id === d.id) ? { ...d, confirmed: true } : d
-        ));
-      }
-      await exportWithDecisions(materialId, materialName);
+      await exportWithDecisions(materialId, materialName, unconfirmedCount > 0);
       showToast('导出成功');
       await refreshReview();
     } catch (err) {
