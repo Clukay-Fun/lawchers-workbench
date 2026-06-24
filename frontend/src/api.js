@@ -91,7 +91,7 @@ export async function deleteCase(id) {
  * 上传案件文档材料并获取解析文本
  * @param {File} file 待上传的文件对象
  * @param {number} caseId 案件 ID
- * @returns {Promise<Object>} materialId, filename, filePath, rawText, displayMode
+ * @returns {Promise<Object>} materialId, filename, filePath, rawText
  */
 export async function uploadFile(file, caseId) {
   const formData = new FormData();
@@ -114,75 +114,6 @@ export async function uploadFile(file, caseId) {
     throw new Error(result.message || '材料解析异常');
   }
 
-  return result.data;
-}
-
-/**
- * 对已上传文件调用 legal-desensitizer 执行脱敏
- * @param {string} filePath 文件绝对路径
- * @param {string} [level='strict'] 脱敏级别
- * @param {Object} [rulesConfig={}] 规则开关
- * @param {number} [materialId] 材料 ID（传入则持久化到 DB）
- * @returns {Promise<Object>} 脱敏结果
- */
-export async function redactFile(filePath, level = 'strict', rulesConfig = {}, materialId = null, manualRedactions = []) {
-  const body = { filePath, level, rulesConfig, manualRedactions };
-  if (materialId) body.materialId = materialId;
-
-  const response = await fetch(`${API_BASE}/redact`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-
-  if (!response.ok) throw new Error('文件脱敏处理失败');
-  const result = await response.json();
-  if (!result.success) throw new Error(result.message || '脱敏业务异常');
-  return result.data;
-}
-
-/**
- * 保存用户在原格式预览中框选的人工脱敏文本。
- */
-export async function saveManualRedactions(materialId, items) {
-  const response = await fetch(`${API_BASE}/materials/${materialId}/manual-redactions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ items }),
-  });
-  if (!response.ok) throw new Error('保存人工脱敏标注失败');
-  const result = await response.json();
-  if (!result.success) throw new Error(result.message || '保存人工脱敏标注异常');
-  return result.data;
-}
-
-export async function saveMaterialText(materialId, text) {
-  const response = await fetch(`${API_BASE}/materials/${materialId}/text`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
-  });
-  if (!response.ok) throw new Error('保存文本工作副本失败');
-  const result = await response.json();
-  if (!result.success) throw new Error(result.message || '保存文本工作副本异常');
-}
-
-/**
- * 扫描件脱敏
- */
-export async function redactScanFile(filePath, level = 'strict', rulesConfig = {}, materialId = null) {
-  const body = { filePath, level, rulesConfig };
-  if (materialId) body.materialId = materialId;
-
-  const response = await fetch(`${API_BASE}/redact-scan`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-
-  if (!response.ok) throw new Error('扫描件像素脱敏处理失败');
-  const result = await response.json();
-  if (!result.success) throw new Error(result.message || '扫描件脱敏业务异常');
   return result.data;
 }
 

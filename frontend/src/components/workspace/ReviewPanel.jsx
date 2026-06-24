@@ -218,16 +218,16 @@ export default function ReviewPanel({ materialId, materialName, rulesConfig }) {
     } catch (err) { showToast(err.message); }
   };
 
-  // A5: 是否为 PDF（导出未支持）
-  const isPdf = documentKind?.includes('pdf');
+  // A5: 是否为不可导出的 PDF（扫描件/hybrid 禁用，pdf-text 可导出）
+  const isUnsupportedPdf = documentKind === 'pdf-scan' || documentKind === 'pdf-hybrid';
   // A6: 统计
   const keepCount = decisions.filter((d) => d.action === 'keep').length;
   const manualCount = decisions.filter((d) => d.origin === 'manual').length;
   const unconfirmedCount = decisions.filter((d) => d.action === 'redact' && !d.confirmed).length;
 
   const handleExportClick = () => {
-    if (isPdf) {
-      showToast('PDF 按决策导出尚未支持，请转换为 DOCX 或拆分处理');
+    if (isUnsupportedPdf) {
+      showToast('扫描件/混合型 PDF 按决策导出尚未支持，请转换为 DOCX 或拆分处理');
       return;
     }
     // A6: 弹确认框
@@ -321,14 +321,14 @@ export default function ReviewPanel({ materialId, materialName, rulesConfig }) {
         </div>
         <div className="review-toolbar-right">
           <span className="review-count">{redactCount} 处脱敏</span>
-          {/* A5: PDF 禁用导出，DOCX 等可用 */}
+          {/* A5: 扫描件/hybrid 禁用导出，pdf-text 和 DOCX 可用 */}
           <Button
             variant="default"
             onClick={handleExportClick}
-            disabled={exporting || isPdf}
-            title={isPdf ? 'PDF 按决策导出尚未支持' : ''}
+            disabled={exporting || isUnsupportedPdf}
+            title={isUnsupportedPdf ? '扫描件/混合型 PDF 按决策导出尚未支持' : ''}
           >
-            {exporting ? '导出中…' : isPdf ? '导出尚未支持' : '导出脱敏副本'}
+            {exporting ? '导出中…' : isUnsupportedPdf ? '导出尚未支持' : '导出脱敏副本'}
           </Button>
         </div>
       </div>

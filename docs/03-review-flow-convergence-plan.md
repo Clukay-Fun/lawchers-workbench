@@ -1,84 +1,63 @@
-# 开发计划 03 · 复核流收敛（仅 lawchers-workbench）
+# 开发计划 03 · 复核流收敛（DOCX 已完成 + 文本 PDF 决策导出）
 
 > 原则（Karpathy / 最少代码解决真实问题）：**借体验、不搬架构**。
 > - 借：`上传 → 分析 → 复核(勾选/编辑/删除) → 选格式 → 脱敏下载` 四步体验（参考 legal-anonymizer，仅借流程，不抄架构/Web 设计）。
 > - 不搬：不引入 Flask、不引入第二套 session、不替换现有 legal-desens CLI、不重写工作台。
-> **范围：只动本仓库 lawchers-workbench。脱敏引擎（legal-desensitizer）本计划不涉及。**
-
-> **先叫停当前补丁**：工作台现有未提交补丁不要整批提交，缩减到「提交 1 · DOCX 稳定闭环」范围，**砍掉**：PDF 永久禁用、临时目录/原子 prepare（作废，非主因）。
-
-## 收敛后的目标形态
-1. 上传成功后**自动 prepare**，成功直接进复核页（不出现"开始预处理"按钮）。
-2. 页面只有三种状态：**处理中 / 可复核 / 失败**。
-3. `exported` **不再是处理状态**，只记录导出结果（verification_status/redacted_path/audit）。
-4. 自动高亮、右键保留、划词补标、右键取消——继续用现有逐位置决策表。
-5. 导出时**一次最终确认**剩余未确认候选（确认要真正回写后端）。
-6. DOCX / 文本 PDF / 扫描 PDF 各做**独立导出切片**。
-7. 不引入 Flask / 第二套 session / 不替换 CLI。
-
-> 关于日期：本计划只做**工作台侧**——`rulesConfig` 全链路下传 prepare，日期关闭时让引擎保留 `DATE` 与 `TIME`（默认关闭=保留）。引擎侧"日期开启时完整命中"属另一个库，不在本计划。
+> **范围：DOCX 闭环已完成（仅工作台）；本计划剩余工作 = 切片 2「文本 PDF 决策导出」，经确认跨 lawchers-workbench + legal-desensitizer 两仓库。扫描 / hybrid PDF 不在本计划。**
 
 ---
 
-## 三个最小闭环（分三次提交，按顺序，不混在一个补丁里）
+## 提交 1 · DOCX 稳定闭环 —— ✅ 已完成（勿重复执行）
+- 完成提交（lawchers-workbench）：`c18ebf0` `5d5de25` `5624f37` `7ff4633` `8bd29f3` `8a75cf5` `f135d0d`。
+- 引擎日期修复（legal-desensitizer）：`46c2afa`（已完成）。
+- 已落地：删除不复活 + materialId 变化重置 ReviewPanel；`deleteDecision` 按决策 id 修正、手工标注可取消；`rulesConfig` 下传、日期默认保留；导出最终确认真正回写后端 + human 审计；`exported` 可继续编辑回 `reviewing`、不再 409；自动 prepare + 三态收敛 + `refreshReview` 不吞错；PDF 导出暂禁。
+- ⚠️ 本节仅作记录，**不再派发、不要重跑**，以免回退已验证的 prepare 恢复与日期修复。
 
-### 提交 1 · 稳定 DOCX 工作流
-- **删除不复活**：删除后基于最新列表修正选中，不用旧 `currentCase` 回写已删材料；`ReviewPanel` 在 `materialId` 变化时彻底重置全部本地状态。
-- **手工标注可取消**：修 `deleteDecision` 按"决策 id"删除（参数+返回值）；手工新增后用后端返回的新决策对象，右键精准删。
-- **日期设置生效（工作台侧）**：`rulesConfig` 从 Workspace→MaterialList→ReviewPanel→`prepareMaterial` 全链路下传；日期关闭时引擎保留 `DATE` 与 `TIME`；默认日期保留。
-- **导出确认真正落后端**：导出弹一次最终确认，文案：
-  > 本次将导出：N 处脱敏、M 处保留、K 处手工补标。还有 X 处自动标注未逐项确认，是否按当前状态统一确认并导出？
+---
 
-  「返回复核」/「确认并导出」；点确认要**把未确认候选按当前状态真正回写后端确认**再导出；写 `human` 来源的人工确认审计，不伪造决策来源。
-- **导出后可继续编辑并再次导出**：`exported` 下允许更新决策，变更后回 `reviewing`，不出 409。
-- **三态收敛 + 自动 prepare**：上传成功自动 prepare；页面只剩 处理中/可复核/失败；`refreshReview` 不再吞错。
-- 此前 UI 清理（去"待复核"徽章、"待校对"字样、底部提示条、划词"脱敏"按钮 padding 收紧、按类型部分掩码 `maskValue`）若未全落地，补齐。
-- **PDF 本提交不实现**：若材料是 PDF，导出入口暂置不可用并标注"PDF 导出后续提交支持"（不是永久禁用，是本提交未到）。
-- **验收**：上传后不出现"开始预处理"；删除立即消失且刷新不回来；自动+手工标注都能取消；日期关→零日期候选；DOCX 导出→继续编辑→再次导出均成功；正常操作无 409；原件不被修改、导出残留复检通过。贴真实证据。
+## 切片 2 · 文本 PDF 决策导出（中等规模、跨仓库）
+> 现有 `_apply_decisions_pdf` 是**未完成原型**，必须**重写**到 `decisions_apply.py`，删除/替换 `cli.py` 中的原型；CLI 只负责**分发 + 审计**。分两次提交：**引擎先、工作台后**。
 
-### 提交 2 · 文本 PDF 导出
-- 文字坐标映射；PyMuPDF 真删除（不是盖白）；导出后文本残留扫描。
-- PDF 导出入口仅在**真正可导出时**才启用。
-- 验收：文本 PDF 导出生成真删除副本 + 残留扫描通过；贴证据。
+### 2A. PDF 字符坐标契约（必须先定义清楚）
+- prepare 为 `pdf-text` 输出 `charMap`：**`block.text[i]` 与 `charMap[i]` 一一对应**，包含空格与换行；strip / 归一化规则要写明并与 `block.text` 同一套索引（同样的归一化）。
+- **任一字符缺坐标 → fail-closed**（不得跳过、不得产出"看似成功"的文件）。
+- **一个 redact 决策 → 一个 occurrence**；跨行时该 occurrence 的 `rectangles[]` 含多个矩形；**不得按矩形增加 occurrence**。
 
-### 提交 3 · 扫描 PDF 导出
-- OCR polygon 映射；像素级擦除；OCR 与像素残留验证。
-- 验收：扫描 PDF 导出生成像素级擦除副本 + 残留验证通过；贴证据。
+### 2B. 引擎重写（legal-desensitizer，`decisions_apply.py`）
+- 按 block **字符偏移 → 精确字符矩形**映射；**禁止** `page.search_for(original)`（会删整页同文，破坏一处 redact 一处 keep）。
+- 返回符合 `_apply_decisions` 接口的 `(map_data, app_result)`，执行 **requested == applied == entities == occurrences** 四方数量不变量。
+- **删除前保存精确矩形**，`apply_redactions` 后用保存的矩形**插回掩码**；跨行掩码**只写一次或按字符区间分片**，不得每个矩形重复写完整掩码。
+- 异常（页码越界 / 空页 / 缺 block / 空文字 / **字符坐标映射失败**）一律 **fail-closed**：计入 `failed`、阻断导出、清理半成品输出。
+- **残留审计按目标矩形验证**，不得全局搜索原文（否则同文 keep 会误报）。
+- **CLI 自身**必须拒绝 `pdf-scan` / `pdf-hybrid`，不能只靠工作台拦截。
 
-> 顺序：提交 1 验收后再做 2，再做 3。不并行、不混。
+### 2C. 工作台（lawchers-workbench）
+- 仅对 `document_kind === 'pdf-text'` 去掉 501、开放导出；`pdf-scan` / `pdf-hybrid` **继续禁用**；导出入口仅在真正可导出时启用。
+
+### 2D. 必过测试（缺一不可）
+1. 同页相同文字：一处 redact、一处 keep —— 只删 redact 那处。
+2. 跨行文字精确定位（一 occurrence、多 rectangle）。
+3. 手工滑选新增脱敏。
+4. 无效页码 / 偏移 / 缺失 block / **字符坐标映射失败** —— 全部 fail-closed。
+5. 四方数量不变量成立。
+6. 被选原文不可提取，keep 原文仍存在。
+7. 导出后残留扫描（按目标矩形）通过。
+8. 源文件 SHA 自 prepare 后变化 → 拒绝导出。
+9. 字符坐标缺失 / 部分字符无 bbox → fail-closed。
+10. 失败时输出文件被清理，不留半成品。
+11. 工作台仅对 `pdf-text` 开放导出，`pdf-scan` / `pdf-hybrid` 仍禁用（且 CLI 层也拒绝）。
+
+### （后续）扫描 / hybrid PDF —— 本计划不做
+- 引擎无字符级 polygon 与 scan decisions-apply，是独立较大工程，保持禁用，留后续计划。
 
 ---
 
 ## 执行规约（强制）
-1. **验证铁律**：禁止只用 build/lint/测试名充验证；涉及落库/接口/导出，贴真实运行输出（返回 JSON、DB 行、生成文件、截图），两态对比贴两次。
-2. **提交铁律**：Conventional Commits；原子提交，每提交自身可构建；**三个闭环分三次提交**；当前分支，不 push。
-3. **范围铁律**：只修必要问题；只动本仓库；不改产品方向/数据模型/对外 API（先问）；不引入 Flask/第二套 session/不替换 CLI。
+1. **验证铁律**：禁止只用 build/lint/测试名充验证；涉及引擎/落库/接口/导出，贴真实运行输出（CLI 参数、返回 JSON、生成的 PDF、残留审计、DB 行、截图），两态对比贴两次。
+2. **提交铁律**：Conventional Commits；原子提交，每提交自身可构建。**切片 2 = 两仓库各一个提交，引擎先、工作台后**；扫描 PDF 不计入本计划提交数。当前分支，不 `git push`。
+3. **范围铁律**：只修必要问题；切片 2 仅限**文本 PDF**，不碰扫描/hybrid；不改 legal-desens strict 默认语义；不引入 Flask/第二套 session/不替换 CLI。
 4. **不并发**：同一仓库同一时间只一个 agent。
 5. **数据安全**：敏感数据仅本地（gitignore）；不提交 `*.db`/`uploads/`/`map.json`/`.env`/真实材料；**原件始终不修改**。
 6. **审计真实**：人工确认/导出 audit 来源必须真实（human），不伪造决策来源。
 
 ---
-
-## 派发提示词
-
-### 提示词 · 提交 1（DOCX 稳定闭环）
-
-```
-你是 lawchers-workbench 执行 agent。按 docs/03-review-flow-convergence-plan.md「提交 1 · 稳定 DOCX 工作流」执行，遵守末尾「执行规约」。先读 AGENTS.md、docs/brand-spec.md、docs/03。只动本仓库，绝不碰其它仓库/脱敏引擎。
-
-重要：当前未提交补丁不要整批提交，先缩减到本提交范围——砍掉 PDF 永久禁用、临时目录/原子 prepare。
-
-只做 DOCX 闭环这一次提交：
-1. 删除不复活：删除后按最新列表修正选中，不用旧 currentCase 回写已删材料；ReviewPanel 在 materialId 变化时彻底重置全部本地状态。
-2. 手工标注可取消：修 deleteDecision 按"决策 id"删除（参数+返回值）；手工新增后用后端返回的新决策对象。
-3. 日期设置生效（工作台侧）：rulesConfig 全链路下传 Workspace→MaterialList→ReviewPanel→prepareMaterial；日期关闭时引擎保留 DATE 与 TIME；默认日期保留。不要改脱敏引擎。
-4. 导出最终确认真正落后端：导出弹一次确认（文案/按钮见 docs/03），点"确认并导出"把未确认候选按当前状态真正回写后端确认再导出，写 human 来源审计，不伪造决策来源。
-5. exported 不再禁编辑：导出后可继续改决策（变更后回 reviewing），不出 409；导出结果记在 verification_status/redacted_path/audit。
-6. 三态收敛 + 自动 prepare：上传成功自动 prepare，直接进复核页；页面只剩 处理中/可复核/失败；refreshReview 不吞错。
-7. 此前 UI 清理（待复核徽章/待校对字样/底部提示条/划词按钮 padding/maskValue 部分掩码）未落地的补齐。
-PDF 本提交不实现：PDF 材料导出入口置不可用并标注"PDF 导出后续提交支持"。
-
-【强制】禁止只 build/lint 充验证，贴真实证据（DELETE 200、decisions 前后、导出文件、audit DB 行、删除刷新后不复活、无 409、两态对比）；只此一次原子提交、当前分支、不 push；不引入 Flask/第二 session/不替换 CLI。做完给逐条验证证据 + 提交，然后停下等验收，不要继续做 PDF。
-```
-
-> 提交 2（文本 PDF）、提交 3（扫描 PDF）的提示词，待提交 1 验收后再补。
