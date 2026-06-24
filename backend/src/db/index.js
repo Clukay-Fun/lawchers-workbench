@@ -92,6 +92,57 @@ try {
       db.exec("ALTER TABLE \"entity\" ADD COLUMN \"original\" TEXT DEFAULT ''");
       console.log('[MIGRATE] entity 表已添加 original 列');
     }
+
+    // 6. 增量迁移：Markdown 复核工作流所需的新字段
+    if (!matColNames.includes('document_kind')) {
+      db.exec("ALTER TABLE \"material\" ADD COLUMN \"document_kind\" TEXT DEFAULT ''");
+      console.log('[MIGRATE] material 表已添加 document_kind 列');
+    }
+    if (!matColNames.includes('preview_path')) {
+      db.exec("ALTER TABLE \"material\" ADD COLUMN \"preview_path\" TEXT DEFAULT ''");
+      console.log('[MIGRATE] material 表已添加 preview_path 列');
+    }
+    if (!matColNames.includes('manifest_path')) {
+      db.exec("ALTER TABLE \"material\" ADD COLUMN \"manifest_path\" TEXT DEFAULT ''");
+      console.log('[MIGRATE] material 表已添加 manifest_path 列');
+    }
+    if (!matColNames.includes('source_sha256')) {
+      db.exec("ALTER TABLE \"material\" ADD COLUMN \"source_sha256\" TEXT DEFAULT ''");
+      console.log('[MIGRATE] material 表已添加 source_sha256 列');
+    }
+    if (!matColNames.includes('processing_status')) {
+      db.exec("ALTER TABLE \"material\" ADD COLUMN \"processing_status\" TEXT DEFAULT 'uploaded'");
+      console.log('[MIGRATE] material 表已添加 processing_status 列');
+    }
+    if (!matColNames.includes('verification_status')) {
+      db.exec("ALTER TABLE \"material\" ADD COLUMN \"verification_status\" TEXT DEFAULT 'pending'");
+      console.log('[MIGRATE] material 表已添加 verification_status 列');
+    }
+
+    // 7. 创建 redaction_decision 表（如果不存在）
+    const decisionTableCheck = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='redaction_decision';"
+    ).get();
+    if (!decisionTableCheck) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS "redaction_decision" (
+          "id" INTEGER PRIMARY KEY AUTOINCREMENT,
+          "material_id" INTEGER NOT NULL,
+          "candidate_id" TEXT,
+          "block_id" TEXT NOT NULL,
+          "start" INTEGER NOT NULL,
+          "end" INTEGER NOT NULL,
+          "action" TEXT NOT NULL DEFAULT 'redact',
+          "origin" TEXT NOT NULL DEFAULT 'automatic',
+          "entity_type" TEXT NOT NULL DEFAULT '',
+          "source_locator" TEXT DEFAULT '{}',
+          "confirmed" INTEGER DEFAULT 0,
+          "created_at" DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY("material_id") REFERENCES "material"("id") ON DELETE CASCADE
+        )
+      `);
+      console.log('[MIGRATE] 已创建 redaction_decision 表');
+    }
   } catch (migErr) {
     console.warn('[WARN] material 表增量迁移检查异常（可忽略若已存在）:', migErr.message);
   }
