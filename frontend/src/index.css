@@ -126,7 +126,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .case-register-row .row-menu-wrap { position: absolute; top: 12px; right: 12px; }
 
 
-.empty-register { padding: 96px 18px; text-align: center; display: flex; flex-direction: column; align-items: center; }
+.empty-register { grid-column: 1 / -1; padding: 96px 18px; text-align: center; display: flex; flex-direction: column; align-items: center; }
 .empty-register .empty-icon { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; margin-bottom: 14px; color: var(--base00); }
 .empty-register .empty-icon svg { width: 30px; height: 30px; stroke-width: 1.4; }
 .empty-register strong { font: 500 18px/1.3 var(--font-display); color: var(--base02); }
