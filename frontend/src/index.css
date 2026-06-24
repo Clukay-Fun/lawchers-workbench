@@ -212,13 +212,15 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .pdf-text-layer { position: absolute; inset: 0; overflow: hidden; opacity: 1; line-height: 1; }
 .pdf-text-layer > span { position: absolute; color: transparent; white-space: pre; cursor: text; }
 .pdf-text-layer ::selection { color: transparent; background: rgba(38, 139, 210, .28); }
+/* 脱敏标记：沿用 v1 静态页的黄色高亮标签观感（清晰、可识别） */
 .redaction-mark {
-  display: inline-block; min-width: 1.5em; padding: 0 .4em;
-  color: #0c3b3b !important; background: rgba(42, 140, 140, .32) !important;
-  box-shadow: inset 0 -2px 0 var(--cyan); border-radius: 3px;
-  font-weight: 600; text-align: center; vertical-align: baseline;
+  display: inline-block; padding: .02em .35em;
+  color: #713f12 !important; background: #fef08a !important;
+  border: 1px solid #facc15; border-radius: 4px;
+  font-weight: 600; box-shadow: none; vertical-align: baseline; cursor: pointer;
 }
-.pdf-redaction-mark { display: inline-block; min-width: 1.5em; color: #0c3b3b !important; background: #9ccfcc !important; box-shadow: none; overflow: hidden; }
+.redaction-mark:hover { background: #fef9c3 !important; }
+.pdf-redaction-mark { display: inline-block; color: #713f12 !important; background: #fef08a !important; border: 1px solid #facc15; box-shadow: none; overflow: hidden; }
 .text-document { max-width: 860px; min-height: calc(100% - 10px); margin: 0 auto; padding: 58px 66px; background: var(--paper); border: 1px solid var(--line); box-shadow: 0 6px 18px rgba(0, 43, 54, .08); color: var(--base02); font: 15px/1.9 var(--font-ui); white-space: pre-wrap; word-break: break-word; }
 .text-editor { display: block; width: min(860px, 100%); height: calc(100% - 10px); resize: none; outline: none; }
 .image-document { height: 100%; display: flex; align-items: flex-start; justify-content: center; }
