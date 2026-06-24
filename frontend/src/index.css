@@ -195,6 +195,16 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
   margin: 0 auto 22px !important; background: var(--paper) !important; border: 1px solid var(--line) !important;
   box-shadow: 0 6px 18px rgba(0, 43, 54, .08) !important;
 }
+.pdf-zoombar {
+  position: sticky; top: 0; z-index: 6; align-self: center;
+  display: inline-flex; align-items: center; gap: 2px; margin-bottom: 10px;
+  padding: 4px 6px; background: var(--card); border: 1px solid var(--line);
+  border-radius: 999px; box-shadow: var(--shadow-sm);
+}
+.pdf-zoombar button { border: 0; background: transparent; min-width: 28px; height: 28px; border-radius: 999px; color: var(--base02); font-size: 15px; }
+.pdf-zoombar button:hover { background: var(--base2); }
+.pdf-zoombar span { min-width: 46px; text-align: center; font: 12px var(--font-mono); color: var(--base01); }
+.pdf-zoombar .fit { width: auto; padding: 0 10px; font-size: 12px; color: var(--blue); }
 .pdf-canvas { display: flex; flex-direction: column; align-items: center; gap: 22px; }
 .pdf-page { position: relative; flex: none; background: white; border: 1px solid var(--line); box-shadow: 0 6px 18px rgba(0, 43, 54, .08); }
 .pdf-page canvas { position: absolute; inset: 0; display: block; }
