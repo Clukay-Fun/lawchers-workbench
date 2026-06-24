@@ -77,13 +77,13 @@ material        材料        id, case_id, filename, ext, stored_path,
                             display_mode, redacted_md, map_json,
                             occurrences_json, redact_status, uploaded_at
 entity          脱敏实体     id, material_id, entity_id, entity_type, masked,
-                            start, end, revealed   ← 不存明文
+                            original, start, end, revealed
 manual_redaction 人工标注    material 上的人工框选文本（持久化到本地映射）
 audit           审计        id, case_id, action, source, model_config,
                             human_confirmed, created_at
 ```
 
-> **明文不入库**：`entity` 不存原文，可逆还原依赖 legal-desens 的 `map.json`。
+> **明文存本地库**：`entity.original` 存敏感原文，仅落本地 SQLite（已 gitignore、不出机器），用于刷新后重新定位脱敏；可逆还原仍以 legal-desens 的 `map.json` 为准。
 
 本地文件目录（均在 `.gitignore` 内）：
 
