@@ -114,10 +114,8 @@ export function updateDecision(materialId, id, fields) {
 /**
  * 删除单条决策
  */
-export function deleteDecision(materialId, id) {
-  return db.prepare(`
-    DELETE FROM "redaction_decision" WHERE id = ? AND material_id = ?
-  `).run(id, materialId).changes;
+export function deleteDecision(id) {
+  db.prepare(`DELETE FROM "redaction_decision" WHERE id = ?`).run(id);
 }
 
 //endregion
