@@ -123,20 +123,32 @@ export default function ReviewPanel({ materialId, materialName }) {
     finally { setPreparing(false); }
   };
 
-  const toggleReveal = (id) => {
-    setRevealed((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
+  // 左键：确认脱敏（标记 confirmed），临时查看掩码变灰
+  const handleConfirmRedact = async (decision) => {
+    if (!decision.confirmed) {
+      try {
+        await updateDecisions(materialId, [{ id: decision.id, action: 'redact', confirmed: true }]);
+        await refreshReview();
+      } catch (err) { showToast(err.message); }
+    }
+    toggleReveal(decision.id);
   };
 
+  // 右键：keep（不脱敏）
   const cancelRedaction = async (decision) => {
     try {
       const action = decision.origin === 'manual' ? 'cancel' : 'keep';
       await updateDecisions(materialId, [{ id: decision.id, action, confirmed: true }]);
       await refreshReview();
     } catch (err) { showToast(err.message); }
+  };
+
+  const toggleReveal = (id) => {
+    setRevealed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
   };
 
   const captureSelection = () => {
@@ -218,8 +230,8 @@ export default function ReviewPanel({ materialId, materialName }) {
             data-src={d.start}
             data-decision-id={d.id}
             className={`redaction-mark${isRevealed ? ' revealed' : ''}`}
-            title="左键查看原文 · 右键取消脱敏"
-            onClick={(e) => { e.stopPropagation(); toggleReveal(d.id); }}
+            title="左键确认脱敏（可临时查看原文） · 右键取消脱敏"
+            onClick={(e) => { e.stopPropagation(); handleConfirmRedact(d); }}
             onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); cancelRedaction(d); }}
           >
             {isRevealed ? original : masked}
