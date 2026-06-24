@@ -110,7 +110,7 @@ function DocxCanvas({ url, mode, terms }) {
 function PdfCanvas({ url, mode, terms }) {
   const containerRef = useRef(null);
   const [error, setError] = useState('');
-  const [zoom, setZoom] = useState(0.5); // 默认 50%（适应宽度的一半，宽度更合适）
+  const [zoom, setZoom] = useState(1); // 100% = 舒适大小（适应宽度的一半）；200% = 铺满宽度
 
   useEffect(() => {
     let cancelled = false;
@@ -133,7 +133,8 @@ function PdfCanvas({ url, mode, terms }) {
           const baseViewport = page.getViewport({ scale: 1 });
           const available = Math.min(container.clientWidth || 800, 980);
           const fitScale = Math.max(0.5, available / baseViewport.width);
-          const viewport = page.getViewport({ scale: fitScale * zoom });
+          // 舒适大小 = 适应宽度的一半，记为 100%；zoom 以此为基准（200% 即铺满宽度）
+          const viewport = page.getViewport({ scale: fitScale * 0.5 * zoom });
           const outputScale = window.devicePixelRatio || 1;
           const pageElement = document.createElement('section');
           pageElement.className = 'pdf-page';
@@ -239,10 +240,10 @@ function PdfCanvas({ url, mode, terms }) {
   return (
     <>
       <div className="pdf-zoombar">
-        <button onClick={() => setZoom((z) => Math.max(0.5, +(z - 0.1).toFixed(2)))} aria-label="缩小">−</button>
+        <button onClick={() => setZoom((z) => Math.max(0.1, +(z - 0.1).toFixed(2)))} aria-label="缩小">−</button>
         <span>{Math.round(zoom * 100)}%</span>
-        <button onClick={() => setZoom((z) => Math.min(2.5, +(z + 0.1).toFixed(2)))} aria-label="放大">＋</button>
-        <button className="fit" onClick={() => setZoom(1)}>适应宽度</button>
+        <button onClick={() => setZoom((z) => Math.min(2, +(z + 0.1).toFixed(2)))} aria-label="放大">＋</button>
+        <button className="fit" onClick={() => setZoom(2)}>适应宽度</button>
       </div>
       <div className="pdf-canvas" ref={containerRef} />
     </>
