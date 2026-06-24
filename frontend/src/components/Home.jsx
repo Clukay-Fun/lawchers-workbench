@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
 import {
   Dialog,
@@ -77,7 +76,6 @@ export default function Home({ cases, onSelectCase, onCreateCase, onDeleteCase }
                 <span>{item.caseNo} · {item.reason}</span>
               </div>
               <span className="case-register-meta">{materialText}</span>
-              <Badge variant={item.status === 'done' ? 'success' : 'warning'} className="justify-self-start w-fit">{item.status === 'done' ? '已完成' : '待校对'}</Badge>
               <div className="row-menu-wrap">
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
