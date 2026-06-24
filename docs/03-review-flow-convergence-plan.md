@@ -61,26 +61,3 @@
 6. **审计真实**：人工确认/导出 audit 来源必须真实（human），不伪造决策来源。
 
 ---
-
-## 派发提示词 · 切片 2（文本 PDF 决策导出）
-
-```
-你是执行 agent，做「文本 PDF 决策导出」垂直切片，按 lawchers-workbench 的 docs/03-review-flow-convergence-plan.md「切片 2」执行。涉及两个仓库，分开提交、引擎先做。先读两仓库 AGENTS.md 与本计划全文。
-
-注意：DOCX 闭环（提交 1）与日期引擎修复均已完成，不要重跑/回退。本切片只做文本 PDF。
-
-仓库一 legal-desensitizer（/Users/clukay/Program/lawchers-skills/legal-desensitizer）—— 把文本 PDF 决策应用器重写到 decisions_apply.py（现有 cli.py 的 _apply_decisions_pdf 是未完成原型，删除/替换它；CLI 只分发+审计）：
-- prepare 为 pdf-text 输出 charMap：block.text[i] 与 charMap[i] 一一对应（含空格/换行），归一化规则与 block.text 一致；任一字符缺坐标 fail-closed。
-- 一个 redact 决策 → 一个 occurrence；跨行放 rectangles[]，不得按矩形加 occurrence。
-- 按字符偏移映射精确字符矩形，禁止 page.search_for(original)。
-- 返回 (map_data, app_result)，执行 requested==applied==entities==occurrences 四方不变量。
-- 删除前存矩形、apply 后用存好的矩形插回掩码；跨行掩码只写一次或按字符区间分片，不每矩形重复写。
-- 异常（页码越界/空页/缺 block/空文字/字符坐标映射失败）全部 fail-closed，清理半成品。
-- 残留审计按目标矩形验证，不全局搜索原文。
-- CLI 自身拒绝 pdf-scan/pdf-hybrid。
-- 必过测试见 docs/03「2D」全部 11 条，每条贴真实运行输出（含同页一删一留、跨行、手工滑选、各类 fail-closed、四方不变量、原文不可提取/keep 仍在、残留通过、SHA 变化拒绝、缺 bbox fail-closed、失败清理）。
-
-仓库二 lawchers-workbench —— 仅对 document_kind==='pdf-text' 去掉 501、开放导出；pdf-scan/pdf-hybrid 继续禁用；导出入口仅在真正可导出时启用。
-
-【强制】禁止只跑测试名/build/lint 充验证，贴真实 redact 输出/生成 PDF/残留审计/前后对比；两仓库各自 Conventional Commits、原子提交（引擎先、工作台后）、当前分支、不 push；不改 strict 默认语义；范围只限文本 PDF。
-```
