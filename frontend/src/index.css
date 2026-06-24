@@ -57,7 +57,7 @@
 * { box-sizing: border-box; }
 html, body, #root { width: 100%; height: 100%; margin: 0; }
 body { overflow: hidden; background: var(--base3); color: var(--base02); font-size: 14px; }
-button, input, select, textarea { color: inherit; font: inherit; }
+input, select, textarea { color: inherit; font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .55; }
 button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focus-visible {
@@ -189,7 +189,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .document-toolbar-actions { display: flex; align-items: center; gap: 7px; }
 .annotation-count { color: var(--base01); font: 11px/1 var(--font-mono); margin-right: 6px; }
 
-.document-viewport { min-height: 0; flex: 1; overflow: auto; padding: 22px 28px 60px; }
+.document-viewport { min-height: 0; flex: 1; overflow: auto; padding: 22px 28px 60px; display: flex; flex-direction: column; align-items: center; }
 .docx-canvas .lawchers-docx-wrapper { background: transparent !important; padding: 0 !important; }
 .docx-canvas .lawchers-docx-wrapper > section {
   margin: 0 auto 22px !important; background: var(--paper) !important; border: 1px solid var(--line) !important;
@@ -221,7 +221,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .image-document { height: 100%; display: flex; align-items: flex-start; justify-content: center; }
 .image-document img { max-width: 100%; max-height: 100%; background: white; border: 1px solid var(--line); box-shadow: 0 6px 18px rgba(0, 43, 54, .08); }
 .document-error { margin: 48px auto; color: var(--red); }
-.empty-document { align-items: center; justify-content: center; text-align: center; }
+.empty-document { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
 .empty-document strong { font: 500 25px/1.2 var(--font-display); }
 .empty-document p { color: var(--base01); margin: 10px 0 20px; }
 .selection-hint { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); padding: 7px 11px; color: var(--base01); background: rgba(247, 244, 238, .94); border: 1px solid var(--line); border-radius: var(--radius-control); font-size: 11px; pointer-events: none; }

@@ -110,7 +110,7 @@ function DocxCanvas({ url, mode, terms }) {
 function PdfCanvas({ url, mode, terms }) {
   const containerRef = useRef(null);
   const [error, setError] = useState('');
-  const [zoom, setZoom] = useState(1); // 100% = 舒适大小（适应宽度的一半）；200% = 铺满宽度
+  const [zoom, setZoom] = useState(0.5); // 50% = 舒适大小（适应宽度的一半）；100% = 铺满宽度
 
   useEffect(() => {
     let cancelled = false;
@@ -133,8 +133,8 @@ function PdfCanvas({ url, mode, terms }) {
           const baseViewport = page.getViewport({ scale: 1 });
           const available = Math.min(container.clientWidth || 800, 980);
           const fitScale = Math.max(0.5, available / baseViewport.width);
-          // 舒适大小 = 适应宽度的一半，记为 100%；zoom 以此为基准（200% 即铺满宽度）
-          const viewport = page.getViewport({ scale: fitScale * 0.5 * zoom });
+          // 铺满宽度记为 100% (zoom = 1.0)；默认舒适大小为 50% (zoom = 0.5)
+          const viewport = page.getViewport({ scale: fitScale * zoom });
           const outputScale = window.devicePixelRatio || 1;
           const pageElement = document.createElement('section');
           pageElement.className = 'pdf-page';
@@ -243,7 +243,7 @@ function PdfCanvas({ url, mode, terms }) {
         <button onClick={() => setZoom((z) => Math.max(0.1, +(z - 0.1).toFixed(2)))} aria-label="缩小">−</button>
         <span>{Math.round(zoom * 100)}%</span>
         <button onClick={() => setZoom((z) => Math.min(2, +(z + 0.1).toFixed(2)))} aria-label="放大">＋</button>
-        <button className="fit" onClick={() => setZoom(2)}>适应宽度</button>
+        <button className="fit" onClick={() => setZoom(1)}>适应宽度</button>
       </div>
       <div className="pdf-canvas" ref={containerRef} />
     </>
@@ -400,10 +400,21 @@ export default function DocEditor({
 
       {!isImage && <div className="selection-hint">框选文字即可手动脱敏，标记后即时遮盖为高亮框</div>}
       {selection && (
-        <div className="selection-popover" style={{ left: selection.x, top: selection.y }}>
-          <Button variant="ghost" onClick={toggleManualSelection} className="text-white hover:bg-white/10 hover:text-white px-2.5 py-1.5 h-auto text-xs font-normal">
-            {manualItems.some((item) => (typeof item === 'string' ? item : item.text) === selection.text) ? '取消标注' : '标记脱敏'}
-          </Button>
+        <div className="selection-popover flex items-center gap-1 text-white bg-foreground rounded-lg shadow-lg p-1" style={{ left: selection.x, top: selection.y }} onMouseDown={(e) => e.stopPropagation()}>
+          {manualItems.some((item) => (typeof item === 'string' ? item : item.text) === selection.text) ? (
+            <Button variant="ghost" onClick={() => toggleManualSelection()} className="text-white hover:bg-white/10 h-7 text-xs px-2.5 font-normal">
+              取消标注
+            </Button>
+          ) : (
+            <>
+              <span className="text-[11px] text-[#7a8488] px-1.5 select-none">脱敏为</span>
+              <Button variant="ghost" size="sm" onClick={() => toggleManualSelection('姓名')} className="text-white hover:bg-white/10 h-7 text-xs px-2 font-normal">姓名</Button>
+              <Button variant="ghost" size="sm" onClick={() => toggleManualSelection('机构')} className="text-white hover:bg-white/10 h-7 text-xs px-2 font-normal">机构</Button>
+              <Button variant="ghost" size="sm" onClick={() => toggleManualSelection('电话')} className="text-white hover:bg-white/10 h-7 text-xs px-2 font-normal">电话</Button>
+              <Button variant="ghost" size="sm" onClick={() => toggleManualSelection('证件')} className="text-white hover:bg-white/10 h-7 text-xs px-2 font-normal">证件</Button>
+              <Button variant="ghost" size="sm" onClick={() => toggleManualSelection('地址')} className="text-white hover:bg-white/10 h-7 text-xs px-2 font-normal">地址</Button>
+            </>
+          )}
         </div>
       )}
     </section>
