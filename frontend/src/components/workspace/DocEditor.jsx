@@ -128,7 +128,7 @@ function PdfCanvas({ url, mode, terms }) {
         const pdf = await loadingTask.promise;
         for (let pageNumber = 1; pageNumber <= pdf.numPages && !cancelled; pageNumber += 1) {
           const page = await pdf.getPage(pageNumber);
-          const viewport = page.getViewport({ scale: 1.5 });
+          const viewport = page.getViewport({ scale: 1.35 });
           const outputScale = window.devicePixelRatio || 1;
           const pageElement = document.createElement('section');
           pageElement.className = 'pdf-page';
