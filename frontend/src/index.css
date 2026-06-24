@@ -189,7 +189,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .document-toolbar-actions { display: flex; align-items: center; gap: 7px; }
 .annotation-count { color: var(--base01); font: 11px/1 var(--font-mono); margin-right: 6px; }
 
-.document-viewport { min-height: 0; flex: 1; overflow: auto; padding: 22px 28px 60px; display: flex; flex-direction: column; align-items: center; }
+.document-viewport { min-height: 0; flex: 1; overflow: auto; padding: 22px 28px 60px; }
 .docx-canvas .lawchers-docx-wrapper { background: transparent !important; padding: 0 !important; }
 .docx-canvas .lawchers-docx-wrapper > section {
   margin: 0 auto 22px !important; background: var(--paper) !important; border: 1px solid var(--line) !important;
