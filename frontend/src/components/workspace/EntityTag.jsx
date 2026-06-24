@@ -52,10 +52,10 @@ const getMaskedText = (text, type) => {
     }
     case 'ADDRESS':
     case 'ADDR':
-      // 住址脱敏：前三后三，中间三个星号
-      return text.length > 6
-        ? text.substring(0, 3) + '***' + text.substring(text.length - 3)
-        : text.substring(0, 2) + '***';
+      // 住址脱敏：仅保留前三个字（一般是城市名，例如 杭州市），其余所有门牌路号全部掩盖为 ***，防止尾缀“甲”等信息泄露
+      return text.length > 3
+        ? text.substring(0, 3) + '***'
+        : '***';
     case 'BANK_CARD':
       // 银行卡脱敏：前四后四
       return text.length > 8
