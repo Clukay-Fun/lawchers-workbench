@@ -93,8 +93,8 @@ export function getMaterialsByCaseId(caseId) {
  */
 export function bulkInsertEntities(materialId, entityList) {
   const insertStmt = db.prepare(`
-    INSERT INTO "entity" (material_id, entity_id, entity_type, masked, start, end, revealed)
-    VALUES (?, ?, ?, ?, ?, ?, 0)
+    INSERT INTO "entity" (material_id, entity_id, entity_type, masked, original, start, end, revealed)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 0)
   `);
 
   const tx = db.transaction((list) => {
@@ -106,6 +106,7 @@ export function bulkInsertEntities(materialId, entityList) {
       let entityType = item.entity_type || item.entityType;
       let masked = item.masked || item.replacement || '***';
       const entityId = item.entity_id || item.entityId || item.id;
+      const original = item.original || '';
       const start = item.start !== undefined ? item.start : (item.redacted_start !== undefined ? item.redacted_start : 0);
       const end = item.end !== undefined ? item.end : (item.redacted_end !== undefined ? item.redacted_end : 0);
 
@@ -122,6 +123,7 @@ export function bulkInsertEntities(materialId, entityList) {
         entityId,
         entityType,
         masked,
+        original,
         start,
         end
       );

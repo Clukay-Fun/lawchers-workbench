@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS "entity" (
     "entity_id" TEXT NOT NULL,      -- 对应 map.json 中的 "PERSON_1", "TIME_1" 等键
     "entity_type" TEXT NOT NULL,    -- 实体类别，例如 PERSON, ORG, DATE
     "masked" TEXT NOT NULL,         -- 打码掩码字符，如 "王*" 或 "【姓名】"
+    "original" TEXT DEFAULT '',     -- 敏感原文（仅存本地库，用于刷新后重新定位脱敏）
     "start" INTEGER NOT NULL,       -- 脱敏文本中的 redacted_start 偏移量
     "end" INTEGER NOT NULL,         -- 脱敏文本中的 redacted_end 偏移量
     "revealed" INTEGER DEFAULT 0,   -- 是否临时放行显示明文 (0=密文, 1=明文)

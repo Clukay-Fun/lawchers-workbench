@@ -85,6 +85,13 @@ try {
       db.exec("ALTER TABLE \"material\" ADD COLUMN \"working_text\" TEXT DEFAULT ''");
       console.log('[MIGRATE] material 表已添加 working_text 列');
     }
+
+    // entity 表：新增 original 列（明文存本地库，用于刷新后重新定位脱敏）
+    const entColNames = db.prepare("PRAGMA table_info('entity')").all().map(c => c.name);
+    if (!entColNames.includes('original')) {
+      db.exec("ALTER TABLE \"entity\" ADD COLUMN \"original\" TEXT DEFAULT ''");
+      console.log('[MIGRATE] entity 表已添加 original 列');
+    }
   } catch (migErr) {
     console.warn('[WARN] material 表增量迁移检查异常（可忽略若已存在）:', migErr.message);
   }
