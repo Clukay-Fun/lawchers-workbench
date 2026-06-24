@@ -79,21 +79,32 @@ export default function ReviewPanel({ materialId, materialName }) {
   const [revealed, setRevealed] = useState(() => new Set());
   const [selection, setSelection] = useState(null);
   const [exporting, setExporting] = useState(false);
+  const [showExportConfirm, setShowExportConfirm] = useState(false);
   const [toast, setToast] = useState('');
   const previewRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      // A1: materialId 变化时彻底重置全部本地状态
+      setLoading(true);
+      setError(null);
+      setDocumentKind('');
+      setPreviewMd('');
+      setManifest(null);
+      setDecisions([]);
+      setRevealed(new Set());
+      setSelection(null);
+      setExporting(false);
+      setShowExportConfirm(false);
+
       try {
-        setLoading(true);
         const data = await getReviewData(materialId);
         if (cancelled) return;
         setDocumentKind(data.documentKind);
         setPreviewMd(data.previewMd);
         setManifest(data.manifest);
         setDecisions(data.decisions);
-        setRevealed(new Set());
       } catch (err) {
         if (!cancelled) setError(err.message);
       } finally {
@@ -111,7 +122,8 @@ export default function ReviewPanel({ materialId, materialName }) {
       setManifest(data.manifest);
       setDecisions(data.decisions);
     } catch (err) {
-      console.warn('[ReviewPanel] refresh failed:', err.message);
+      // A2: 不再吞错，surface 给用户
+      showToast(err.message || '刷新复核数据失败');
     }
   };
 
@@ -128,18 +140,24 @@ export default function ReviewPanel({ materialId, materialName }) {
     if (!decision.confirmed) {
       try {
         await updateDecisions(materialId, [{ id: decision.id, action: 'redact', confirmed: true }]);
-        await refreshReview();
+        // 局部更新，不全量刷新
+        setDecisions((prev) => prev.map((d) => d.id === decision.id ? { ...d, confirmed: true } : d));
       } catch (err) { showToast(err.message); }
     }
     toggleReveal(decision.id);
   };
 
-  // 右键：keep（不脱敏）
+  // 右键：keep（不脱敏）或 cancel（删除手工决策）
   const cancelRedaction = async (decision) => {
     try {
       const action = decision.origin === 'manual' ? 'cancel' : 'keep';
       await updateDecisions(materialId, [{ id: decision.id, action, confirmed: true }]);
-      await refreshReview();
+      if (action === 'cancel') {
+        // 删除该决策
+        setDecisions((prev) => prev.filter((d) => d.id !== decision.id));
+      } else {
+        setDecisions((prev) => prev.map((d) => d.id === decision.id ? { ...d, action: 'keep', confirmed: true } : d));
+      }
     } catch (err) { showToast(err.message); }
   };
 
@@ -181,17 +199,53 @@ export default function ReviewPanel({ materialId, materialName }) {
   const addManualRedaction = async () => {
     if (!selection) return;
     try {
-      await updateDecisions(materialId, [{ blockId: selection.blockId, start: selection.start, end: selection.end, action: 'redact', confirmed: true }]);
+      // A3: 后端返回新增决策的真实 id/origin，保证右键可精准删除
+      const result = await updateDecisions(materialId, [{
+        blockId: selection.blockId,
+        start: selection.start,
+        end: selection.end,
+        action: 'redact',
+        confirmed: true,
+      }]);
       window.getSelection()?.removeAllRanges();
       setSelection(null);
-      await refreshReview();
+      // 用后端返回的完整决策刷新（含真实 id）
+      if (result?.added?.length) {
+        setDecisions((prev) => [...prev, ...result.added]);
+      } else {
+        await refreshReview();
+      }
     } catch (err) { showToast(err.message); }
   };
 
-  const handleExport = async () => {
-    try { setExporting(true); await exportWithDecisions(materialId, materialName); showToast('导出成功'); }
-    catch (err) { showToast(err.message); }
-    finally { setExporting(false); }
+  // A5: 是否为 PDF（导出未支持）
+  const isPdf = documentKind?.includes('pdf');
+  // A6: 统计
+  const keepCount = decisions.filter((d) => d.action === 'keep').length;
+  const manualCount = decisions.filter((d) => d.origin === 'manual').length;
+  const unconfirmedCount = decisions.filter((d) => d.action === 'redact' && !d.confirmed).length;
+
+  const handleExportClick = () => {
+    if (isPdf) {
+      showToast('PDF 按决策导出尚未支持，请转换为 DOCX 或拆分处理');
+      return;
+    }
+    // A6: 弹确认框
+    setShowExportConfirm(true);
+  };
+
+  const handleConfirmExport = async () => {
+    setShowExportConfirm(false);
+    try {
+      setExporting(true);
+      await exportWithDecisions(materialId, materialName);
+      showToast('导出成功');
+      await refreshReview();
+    } catch (err) {
+      showToast(err.message || '导出失败');
+    } finally {
+      setExporting(false);
+    }
   };
 
   const redactCount = decisions.filter((d) => d.action === 'redact').length;
@@ -267,7 +321,15 @@ export default function ReviewPanel({ materialId, materialName }) {
         </div>
         <div className="review-toolbar-right">
           <span className="review-count">{redactCount} 处脱敏</span>
-          <Button variant="default" onClick={handleExport} disabled={exporting}>{exporting ? '导出中…' : '导出脱敏副本'}</Button>
+          {/* A5: PDF 禁用导出，DOCX 等可用 */}
+          <Button
+            variant="default"
+            onClick={handleExportClick}
+            disabled={exporting || isPdf}
+            title={isPdf ? 'PDF 按决策导出尚未支持' : ''}
+          >
+            {exporting ? '导出中…' : isPdf ? '导出尚未支持' : '导出脱敏副本'}
+          </Button>
         </div>
       </div>
 
@@ -282,6 +344,25 @@ export default function ReviewPanel({ materialId, materialName }) {
       {selection && (
         <div className="selection-popover" style={{ left: selection.x, top: selection.y }} onMouseDown={(e) => e.stopPropagation()}>
           <Button variant="ghost" onClick={addManualRedaction} className="text-white hover:bg-white/10 hover:text-white h-6 text-xs px-2 py-0 font-normal">脱敏</Button>
+        </div>
+      )}
+
+      {/* A6: 导出确认弹窗 */}
+      {showExportConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowExportConfirm(false)}>
+          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-base font-semibold mb-3">确认导出</h3>
+            <p className="text-sm text-muted-foreground mb-4 leading-relaxed">
+              本次将导出：<strong>{redactCount}</strong> 处脱敏、<strong>{keepCount}</strong> 处保留、<strong>{manualCount}</strong> 处手工补标。
+              {unconfirmedCount > 0 && (
+                <><br />还有 <strong className="text-amber-600">{unconfirmedCount}</strong> 处自动标注未逐项确认，是否按当前状态统一确认并导出？</>
+              )}
+            </p>
+            <div className="flex gap-2 justify-end">
+              <Button variant="outline" onClick={() => setShowExportConfirm(false)}>返回复核</Button>
+              <Button variant="default" onClick={handleConfirmExport}>确认并导出</Button>
+            </div>
+          </div>
         </div>
       )}
 

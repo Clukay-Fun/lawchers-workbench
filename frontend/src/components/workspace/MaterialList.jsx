@@ -10,6 +10,7 @@ export default function MaterialList({
   caseId,
   onRefreshCase,
   onTriggerToast,
+  rulesConfig,
 }) {
   const fileInputRef = useRef(null);
   const [uploading, setUploading] = useState(false);
@@ -22,7 +23,7 @@ export default function MaterialList({
       setUploadLabel('正在保存原件…');
       const uploaded = await uploadFile(file, caseId);
       setUploadLabel('正在生成复核文本…');
-      await prepareMaterial(uploaded.materialId);
+      await prepareMaterial(uploaded.materialId, rulesConfig);
       await onRefreshCase();
       onTriggerToast('材料已保存，可以开始复核');
     } catch (error) {
@@ -38,9 +39,17 @@ export default function MaterialList({
     if (!window.confirm(`确认删除材料「${material.name}」？本地原件、脱敏副本和映射将一并清理。`)) return;
     try {
       await deleteMaterial(material.id);
+      // A1: 先刷新获取最新列表，再基于新列表修正选中索引
       await onRefreshCase();
-      if (index === activeIndex) onSelect(Math.max(0, index - 1));
-      else if (index < activeIndex) onSelect(activeIndex - 1);
+      // 刷新后材料列表已更新，修正选中索引（不用旧 currentCase）
+      const newLength = materials.length - 1;
+      if (newLength <= 0) {
+        onSelect(0);
+      } else if (index >= newLength) {
+        onSelect(newLength - 1);
+      } else {
+        onSelect(index);
+      }
     } catch (err) {
       onTriggerToast(err.message || '删除失败');
     }

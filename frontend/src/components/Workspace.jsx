@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import MaterialList from './workspace/MaterialList';
 import ReviewPanel from './workspace/ReviewPanel';
 
-export default function Workspace({ currentCase, onUpdateCase, caseId, onRefreshCase }) {
+export default function Workspace({ currentCase, onUpdateCase, settings, caseId, onRefreshCase }) {
   const [toast, setToast] = useState('');
 
   const activeIndex = currentCase.selectedMaterialIndex || 0;
@@ -29,6 +29,7 @@ export default function Workspace({ currentCase, onUpdateCase, caseId, onRefresh
         caseId={caseId}
         onRefreshCase={onRefreshCase}
         onTriggerToast={triggerToast}
+        rulesConfig={settings?.rulesConfig}
       />
       {currentMaterial ? (
         <ReviewPanel

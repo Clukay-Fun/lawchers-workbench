@@ -387,11 +387,17 @@ export async function exportOpinionDocx(opinionId) {
 /**
  * 触发文档预处理（调 legal-desens prepare）
  * @param {number} materialId 材料 ID
+ * @param {Object} [rulesConfig] 脱敏规则配置（含日期开关等）
  * @returns {Promise<Object>} 预处理结果
  */
-export async function prepareMaterial(materialId) {
+export async function prepareMaterial(materialId, rulesConfig = null) {
+  const body = {};
+  if (rulesConfig) body.rulesConfig = rulesConfig;
+
   const response = await fetch(`${API_BASE}/materials/${materialId}/prepare`, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
   });
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
@@ -421,7 +427,7 @@ export async function getReviewData(materialId) {
  * 批量更新决策
  * @param {number} materialId 材料 ID
  * @param {Array} decisions 决策列表
- * @returns {Promise<Object>}
+ * @returns {Promise<Object>} { count, added }
  */
 export async function updateDecisions(materialId, decisions) {
   const response = await fetch(`${API_BASE}/materials/${materialId}/decisions`, {
