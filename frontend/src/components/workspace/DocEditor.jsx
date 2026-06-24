@@ -424,7 +424,6 @@ export default function DocEditor({
         {!isDocx && !isPdf && !isText && !isImage && <div className="document-error">暂不支持预览该文件格式。</div>}
       </div>
 
-      {!isImage && <div className="selection-hint">框选文字即可手动脱敏，标记后即时遮盖为高亮框</div>}
       {selection && (
         <div className="selection-popover flex items-center gap-1 text-white bg-foreground rounded-lg shadow-lg p-1" style={{ left: selection.x, top: selection.y }} onMouseDown={(e) => e.stopPropagation()}>
           {manualItems.some((item) => (typeof item === 'string' ? item : item.text) === selection.text) ? (

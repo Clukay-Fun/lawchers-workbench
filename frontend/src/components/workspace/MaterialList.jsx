@@ -23,7 +23,11 @@ export default function MaterialList({
       setUploadLabel('正在保存原件…');
       const uploaded = await uploadFile(file, caseId);
       setUploadLabel('正在生成复核文本…');
-      await prepareMaterial(uploaded.materialId, rulesConfig);
+      try {
+        await prepareMaterial(uploaded.materialId, rulesConfig);
+      } catch (prepareErr) {
+        onTriggerToast(prepareErr.message || '文档预处理失败，可在复核页重试');
+      }
       await onRefreshCase();
       onTriggerToast('材料已保存，可以开始复核');
     } catch (error) {
@@ -35,21 +39,12 @@ export default function MaterialList({
     }
   };
 
-  const handleDelete = async (material, index) => {
+  const handleDelete = async (material) => {
     if (!window.confirm(`确认删除材料「${material.name}」？本地原件、脱敏副本和映射将一并清理。`)) return;
     try {
       await deleteMaterial(material.id);
-      // A1: 先刷新获取最新列表，再基于新列表修正选中索引
       await onRefreshCase();
-      // 刷新后材料列表已更新，修正选中索引（不用旧 currentCase）
-      const newLength = materials.length - 1;
-      if (newLength <= 0) {
-        onSelect(0);
-      } else if (index >= newLength) {
-        onSelect(newLength - 1);
-      } else {
-        onSelect(index);
-      }
+      onSelect(0);
     } catch (err) {
       onTriggerToast(err.message || '删除失败');
     }
@@ -62,9 +57,9 @@ export default function MaterialList({
           <div key={material.id} className={`material-row ${index === activeIndex ? 'active' : ''}`}>
             <button className="material-select" onClick={() => onSelect(index)}>
               <FileText className="w-[18px] h-[18px] shrink-0 text-muted-foreground" />
-              <span><strong>{material.name}</strong><small>{material.entitiesCount || 0} 处标注</small></span>
+              <span><strong>{material.name}</strong></span>
             </button>
-            <Button variant="ghost" size="icon" className="material-delete" aria-label={`删除 ${material.name}`} onClick={() => handleDelete(material, index)}>×</Button>
+            <Button variant="ghost" size="icon" className="material-delete" aria-label={`删除 ${material.name}`} onClick={() => handleDelete(material)}>×</Button>
           </div>
         ))}
       </div>

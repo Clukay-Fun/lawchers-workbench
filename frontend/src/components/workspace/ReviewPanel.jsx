@@ -238,6 +238,16 @@ export default function ReviewPanel({ materialId, materialName }) {
     setShowExportConfirm(false);
     try {
       setExporting(true);
+      // 批量确认所有未确认的候选（按当前状态统一确认，来源记为 human）
+      if (unconfirmedCount > 0) {
+        const toConfirm = decisions
+          .filter((d) => d.action === 'redact' && !d.confirmed)
+          .map((d) => ({ id: d.id, action: 'redact', confirmed: true }));
+        await updateDecisions(materialId, toConfirm);
+        setDecisions((prev) => prev.map((d) =>
+          toConfirm.some((c) => c.id === d.id) ? { ...d, confirmed: true } : d
+        ));
+      }
       await exportWithDecisions(materialId, materialName);
       showToast('导出成功');
       await refreshReview();

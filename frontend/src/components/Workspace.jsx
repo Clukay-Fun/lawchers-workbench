@@ -5,10 +5,12 @@ import ReviewPanel from './workspace/ReviewPanel';
 export default function Workspace({ currentCase, onUpdateCase, settings, caseId, onRefreshCase }) {
   const [toast, setToast] = useState('');
 
-  const activeIndex = currentCase.selectedMaterialIndex || 0;
+  const rawIndex = currentCase.selectedMaterialIndex || 0;
+  const materials = useMemo(() => currentCase.materials || [], [currentCase.materials]);
+  const activeIndex = rawIndex >= materials.length ? Math.max(0, materials.length - 1) : rawIndex;
   const currentMaterial = useMemo(
-    () => currentCase.materials?.[activeIndex] || null,
-    [currentCase.materials, activeIndex],
+    () => materials[activeIndex] || null,
+    [materials, activeIndex],
   );
 
   const triggerToast = (message) => {
