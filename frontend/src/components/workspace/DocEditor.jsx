@@ -1,503 +1,380 @@
-import { useState, useEffect } from 'react';
-import { useSelection } from '../../hooks/useSelection';
-import EntityTag from './EntityTag';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { renderAsync } from 'docx-preview';
+import { getDocument, GlobalWorkerOptions, Util } from 'pdfjs-dist';
+import { Button } from '@/components/ui/button';
 
-/**
- * 描述: 办案区中栏正文脱敏编辑器组件
- * 主要功能:
- *     - 将 Token/Chunk 文本数组渲染到编辑器正文区
- *     - 支持右键取消脱敏和左键点击明暗码切换
- *     - 结合使用 useSelection Hook，在鼠标选区上实时浮现脱敏实体分类气泡 Popover
- *     - 提供实体按类型高亮过滤显示，以及一键展开/隐匿全部明文的功能
- *     - 结合 highlightFieldId 接口，实现与右侧要素表单的双向聚焦滚动定位
- */
+GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
 
-// #region 类型映射和辅助序列化
+function sensitiveTerms(material) {
+  const automatic = (material?.entities || [])
+    .filter((entity) => entity.original)
+    .map((entity) => ({ text: entity.original, replacement: entity.replacement || '***', manual: false }));
+  const manual = (material?.manualRedactions || []).map((item) => ({
+    text: typeof item === 'string' ? item : item.text,
+    replacement: '***',
+    manual: true,
+  }));
+  const unique = new Map();
+  [...automatic, ...manual]
+    .filter((term) => term.text)
+    .sort((a, b) => b.text.length - a.text.length)
+    .forEach((term) => unique.set(term.text, term));
+  return [...unique.values()];
+}
 
-const TYPE_MAP = {
-  PERSON: '姓名',
-  NAME: '姓名',
-  PHONE: '手机',
-  LANDLINE: '座机',
-  ORG: '机构',
-  COMPANY: '企业',
-  ID_CARD: '证件',
-  EMAIL: '邮箱',
-  ADDRESS: '住址',
-  ADDR: '住址',
-  BANK_CARD: '银行卡',
-  BANK_BRANCH: '银行',
-  MONEY: '金额',
-  TIME: '时间',
-  DATE: '日期', // 新增 DATE 映射
-  CASE_NO: '案号',
-  ORG_CODE: '信用代码',
-};
+function applyRedactionsToDom(root, terms) {
+  const candidates = terms.flatMap((term) => [
+    { match: term.text, replacement: term.replacement },
+    ...(term.replacement && term.replacement !== term.text
+      ? [{ match: term.replacement, replacement: term.replacement }]
+      : []),
+  ]).sort((a, b) => b.match.length - a.match.length);
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
 
-/**
- * 将 Chunk 列表拼装还原为后端识别的 markedText 格式
- * @param {Array} chunks 数据片段数组
- * @returns {string} 拼装后的标记字符串
- */
-const serializeChunksToMarkedText = (chunks) => {
-  return chunks
-    .map((chunk) => {
-      if (chunk.isEntity) {
-        return `[${chunk.type}:${chunk.text}]`;
+  for (const node of nodes) {
+    if (!node.data.trim() || node.parentElement?.closest('.redaction-mark')) continue;
+    let remaining = node.data;
+    const fragment = document.createDocumentFragment();
+    let changed = false;
+
+    while (remaining) {
+      let earliest = null;
+      for (const candidate of candidates) {
+        const index = remaining.indexOf(candidate.match);
+        if (index >= 0 && (!earliest || index < earliest.index || (index === earliest.index && candidate.match.length > earliest.candidate.match.length))) {
+          earliest = { index, candidate };
+        }
       }
-      return chunk.text;
-    })
-    .join('');
-};
-
-/**
- * 合并相邻的非实体普通文本 chunk
- * @param {Array} chunks 数据片段数组
- * @returns {Array} 净化后的 Chunk 数组
- */
-const mergeAdjacentChunks = (chunks) => {
-  const result = [];
-  for (const chunk of chunks) {
-    if (result.length > 0 && !result[result.length - 1].isEntity && !chunk.isEntity) {
-      result[result.length - 1].text += chunk.text;
-    } else {
-      result.push({ ...chunk });
+      if (!earliest) {
+        fragment.append(document.createTextNode(remaining));
+        break;
+      }
+      changed = true;
+      if (earliest.index > 0) fragment.append(document.createTextNode(remaining.slice(0, earliest.index)));
+      const mark = document.createElement('span');
+      mark.className = 'redaction-mark';
+      mark.textContent = earliest.candidate.replacement;
+      fragment.append(mark);
+      remaining = remaining.slice(earliest.index + earliest.candidate.match.length);
     }
+    if (changed) node.replaceWith(fragment);
   }
-  return result;
-};
+}
 
-/**
- * 判断实体类型是否匹配当前筛选分类
- * @param {string} entityType 实体类型（如 PERSON, ORG, PHONE, LANDLINE 等）
- * @param {string} filter 筛选分类标识
- * @returns {boolean} 是否匹配
- */
-const matchesFilter = (entityType, filter) => {
-  const FILTER_MAP = {
-    person: ['PERSON', 'NAME'],
-    org: ['ORG', 'COMPANY'],
-    phone: ['PHONE', 'LANDLINE'],
-    id_card: ['ID_CARD', 'ORG_CODE', 'EMAIL'],
-    address: ['ADDRESS', 'ADDR'],
-  };
-  const types = FILTER_MAP[filter];
-  return types ? types.includes(entityType) : false;
-};
-
-// #endregion
-
-// #region 中栏编辑器组件实现
-
-/**
- * 正文编辑器组件
- * @param {Object} props 组件属性
- * @param {Object} props.material 当前加载的材料文件对象
- * @param {number} props.materialIndex 当前材料在数组中的索引
- * @param {Function} props.onUpdateMaterialChunks 更新材料 Chunk 数据的方法
- * @param {Function} props.onTriggerToast 轻提示回调
- * @param {string} props.highlightFieldId 右侧表单触发的出处定位字段 id
- * @param {Function} props.onClearHighlight 完毕后清除高亮字段 id 的回调
- */
-export default function DocEditor({
-  material,
-  materialIndex,
-  onUpdateMaterialChunks,
-  onTriggerToast,
-  highlightFieldId,
-  onClearHighlight,
-  onRequestUpload,
-  onReRedact,
-  onExportRedacted,
-  exporting,
-}) {
-  const { selectionInfo, handleMouseUp, clearSelection } = useSelection();
-  const [activeFilter, setActiveFilter] = useState('all');
-  const [reRedacting, setReRedacting] = useState(false);
-
-  // 获取当前的 Chunk 数组
-  const chunks = material?.chunks || [];
-
-  /**
-   * 触发一键重新脱敏
-   */
-  const handleReRedact = async () => {
-    if (!material?.filePath) {
-      onTriggerToast('未检测到该材料的本地原件存储路径，无法重新脱敏');
-      return;
-    }
-    setReRedacting(true);
-    try {
-      await onReRedact(material.filePath, materialIndex, material.displayMode);
-      onTriggerToast('重新脱敏成功！');
-    } catch (err) {
-      console.error(err);
-      onTriggerToast(err.message || '重新脱敏失败，请重试');
-    } finally {
-      setReRedacting(false);
-    }
-  };
-
-  // #region 1. 双向定位聚焦
+function DocxCanvas({ url, mode, terms }) {
+  const containerRef = useRef(null);
+  const [error, setError] = useState('');
 
   useEffect(() => {
-    if (highlightFieldId) {
-      // 延迟确保节点已生成
-      setTimeout(() => {
-        // 根据 data-field 属性寻找实体节点
-        const entityDom = document.querySelector(`.ent[data-field="${highlightFieldId}"]`);
-        if (entityDom) {
-          entityDom.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          entityDom.classList.add('highlight');
-          const timer = setTimeout(() => {
-            entityDom.classList.remove('highlight');
-            onClearHighlight();
-          }, 1600);
-          return () => clearTimeout(timer);
-        } else {
-          onTriggerToast('正文中未检测到该事实要素出处映射');
-          onClearHighlight();
-        }
-      }, 50);
-    }
-  }, [highlightFieldId, onClearHighlight, onTriggerToast]);
-
-  // #endregion
-
-  // #region 2. 脱敏修剪核心逻辑
-
-  /**
-   * 应用脱敏标注
-   * @param {string} type 选取的敏感实体类型
-   */
-  const applyMask = (type) => {
-    if (!selectionInfo) return;
-
-    const { chunkIndex, selectedText, startOffset } = selectionInfo;
-    const chunk = chunks[chunkIndex];
-
-    if (!chunk || chunk.isEntity) return;
-
-    // 根据选区偏移划分前、中、后三段
-    const preText = chunk.text.substring(0, startOffset);
-    const postText = chunk.text.substring(startOffset + selectedText.length);
-
-    const newEntity = {
-      text: selectedText,
-      isEntity: true,
-      type: type.toUpperCase(),
-      revealed: false,
+    let cancelled = false;
+    const render = async () => {
+      setError('');
+      const container = containerRef.current;
+      if (!container || !url) return;
+      container.replaceChildren();
+      try {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error('无法读取 DOCX 原件');
+        const blob = await response.blob();
+        await renderAsync(blob, container, container, {
+          className: 'lawchers-docx',
+          inWrapper: true,
+          breakPages: true,
+          ignoreLastRenderedPageBreak: false,
+          renderHeaders: true,
+          renderFooters: true,
+          renderFootnotes: true,
+        });
+        if (!cancelled && mode === 'redacted') applyRedactionsToDom(container, terms);
+      } catch (renderError) {
+        if (!cancelled) setError(renderError.message || 'DOCX 预览失败');
+      }
     };
+    render();
+    return () => { cancelled = true; };
+  }, [url, mode, terms]);
 
-    const nextChunks = [];
-    for (let i = 0; i < chunks.length; i++) {
-      if (i === chunkIndex) {
-        if (preText) nextChunks.push({ text: preText, isEntity: false });
-        nextChunks.push(newEntity);
-        if (postText) nextChunks.push({ text: postText, isEntity: false });
-      } else {
-        nextChunks.push(chunks[i]);
+  return error ? <div className="document-error">{error}</div> : <div className="docx-canvas" ref={containerRef} />;
+}
+
+function PdfCanvas({ url, mode, terms }) {
+  const containerRef = useRef(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    let loadingTask;
+    const render = async () => {
+      const container = containerRef.current;
+      if (!container || !url) return;
+      container.replaceChildren();
+      setError('');
+      try {
+        const data = await fetch(url).then((response) => {
+          if (!response.ok) throw new Error('无法读取 PDF 原件');
+          return response.arrayBuffer();
+        });
+        loadingTask = getDocument({ data, verbosity: 0 });
+        const pdf = await loadingTask.promise;
+        for (let pageNumber = 1; pageNumber <= pdf.numPages && !cancelled; pageNumber += 1) {
+          const page = await pdf.getPage(pageNumber);
+          const viewport = page.getViewport({ scale: 1.35 });
+          const pageElement = document.createElement('section');
+          pageElement.className = 'pdf-page';
+          pageElement.style.width = `${viewport.width}px`;
+          pageElement.style.height = `${viewport.height}px`;
+
+          const canvas = document.createElement('canvas');
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          canvas.setAttribute('aria-label', `PDF 第 ${pageNumber} 页`);
+          pageElement.append(canvas);
+
+          const textLayer = document.createElement('div');
+          textLayer.className = 'pdf-text-layer';
+          pageElement.append(textLayer);
+          container.append(pageElement);
+
+          await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+          const textContent = await page.getTextContent();
+          const normalizedPositions = [];
+          let pageText = '';
+          textContent.items.forEach((item, index) => {
+            [...(item.str || '')].forEach((character, characterIndex) => {
+              if (/\s/.test(character)) return;
+              pageText += character;
+              normalizedPositions.push({ itemIndex: index, characterIndex });
+            });
+          });
+          const markedCharacters = new Map();
+          if (mode === 'redacted') {
+            for (const term of terms) {
+              const normalizedTerm = term.text.replace(/\s/g, '');
+              if (!normalizedTerm) continue;
+              let from = 0;
+              while (from < pageText.length) {
+                const start = pageText.indexOf(normalizedTerm, from);
+                if (start < 0) break;
+                const end = start + normalizedTerm.length;
+                for (let characterIndex = start; characterIndex < end; characterIndex += 1) {
+                  const position = normalizedPositions[characterIndex];
+                  if (!position) continue;
+                  if (!markedCharacters.has(position.itemIndex)) markedCharacters.set(position.itemIndex, new Set());
+                  markedCharacters.get(position.itemIndex).add(position.characterIndex);
+                }
+                from = end;
+              }
+            }
+          }
+          textContent.items.forEach((item, itemIndex) => {
+            if (!item.str) return;
+            const transform = Util.transform(viewport.transform, item.transform);
+            const fontHeight = Math.hypot(transform[2], transform[3]);
+            const angle = Math.atan2(transform[1], transform[0]);
+            const span = document.createElement('span');
+            span.textContent = item.str;
+            span.style.left = `${transform[4]}px`;
+            span.style.top = `${transform[5] - fontHeight}px`;
+            span.style.fontSize = `${fontHeight}px`;
+            span.style.transform = `rotate(${angle}rad)`;
+            span.style.transformOrigin = '0 0';
+            const sensitiveCharacterIndexes = markedCharacters.get(itemIndex);
+            if (sensitiveCharacterIndexes?.size) {
+              span.replaceChildren();
+              let buffer = '';
+              let bufferSensitive = null;
+              const flush = () => {
+                if (!buffer) return;
+                const segment = document.createElement('span');
+                if (bufferSensitive) {
+                  segment.className = 'redaction-mark pdf-redaction-mark';
+                  segment.textContent = '*'.repeat(Math.max(2, buffer.length));
+                } else {
+                  segment.textContent = buffer;
+                }
+                span.append(segment);
+                buffer = '';
+              };
+              [...item.str].forEach((character, characterIndex) => {
+                const isSensitive = sensitiveCharacterIndexes.has(characterIndex);
+                if (bufferSensitive !== null && bufferSensitive !== isSensitive) flush();
+                bufferSensitive = isSensitive;
+                buffer += character;
+              });
+              flush();
+            }
+            textLayer.append(span);
+          });
+        }
+      } catch (renderError) {
+        if (!cancelled) setError(renderError.message || 'PDF 预览失败');
       }
+    };
+    render();
+    return () => {
+      cancelled = true;
+      loadingTask?.destroy?.();
+    };
+  }, [url, mode, terms]);
+
+  return error ? <div className="document-error">{error}</div> : <div className="pdf-canvas" ref={containerRef} />;
+}
+
+function TextCanvas({ material, mode, terms, onTextChange }) {
+  const [sourceText, setSourceText] = useState('');
+  useEffect(() => {
+    if (material.workingText) {
+      Promise.resolve().then(() => setSourceText(material.workingText));
+      return undefined;
     }
+    let cancelled = false;
+    fetch(material.filePath)
+      .then((response) => response.text())
+      .then((text) => { if (!cancelled) setSourceText(text); })
+      .catch(() => { if (!cancelled) setSourceText(material.redactedText || ''); });
+    return () => { cancelled = true; };
+  }, [material.filePath, material.redactedText, material.workingText]);
 
-    const merged = mergeAdjacentChunks(nextChunks);
-    onUpdateMaterialChunks(materialIndex, merged, serializeChunksToMarkedText(merged));
-    clearSelection();
-    onTriggerToast(`已成功添加敏感标注：${TYPE_MAP[type.toUpperCase()]}`);
-  };
-
-  /**
-   * 取消指定的敏感标注
-   * @param {number} idx 待取消的 Chunk 索引
-   */
-  const cancelMask = (idx) => {
-    const nextChunks = [...chunks];
-    const chunk = nextChunks[idx];
-    if (chunk && chunk.isEntity) {
-      nextChunks[idx] = {
-        text: chunk.text,
-        isEntity: false,
-      };
-      const merged = mergeAdjacentChunks(nextChunks);
-      onUpdateMaterialChunks(materialIndex, merged, serializeChunksToMarkedText(merged));
-      clearSelection();
-      onTriggerToast('已撤销该处脱敏并还原明文');
+  if (mode === 'original') {
+    return (
+      <textarea
+        className="text-document text-editor"
+        value={sourceText}
+        onChange={(event) => setSourceText(event.target.value)}
+        onBlur={() => onTextChange(sourceText)}
+        aria-label="文本工作副本"
+      />
+    );
+  }
+  const parts = [];
+  let remaining = sourceText;
+  let key = 0;
+  while (remaining) {
+    let earliest = null;
+    for (const term of terms) {
+      const index = remaining.indexOf(term.text);
+      if (index >= 0 && (!earliest || index < earliest.index)) earliest = { index, term };
     }
-  };
-
-  /**
-   * 点击实体微调：明暗码切换
-   * @param {number} idx 当前 Chunk 索引
-   */
-  const toggleRevealEntity = (idx) => {
-    const nextChunks = [...chunks];
-    const chunk = nextChunks[idx];
-    if (chunk && chunk.isEntity) {
-      nextChunks[idx] = {
-        ...chunk,
-        revealed: !chunk.revealed,
-      };
-      onUpdateMaterialChunks(materialIndex, nextChunks, serializeChunksToMarkedText(nextChunks));
+    if (!earliest) {
+      parts.push(<span key={`tail-${key}`}>{remaining}</span>);
+      break;
     }
-  };
+    if (earliest.index > 0) parts.push(<span key={key += 1}>{remaining.slice(0, earliest.index)}</span>);
+    parts.push(<span className="redaction-mark" key={key += 1}>{earliest.term.replacement}</span>);
+    remaining = remaining.slice(earliest.index + earliest.term.text.length);
+  }
+  return <pre className="text-document">{parts}</pre>;
+}
 
-  /**
-   * 批量切换明文与密文
-   */
-  const handleToggleAllReveal = () => {
-    if (chunks.length === 0) return;
-    const hasHidden = chunks.some((c) => c.isEntity && !c.revealed);
-    const nextChunks = chunks.map((c) => {
-      if (c.isEntity) {
-        return { ...c, revealed: hasHidden };
+export default function DocEditor({
+  material,
+  defaultView,
+  onManualRedactionsChange,
+  onTextChange,
+  onReRedact,
+  onExport,
+  onRequestUpload,
+  redacting,
+  exporting,
+}) {
+  const viewportRef = useRef(null);
+  const [mode, setMode] = useState(defaultView || 'redacted');
+  const [selection, setSelection] = useState(null);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const terms = useMemo(() => sensitiveTerms(material), [material]);
+
+  const manualItems = material?.manualRedactions || [];
+
+  const captureSelection = (event) => {
+    if (mode !== 'original') return;
+    if (event.target instanceof HTMLTextAreaElement) {
+      const text = event.target.value.slice(event.target.selectionStart, event.target.selectionEnd).trim();
+      if (!text || text.length > 500) {
+        setSelection(null);
+        return;
       }
-      return c;
-    });
-    onUpdateMaterialChunks(materialIndex, nextChunks, serializeChunksToMarkedText(nextChunks));
-    onTriggerToast(hasHidden ? '已临时展示全部明文' : '已恢复全部脱敏掩码');
+      const rect = event.target.getBoundingClientRect();
+      setSelection({ text, x: Math.min(rect.left + rect.width / 2, window.innerWidth - 180), y: Math.max(12, rect.top + 12) });
+      return;
+    }
+    const nativeSelection = window.getSelection();
+    const text = nativeSelection?.toString().trim();
+    if (!text || text.length > 500 || !nativeSelection.rangeCount) {
+      setSelection(null);
+      return;
+    }
+    const range = nativeSelection.getRangeAt(0);
+    if (!viewportRef.current?.contains(range.commonAncestorContainer)) return;
+    const rect = range.getBoundingClientRect();
+    setSelection({ text, x: Math.min(rect.left, window.innerWidth - 180), y: Math.max(12, rect.top - 48) });
   };
 
-  // #endregion
+  const toggleManualSelection = async () => {
+    if (!selection) return;
+    const exists = manualItems.some((item) => (typeof item === 'string' ? item : item.text) === selection.text);
+    const nextItems = exists
+      ? manualItems.filter((item) => (typeof item === 'string' ? item : item.text) !== selection.text)
+      : [...manualItems, selection.text];
+    await onManualRedactionsChange(nextItems);
+    window.getSelection()?.removeAllRanges();
+    setSelection(null);
+  };
 
   if (!material) {
     return (
-      <div className="col-center" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <div className="editor-empty">
-          <div className="editor-empty-icon">📄</div>
-          <div className="editor-empty-title">尚未上传案件材料</div>
-          <div className="editor-empty-desc">
-            上传后将自动解析文本并识别敏感信息，<br />在此进行脱敏校对。
-          </div>
-          <button className="btn btn-primary" style={{ width: 'auto' }} onClick={onRequestUpload}>
-            ＋ 上传材料文件
-          </button>
-        </div>
-      </div>
+      <section className="document-workspace empty-document">
+        <div><strong>添加一份案件材料</strong><p>支持 DOCX、PDF、Markdown、TXT 与常见扫描件。</p><Button variant="default" onClick={onRequestUpload}>添加材料</Button></div>
+      </section>
     );
   }
 
-  // 绑定字段映射规则（根据类型匹配输入框 id）
-  const getFieldMapping = (chunk) => {
-    if (chunk.type === 'PERSON' || chunk.type === 'NAME') return 'inp-name';
-    if (chunk.type === 'ORG' || chunk.type === 'COMPANY') return 'inp-company';
-    return undefined;
-  };
-
-  const isImageMode = material.displayMode === 'image';
-  const isPdf = material.redactedImageUrl && material.redactedImageUrl.toLowerCase().endsWith('.pdf');
+  const extension = (material.ext || material.name.split('.').pop() || '').toLowerCase().replace('.', '');
+  const isDocx = extension === 'docx';
+  const isPdf = extension === 'pdf';
+  const isText = extension === 'txt' || extension === 'md';
+  const isImage = ['png', 'jpg', 'jpeg', 'tiff', 'bmp'].includes(extension);
 
   return (
-    <div className="col-center">
-      {/* 顶部筛选及操作栏 */}
-      <div className="editor-header">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)' }}>
-            {material.name} · 脱敏校对
-          </span>
-          {isImageMode && (
-            <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--t-id-b)', display: 'flex', alignItems: 'center', gap: '0.2rem' }}>
-              ⚠️ 扫描件脱敏不可还原
-            </span>
-          )}
+    <section className="document-workspace">
+      <div className="document-toolbar">
+        <div className="segmented-control compact">
+          <button className={mode === 'original' ? 'active' : ''} onClick={() => setMode('original')}>原文</button>
+          <button className={mode === 'redacted' ? 'active' : ''} onClick={() => setMode('redacted')}>脱敏预览</button>
         </div>
-        <div className="editor-toolbar">
-          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>按类型筛选：</span>
-          <span
-            className={`chip ${activeFilter === 'all' ? 'active' : ''}`}
-            onClick={() => setActiveFilter('all')}
-          >
-            全部
-          </span>
-          <span
-            className={`chip ${activeFilter === 'person' ? 'active' : ''}`}
-            onClick={() => setActiveFilter('person')}
-          >
-            <span className="dot" style={{ backgroundColor: 'var(--t-name-b)' }}></span>姓名
-          </span>
-          <span
-            className={`chip ${activeFilter === 'org' ? 'active' : ''}`}
-            onClick={() => setActiveFilter('org')}
-          >
-            <span className="dot" style={{ backgroundColor: 'var(--t-company-b)' }}></span>机构
-          </span>
-          <span
-            className={`chip ${activeFilter === 'phone' ? 'active' : ''}`}
-            onClick={() => setActiveFilter('phone')}
-          >
-            <span className="dot" style={{ backgroundColor: 'var(--t-phone-b)' }}></span>电话
-          </span>
-          <span
-            className={`chip ${activeFilter === 'id_card' ? 'active' : ''}`}
-            onClick={() => setActiveFilter('id_card')}
-          >
-            <span className="dot" style={{ backgroundColor: 'var(--t-id-b)' }}></span>证件
-          </span>
-          <span
-            className={`chip ${activeFilter === 'address' ? 'active' : ''}`}
-            onClick={() => setActiveFilter('address')}
-          >
-            <span className="dot" style={{ backgroundColor: 'var(--t-addr-b)' }}></span>住址
-          </span>
-        </div>
-        <div className="editor-toolbar" style={{ marginTop: '0.4rem' }}>
-          <span className="chip" onClick={handleToggleAllReveal}>全部明文/脱敏</span>
-          <button
-            className="chip"
-            style={{
-              backgroundColor: '#eff6ff',
-              color: '#1d4ed8',
-              border: '1px solid #bfdbfe',
-              cursor: reRedacting ? 'not-allowed' : 'pointer',
-              opacity: reRedacting ? 0.6 : 1,
-              fontWeight: 500,
-              padding: '2px 8px'
-            }}
-            onClick={handleReRedact}
-            disabled={reRedacting}
-          >
-            {reRedacting ? '正在重新脱敏...' : '🔄 一键重新脱敏'}
-          </button>
-          <span className="chip" onClick={() => onTriggerToast('系统演示：已将校对后文本输出为纯脱敏 .txt 文件')}>导出脱敏版</span>
-          {material?.id && onExportRedacted && (
-            <button
-              className="chip"
-              style={{
-                backgroundColor: '#f0fdf4',
-                color: '#16a34a',
-                border: '1px solid #bbf7d0',
-                cursor: exporting ? 'not-allowed' : 'pointer',
-                opacity: exporting ? 0.6 : 1,
-                fontWeight: 500,
-                padding: '2px 8px'
-              }}
-              onClick={() => onExportRedacted(material.id)}
-              disabled={exporting}
-            >
-              {exporting ? '导出中...' : '📄 导出 .docx'}
-            </button>
-          )}
+        <div className="document-toolbar-actions">
+          <span className="annotation-count">{terms.length} 处标注</span>
+          <Button variant="default" onClick={onExport} disabled={exporting}>{exporting ? '复检中…' : '导出'}</Button>
+          <div className="more-wrap">
+            <Button variant="ghost" size="icon" onClick={() => setMoreOpen(!moreOpen)} aria-label="更多操作" aria-expanded={moreOpen}>•••</Button>
+            {moreOpen && (
+              <div className="more-menu">
+                <Button variant="ghost" className="w-full justify-start text-left text-sm hover:bg-secondary" onClick={() => { setMoreOpen(false); onReRedact(); }} disabled={redacting}>{redacting ? '正在重新识别…' : '重新识别敏感信息'}</Button>
+                <div className="menu-separator" />
+                <span className="px-2.5 py-1.5 block text-xs text-muted-foreground">人工标注 {manualItems.length} 处</span>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
-      {isImageMode ? (
-        /* 双栏对照编辑区（左边白框图，右边 OCR 文本） */
-        <div className="editor-split-body" style={{ display: 'flex', flex: 1, gap: '1rem', width: '100%', minHeight: 0, overflow: 'hidden', padding: '0 1rem 1rem 1rem' }}>
-          {/* 左侧：白框图预览 */}
-          <div className="editor-scan-viewer" style={{ flex: 1, border: '1px solid var(--border)', borderRadius: 'var(--radius)', backgroundColor: '#fff', overflow: 'hidden', display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
-            {isPdf ? (
-              <iframe
-                src={`http://localhost:3001${material.redactedImageUrl}`}
-                style={{ width: '100%', height: '100%', border: 'none' }}
-                title="脱敏扫描件预览"
-              />
-            ) : (
-              <img
-                src={`http://localhost:3001${material.redactedImageUrl}`}
-                style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
-                alt="脱敏扫描图片预览"
-              />
-            )}
-          </div>
+      <div className="document-viewport" ref={viewportRef} onMouseUp={captureSelection}>
+        {isDocx && <DocxCanvas url={mode === 'redacted' && material.redactedFileUrl ? material.redactedFileUrl : material.filePath} mode={mode} terms={terms} />}
+        {isPdf && <PdfCanvas url={material.filePath} mode={mode} terms={terms} />}
+        {isText && <TextCanvas material={material} mode={mode} terms={terms} onTextChange={onTextChange} />}
+        {isImage && <div className="image-document"><img src={mode === 'redacted' && material.redactedFileUrl ? material.redactedFileUrl : material.filePath} alt="案件材料预览" /></div>}
+        {!isDocx && !isPdf && !isText && !isImage && <div className="document-error">暂不支持预览该文件格式。</div>}
+      </div>
 
-          {/* 右侧：OCR 文本校对 */}
-          <div className="editor-body" style={{ flex: 1, margin: 0, height: '100%', overflowY: 'auto' }} onMouseUp={handleMouseUp}>
-            {chunks.map((chunk, index) => {
-              if (chunk.isEntity) {
-                const isDim = activeFilter !== 'all' && !matchesFilter(chunk.type, activeFilter);
-                return (
-                  <EntityTag
-                    key={index}
-                    chunkIndex={index}
-                    type={chunk.type}
-                    text={chunk.text}
-                    revealed={chunk.revealed}
-                    isDim={isDim}
-                    dataField={getFieldMapping(chunk)}
-                    onClick={() => toggleRevealEntity(index)}
-                    onCancelMask={() => cancelMask(index)}
-                  />
-                );
-              }
-              return (
-                <span key={index} data-chunk-index={index}>
-                  {chunk.text}
-                </span>
-              );
-            })}
-          </div>
-        </div>
-      ) : (
-        /* 单栏文本校对编辑区 */
-        <div className="editor-body" onMouseUp={handleMouseUp}>
-          {chunks.length === 0 && (
-            material?.rawText && material.rawText.trim() ? (
-              /* 兜底：脱敏切片为空但有原始文本时，仍展示原文，避免中间空白 */
-              <span style={{ whiteSpace: 'pre-wrap' }}>{material.rawText}</span>
-            ) : (
-              <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', padding: '1rem 0' }}>
-                未解析到可显示的文本内容。若该文件为扫描件 PDF（无文字层），请改用图片/扫描脱敏方式处理。
-              </div>
-            )
-          )}
-          {chunks.map((chunk, index) => {
-            if (chunk.isEntity) {
-              // 类型匹配过滤
-              const isDim = activeFilter !== 'all' && !matchesFilter(chunk.type, activeFilter);
-              return (
-                <EntityTag
-                  key={index}
-                  chunkIndex={index}
-                  type={chunk.type}
-                  text={chunk.text}
-                  revealed={chunk.revealed}
-                  isDim={isDim}
-                  dataField={getFieldMapping(chunk)}
-                  onClick={() => toggleRevealEntity(index)}
-                  onCancelMask={() => cancelMask(index)}
-                />
-              );
-            }
-            return (
-              <span key={index} data-chunk-index={index}>
-                {chunk.text}
-              </span>
-            );
-          })}
+      {mode === 'original' && <div className="selection-hint">框选原文即可添加人工脱敏标注</div>}
+      {selection && (
+        <div className="selection-popover" style={{ left: selection.x, top: selection.y }}>
+          <button onClick={toggleManualSelection}>
+            {manualItems.some((item) => (typeof item === 'string' ? item : item.text) === selection.text) ? '取消标注' : '标记脱敏'}
+          </button>
         </div>
       )}
-
-      {/* 划词脱敏悬浮气泡 (Popover) */}
-      {selectionInfo && (
-        <div
-          className="sel-popover"
-          style={{
-            top: `${selectionInfo.rect.top - 45}px`,
-            left: `${selectionInfo.rect.left + selectionInfo.rect.width / 2}px`,
-          }}
-          onMouseDown={(e) => e.stopPropagation()} // 防止触发 document 的 mousedown 误关闭
-        >
-          <span style={{ display: 'flex', alignItems: 'center', gap: '0.15rem' }}>
-            <span className="sp-label">脱敏为</span>
-            <span className="sp-btn" onClick={() => applyMask('PERSON')}>
-              <i className="dot" style={{ backgroundColor: 'var(--t-name-b)' }}></i>姓名
-            </span>
-            <span className="sp-btn" onClick={() => applyMask('ORG')}>
-              <i className="dot" style={{ backgroundColor: 'var(--t-company-b)' }}></i>机构
-            </span>
-            <span className="sp-btn" onClick={() => applyMask('PHONE')}>
-              <i className="dot" style={{ backgroundColor: 'var(--t-phone-b)' }}></i>电话
-            </span>
-            <span className="sp-btn" onClick={() => applyMask('ID_CARD')}>
-              <i className="dot" style={{ backgroundColor: 'var(--t-id-b)' }}></i>证件
-            </span>
-            <span className="sp-btn" onClick={() => applyMask('ADDRESS')}>
-              <i className="dot" style={{ backgroundColor: 'var(--t-addr-b)' }}></i>住址
-            </span>
-          </span>
-        </div>
-      )}
-    </div>
+    </section>
   );
 }
-
-// #endregion
