@@ -128,7 +128,11 @@ function PdfCanvas({ url, mode, terms }) {
         const pdf = await loadingTask.promise;
         for (let pageNumber = 1; pageNumber <= pdf.numPages && !cancelled; pageNumber += 1) {
           const page = await pdf.getPage(pageNumber);
-          const viewport = page.getViewport({ scale: 1.35 });
+          // 按容器宽度自适应：页面铺满可用宽度（封顶 980px），不再固定放大比例
+          const baseViewport = page.getViewport({ scale: 1 });
+          const available = Math.min(container.clientWidth || 800, 980);
+          const fitScale = Math.max(0.5, available / baseViewport.width);
+          const viewport = page.getViewport({ scale: fitScale });
           const outputScale = window.devicePixelRatio || 1;
           const pageElement = document.createElement('section');
           pageElement.className = 'pdf-page';
