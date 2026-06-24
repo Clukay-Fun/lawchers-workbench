@@ -1149,53 +1149,82 @@ router.post('/materials/:id/review-complete', async (req, res) => {
 });
 
 /**
- * POST /api/materials/:id/export - 按决策导出脱敏副本
+ * POST /api/materials/:id/export - 按复核决策导出脱敏副本
  *
- * 人工确认门控：导出按钮即为人工确认动作。
- * 1. 校验 source_sha256 未变化
- * 2. 将未确认的自动候选按当前 action 标记为人工确认
- * 3. 校验所有决策均已确认
- * 4. 按 document_kind 分流：DOCX/text→redact，scan→redact-scan
- * 5. 残留复检必须 passed === true，失败则删除产物
+ * 前置校验：
+ *   - material.processing_status ∈ {reviewing, ready}
+ *   - manifest + source_map 存在
+ *   - source_sha256 匹配
+ *   - 所有决策已确认（未确认的自动候选在前端由用户逐项确认后才能点导出）
+ *   - hybrid PDF 暂不支持导出（需逐页混合管线）
+ *
+ * 导出流程：
+ *   - 将 redaction_decision 导出为 decisions.json
+ *   - 调用 legal-desens redact --decisions --source-map（跳过自动检测）
+ *   - 残留复检：passed === true
+ *   - 失败则删除产物
  */
 router.post('/materials/:id/export', async (req, res) => {
   try {
     const matId = parseInt(req.params.id, 10);
     const { default: db } = await import('./db/index.js');
-    const mat = db.prepare(`
-      SELECT * FROM "material" WHERE id = ?
-    `).get(matId);
+    const mat = db.prepare('SELECT * FROM "material" WHERE id = ?').get(matId);
     if (!mat) return res.status(404).json({ success: false, message: '材料不存在' });
 
+    // 状态校验
+    if (!['reviewing', 'ready'].includes(mat.processing_status)) {
+      return res.status(409).json({ success: false, message: `材料状态 ${mat.processing_status} 不允许导出，需先完成预处理和复核` });
+    }
+
+    // manifest 和 source_map 校验
+    if (!mat.manifest_path || !mat.preview_path) {
+      return res.status(409).json({ success: false, message: '材料未完成预处理，缺少 manifest' });
+    }
+
+    // 原件完整性校验
     const sourcePath = path.resolve(path.join(__dirname, '..', mat.stored_path));
     if (!sourcePath.startsWith(path.resolve(uploadsDir))) {
       return res.status(403).json({ success: false, message: '非法材料路径' });
     }
-
-    // 1. 校验原件未变化
+    if (!mat.source_sha256) {
+      return res.status(409).json({ success: false, message: '缺少原件哈希，请重新预处理' });
+    }
     const currentSha = createHash('sha256').update(await fs.readFile(sourcePath)).digest('hex');
-    if (mat.source_sha256 && currentSha !== mat.source_sha256) {
+    if (currentSha !== mat.source_sha256) {
       return res.status(409).json({ success: false, message: '原件自预处理后已变化，请重新预处理' });
     }
 
-    // 2. 将未确认的自动候选标记为人工确认（用户点击导出 = 人工确认动作）
-    db.prepare(`
-      UPDATE "redaction_decision" SET confirmed = 1, origin = 'human'
-      WHERE material_id = ? AND confirmed = 0 AND origin = 'automatic'
-    `).run(matId);
-
-    // 3. 校验所有决策均已确认
-    const counts = getDecisionReviewCounts(matId);
-    if (counts.confirmed !== counts.total) {
-      return res.status(409).json({
-        success: false,
-        message: `仍有 ${counts.total - counts.confirmed} 处手动决策未确认`,
-      });
+    // Hybrid PDF 暂不支持
+    if (mat.document_kind === 'pdf-hybrid') {
+      return res.status(501).json({ success: false, message: '混合型 PDF（含扫描页）导出尚未实现，请先拆分处理' });
     }
 
-    // 4. 准备导出
+    // 决策完整性校验
+    const counts = getDecisionReviewCounts(matId);
+    if (counts.confirmed !== counts.total) {
+      return res.status(409).json({ success: false, message: `仍有 ${counts.total - counts.confirmed} 处决策未确认，请先逐项确认` });
+    }
+
+    // 准备工作目录
     const workDir = path.join(uploadsDir, String(mat.case_id), `.work_${matId}`);
     if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
+
+    // 导出 decisions.json（从 DB 读取，保持 origin 不变）
+    const decisions = getDecisionsByMaterialId(matId);
+    const decisionsPath = path.join(workDir, 'decisions.json');
+    await fs.writeFile(decisionsPath, JSON.stringify(decisions.map(d => {
+      let sourceLocator = {};
+      try { sourceLocator = JSON.parse(d.source_locator || '{}'); } catch {}
+      return {
+        id: d.id, candidateId: d.candidate_id, blockId: d.block_id,
+        start: d.start, end: d.end, action: d.action, origin: d.origin,
+        entityType: d.entity_type, sourceLocator, confirmed: d.confirmed === 1,
+      };
+    }), null, 2), 'utf-8');
+
+    // source-map 路径
+    const sourceMapPath = path.join(workDir, 'source-map.json');
+
     const ext = path.extname(mat.filename);
     const safeBase = path.basename(mat.filename, ext).replace(/[^\p{L}\p{N}._-]+/gu, '-');
     const exportFilename = `${safeBase || 'document'}.redacted${ext}`;
@@ -1206,19 +1235,17 @@ router.post('/materials/:id/export', async (req, res) => {
     const PYTHON_BIN = process.env.PYTHON_BIN || 'python3';
     const DESENSITIZER_DIR = process.env.DESENSITIZER_DIR || '/Users/clukay/Program/lawchers-skills/legal-desensitizer';
 
-    // 5. 按 document_kind 分流
-    const isScan = mat.document_kind === 'pdf-scan';
-    const args = ['-m', 'legal_desens.cli'];
-
-    if (isScan) {
-      args.push('redact-scan', sourcePath, '--ocr', 'rapidocr',
-        '--level', 'strict', '--out', exportPath,
-        '--map', mapPath, '--audit', auditPath);
-    } else {
-      args.push('redact', sourcePath,
-        '--level', 'strict', '--out', exportPath,
-        '--map', mapPath, '--audit', auditPath);
-    }
+    // 调用 legal-desens redact --decisions（跳过自动检测，按决策精确导出）
+    const args = [
+      '-m', 'legal_desens.cli',
+      'redact', sourcePath,
+      '--level', 'strict',
+      '--decisions', decisionsPath,
+      '--source-map', sourceMapPath,
+      '--out', exportPath,
+      '--map', mapPath,
+      '--audit', auditPath,
+    ];
     if (!getIsNerEnabled()) args.push('--regex-only');
 
     try {
@@ -1227,12 +1254,11 @@ router.post('/materials/:id/export', async (req, res) => {
         timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
       });
     } catch (cliErr) {
-      // CLI 失败：清理产物
       await fs.unlink(exportPath).catch(() => {});
-      return res.status(500).json({ success: false, message: '脱敏 CLI 执行失败', error: cliErr.message });
+      return res.status(500).json({ success: false, message: '决策导出 CLI 执行失败', error: cliErr.message });
     }
 
-    // 6. 残留复检：必须显式 passed === true
+    // 残留复检
     let auditData = null;
     try {
       auditData = JSON.parse(await fs.readFile(auditPath, 'utf-8'));
@@ -1242,20 +1268,18 @@ router.post('/materials/:id/export', async (req, res) => {
     }
 
     const residualPassed = auditData?.residual_scan?.passed === true;
-
     if (!residualPassed) {
-      // 残留未通过：删除产物，保持 reviewing 状态
       await fs.unlink(exportPath).catch(() => {});
-      db.prepare(`UPDATE "material" SET verification_status = 'failed', audit_json = ? WHERE id = ?`)
-        .run(JSON.stringify(auditData), matId);
+      db.prepare('UPDATE "material" SET verification_status = ?, audit_json = ? WHERE id = ?')
+        .run('failed', JSON.stringify(auditData), matId);
       await writeAuditLog({
         case_id: mat.case_id, action: 'export_failed', source: 'legal-desens',
-        model_config: { residualPassed: false, format: ext, isScan }, human_confirmed: 1,
+        model_config: { residualPassed: false, format: ext }, human_confirmed: 1,
       });
       return res.status(409).json({ success: false, message: '残留扫描未通过，导出已阻断' });
     }
 
-    // 7. 成功：更新状态
+    // 成功
     db.prepare(`
       UPDATE "material" SET
         verification_status = 'passed', redacted_path = ?,
@@ -1265,8 +1289,7 @@ router.post('/materials/:id/export', async (req, res) => {
 
     await writeAuditLog({
       case_id: mat.case_id, action: 'export', source: 'legal-desens',
-      model_config: { residualPassed: true, format: ext, isScan,
-        decisionCount: counts.total, autoConfirmed: counts.total - (counts.confirmed - (counts.total - counts.confirmed)) },
+      model_config: { decisionCount: counts.total, format: ext, exportMode: 'decisions' },
       human_confirmed: 1,
     });
 

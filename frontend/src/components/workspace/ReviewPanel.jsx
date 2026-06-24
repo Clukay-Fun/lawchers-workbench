@@ -149,15 +149,19 @@ export default function ReviewPanel({ materialId, materialName }) {
     const blockId = blockEl.getAttribute('data-block-id');
     const block = (manifest?.blocks || []).find((b) => b.id === blockId);
     if (!block) { setSelection(null); return; }
-    // P1 fix: 计算 DOM Range 相对 block 元素的真实字符偏移（不用 indexOf，避免重复文字定位到第一次出现）
-    const blockRange = document.createRange();
-    blockRange.selectNodeContents(blockEl);
-    blockRange.setEnd(range.startContainer, range.startOffset);
-    const start = blockRange.toString().length;
+    // P1 fix: 使用 data-src 属性计算原始文本偏移（不受掩码长度影响）
+    const startSpan = range.startContainer.parentElement?.closest('[data-src]');
+    if (!startSpan) { setSelection(null); return; }
+    const baseOffset = parseInt(startSpan.getAttribute('data-src'), 10) || 0;
+    // 计算选区在该 span 内的字符偏移
+    const preRange = document.createRange();
+    preRange.selectNodeContents(startSpan);
+    preRange.setEnd(range.startContainer, range.startOffset);
+    const intraOffset = preRange.toString().length;
+    const start = baseOffset + intraOffset;
     const selectedText = range.toString();
-    if (start < 0 || !selectedText) { setSelection(null); return; }
     const end = start + selectedText.length;
-    if (end > block.text.length) { setSelection(null); return; }
+    if (start < 0 || end > block.text.length || start >= end) { setSelection(null); return; }
     const rect = range.getBoundingClientRect();
     setSelection({ blockId, start, end, x: rect.left, y: Math.max(12, rect.top - 36) });
   };
@@ -193,19 +197,26 @@ export default function ReviewPanel({ materialId, materialName }) {
       const text = block.text || '';
       const blockD = (blockDecisions[block.id] || []).sort((a, b) => a.start - b.start);
       if (!blockD.length) {
-        return <p key={block.id} data-block-id={block.id} className="review-block">{text || ' '}</p>;
+        return <p key={block.id} data-block-id={block.id} className="review-block"><span data-src={0}>{text || ' '}</span></p>;
       }
       const parts = [];
       let cursor = 0;
       for (const d of blockD) {
         if (d.start < cursor) continue;
-        if (d.start > cursor) parts.push(<span key={`t-${cursor}`}>{text.slice(cursor, d.start)}</span>);
+        // 普通文本：用 span 包裹并标注原始位置
+        if (d.start > cursor) {
+          const segStart = cursor;
+          const segText = text.slice(cursor, d.start);
+          parts.push(<span key={`t-${cursor}`} data-src={segStart}>{segText}</span>);
+        }
         const original = text.slice(d.start, d.end);
         const isRevealed = revealed.has(d.id);
         const masked = maskValue(original, d.entityType);
         parts.push(
           <span
             key={`d-${d.id}`}
+            data-src={d.start}
+            data-decision-id={d.id}
             className={`redaction-mark${isRevealed ? ' revealed' : ''}`}
             title="左键查看原文 · 右键取消脱敏"
             onClick={(e) => { e.stopPropagation(); toggleReveal(d.id); }}
@@ -216,7 +227,9 @@ export default function ReviewPanel({ materialId, materialName }) {
         );
         cursor = d.end;
       }
-      if (cursor < text.length) parts.push(<span key="t-end">{text.slice(cursor)}</span>);
+      if (cursor < text.length) {
+        parts.push(<span key="t-end" data-src={cursor}>{text.slice(cursor)}</span>);
+      }
       return <p key={block.id} data-block-id={block.id} className="review-block">{parts}</p>;
     });
   };
