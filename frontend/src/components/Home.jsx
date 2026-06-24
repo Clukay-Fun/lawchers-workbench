@@ -26,7 +26,7 @@ function formatUpdatedAt(value) {
 
 export default function Home({ cases, onSelectCase, onCreateCase, onDeleteCase }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [openMenuId, setOpenMenuId] = useState(null);
+  const [, setOpenMenuId] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [newCaseData, setNewCaseData] = useState({
     reason: '劳动争议', employeeName: '', companyName: '',
@@ -88,7 +88,7 @@ export default function Home({ cases, onSelectCase, onCreateCase, onDeleteCase }
                     >•••</Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent onClick={(event) => event.stopPropagation()} align="end">
-                    <DropdownMenuItem className="text-destructive focus:text-destructive focus:bg-destructive/10 cursor-pointer" onClick={() => handleDelete(item)}>
+                    <DropdownMenuItem className="text-destructive focus:text-destructive focus:bg-destructive/10 cursor-pointer" onSelect={(event) => { event.preventDefault(); handleDelete(item); }}>
                       删除案件
                     </DropdownMenuItem>
                   </DropdownMenuContent>

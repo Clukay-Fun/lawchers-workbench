@@ -116,7 +116,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
   transition: transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease;
 }
 .case-register-row:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); border-color: var(--line-strong); }
-.case-register-title { min-width: 0; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px; }
+.case-register-title { min-width: 0; display: flex; flex-direction: column; gap: 6px; padding-right: 30px; }
 .case-register-title strong {
   font: 500 17px/1.4 var(--font-display); letter-spacing: .02em;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
