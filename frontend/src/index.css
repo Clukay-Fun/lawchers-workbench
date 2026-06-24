@@ -165,7 +165,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .material-panel-head { min-height: 54px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; }
 .material-panel-head h2 { margin: 0; font: 500 18px/1 var(--font-display); }
 .material-panel-head span { color: var(--base01); font: 11px/1 var(--font-mono); }
-.material-list { min-height: 0; overflow: auto; padding: 8px; }
+.material-list { min-height: 0; overflow: auto; padding: 12px 8px 8px; }
 .material-row { position: relative; display: flex; border: 1px solid transparent; border-radius: var(--radius-control); }
 .material-row:hover { background: rgba(247, 244, 238, .74); }
 .material-row.active { background: var(--base3); border-color: var(--line-strong); }
