@@ -123,6 +123,8 @@ export default function App() {
         ext: material.ext,
         status: material.redact_status || 'todo',
         displayMode: material.display_mode || 'text',
+        processingStatus: material.processing_status || 'uploaded',
+        documentKind: material.document_kind || '',
         filePath: storedPath ? `${backendOrigin}/${storedPath}` : '',
         redactedFileUrl: redactedPath ? `${backendOrigin}/${redactedPath}` : '',
         redactedText: material.redacted_md || '',

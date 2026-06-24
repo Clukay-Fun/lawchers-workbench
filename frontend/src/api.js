@@ -381,3 +381,106 @@ export async function exportOpinionDocx(opinionId) {
 }
 
 // #endregion
+
+// #region Markdown 复核工作流 API
+
+/**
+ * 触发文档预处理（调 legal-desens prepare）
+ * @param {number} materialId 材料 ID
+ * @returns {Promise<Object>} 预处理结果
+ */
+export async function prepareMaterial(materialId) {
+  const response = await fetch(`${API_BASE}/materials/${materialId}/prepare`, {
+    method: 'POST',
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.message || '文档预处理失败');
+  }
+  const result = await response.json();
+  if (!result.success) throw new Error(result.message || '预处理异常');
+  return result.data;
+}
+
+/**
+ * 获取复核数据（preview + manifest + decisions）
+ * @param {number} materialId 材料 ID
+ * @returns {Promise<Object>} 复核数据
+ */
+export async function getReviewData(materialId) {
+  const response = await fetch(`${API_BASE}/materials/${materialId}/review`, {
+    method: 'GET',
+  });
+  if (!response.ok) throw new Error('获取复核数据失败');
+  const result = await response.json();
+  if (!result.success) throw new Error(result.message || '获取复核数据异常');
+  return result.data;
+}
+
+/**
+ * 批量更新决策
+ * @param {number} materialId 材料 ID
+ * @param {Array} decisions 决策列表
+ * @returns {Promise<Object>}
+ */
+export async function updateDecisions(materialId, decisions) {
+  const response = await fetch(`${API_BASE}/materials/${materialId}/decisions`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ decisions }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.message || '更新决策失败');
+  }
+  const result = await response.json();
+  if (!result.success) throw new Error(result.message || '更新决策异常');
+  return result.data;
+}
+
+/**
+ * 标记复核完成
+ * @param {number} materialId 材料 ID
+ * @returns {Promise<Object>}
+ */
+export async function completeReview(materialId) {
+  const response = await fetch(`${API_BASE}/materials/${materialId}/review-complete`, {
+    method: 'POST',
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.message || '标记复核完成失败');
+  }
+  const result = await response.json();
+  if (!result.success) throw new Error(result.message || '标记复核完成异常');
+  return result.data;
+}
+
+/**
+ * 按决策导出脱敏副本
+ * @param {number} materialId 材料 ID
+ * @param {string} filename 原始文件名
+ */
+export async function exportWithDecisions(materialId, filename) {
+  const response = await fetch(`${API_BASE}/materials/${materialId}/export`, {
+    method: 'POST',
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.message || '导出失败');
+  }
+  const blob = await response.blob();
+  const ext = filename ? filename.substring(filename.lastIndexOf('.')) : '';
+  const baseName = filename ? filename.substring(0, filename.lastIndexOf('.')) : 'document';
+  const downloadName = `${baseName}.redacted${ext}`;
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = downloadName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+}
+
+// #endregion

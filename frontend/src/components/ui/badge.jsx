@@ -5,7 +5,6 @@
  *     - 保持圆角 pills 药丸形状用于小状态展示
  */
 
-import * as React from "react"
 import { cva } from "class-variance-authority"
 import { cn } from "@/lib/utils"
 
@@ -37,4 +36,5 @@ function Badge({ className, variant, ...props }) {
   )
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export { Badge, badgeVariants }
