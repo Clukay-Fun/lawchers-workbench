@@ -149,10 +149,17 @@ export default function ReviewPanel({ materialId, materialName }) {
     const blockId = blockEl.getAttribute('data-block-id');
     const block = (manifest?.blocks || []).find((b) => b.id === blockId);
     if (!block) { setSelection(null); return; }
-    const start = block.text.indexOf(text);
-    if (start < 0) { setSelection(null); return; }
+    // P1 fix: 计算 DOM Range 相对 block 元素的真实字符偏移（不用 indexOf，避免重复文字定位到第一次出现）
+    const blockRange = document.createRange();
+    blockRange.selectNodeContents(blockEl);
+    blockRange.setEnd(range.startContainer, range.startOffset);
+    const start = blockRange.toString().length;
+    const selectedText = range.toString();
+    if (start < 0 || !selectedText) { setSelection(null); return; }
+    const end = start + selectedText.length;
+    if (end > block.text.length) { setSelection(null); return; }
     const rect = range.getBoundingClientRect();
-    setSelection({ blockId, start, end: start + text.length, x: rect.left, y: Math.max(12, rect.top - 36) });
+    setSelection({ blockId, start, end, x: rect.left, y: Math.max(12, rect.top - 36) });
   };
 
   const addManualRedaction = async () => {
