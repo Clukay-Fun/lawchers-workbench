@@ -1,10 +1,7 @@
 import { useRef, useState } from 'react';
 import { deleteMaterial, redactFile, redactScanFile, uploadFile } from '../../api';
 import { Button } from '@/components/ui/button';
-
-const fileIcon = (
-  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h5"/></svg>
-);
+import { FileText } from 'lucide-react';
 
 export default function MaterialList({
   materials,
@@ -60,7 +57,7 @@ export default function MaterialList({
         {materials.map((material, index) => (
           <div key={material.id} className={`material-row ${index === activeIndex ? 'active' : ''}`}>
             <button className="material-select" onClick={() => onSelect(index)}>
-              {fileIcon}
+              <FileText className="w-[18px] h-[18px] shrink-0 text-muted-foreground" />
               <span><strong>{material.name}</strong><small>{material.entitiesCount || 0} 处标注 · {material.status === 'done' ? '已导出复检' : '待校对'}</small></span>
             </button>
             <Button variant="ghost" size="icon" className="material-delete" aria-label={`删除 ${material.name}`} onClick={() => handleDelete(material, index)}>×</Button>
