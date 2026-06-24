@@ -150,7 +150,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .segmented-control { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line-strong); border-radius: var(--radius-control); overflow: hidden; }
 .segmented-control button { min-height: 36px; padding: 7px 14px; border: 0; border-right: 1px solid var(--line); background: var(--paper); }
 .segmented-control button:last-child { border-right: 0; }
-.segmented-control button.active { color: var(--base3); background: var(--blue); }
+.segmented-control button.active { color: #fff; background: var(--blue); }
 .disclosure-section { margin-top: 22px; }
 .disclosure { width: 100%; min-height: 66px; padding: 0; border: 0; background: transparent; display: flex; align-items: center; justify-content: space-between; text-align: left; }
 .disclosure > span:first-child { display: flex; flex-direction: column; gap: 5px; }

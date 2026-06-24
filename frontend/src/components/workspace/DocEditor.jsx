@@ -128,15 +128,17 @@ function PdfCanvas({ url, mode, terms }) {
         const pdf = await loadingTask.promise;
         for (let pageNumber = 1; pageNumber <= pdf.numPages && !cancelled; pageNumber += 1) {
           const page = await pdf.getPage(pageNumber);
-          const viewport = page.getViewport({ scale: 1.35 });
+          const viewport = page.getViewport({ scale: 1.5 });
+          const outputScale = window.devicePixelRatio || 1;
           const pageElement = document.createElement('section');
           pageElement.className = 'pdf-page';
           pageElement.style.width = `${viewport.width}px`;
           pageElement.style.height = `${viewport.height}px`;
 
           const canvas = document.createElement('canvas');
-          canvas.width = viewport.width;
-          canvas.height = viewport.height;
+          // 按设备像素比放大位图分辨率，避免 retina 屏拉伸模糊
+          canvas.width = Math.floor(viewport.width * outputScale);
+          canvas.height = Math.floor(viewport.height * outputScale);
           canvas.setAttribute('aria-label', `PDF 第 ${pageNumber} 页`);
           pageElement.append(canvas);
 
@@ -145,7 +147,8 @@ function PdfCanvas({ url, mode, terms }) {
           pageElement.append(textLayer);
           container.append(pageElement);
 
-          await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+          const renderTransform = outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null;
+          await page.render({ canvasContext: canvas.getContext('2d'), viewport, transform: renderTransform }).promise;
           const textContent = await page.getTextContent();
           const normalizedPositions = [];
           let pageText = '';
