@@ -794,8 +794,10 @@ router.get('/cases/:id/audit', (req, res) => {
  * POST /api/materials/:id/prepare - 触发文档预处理（调 legal-desens prepare）
  */
 router.post('/materials/:id/prepare', async (req, res) => {
+  let tempDir = null;
   try {
     const matId = parseInt(req.params.id, 10);
+    const { rulesConfig } = req.body || {};
     const { default: db } = await import('./db/index.js');
     const mat = db.prepare('SELECT * FROM "material" WHERE id = ?').get(matId);
     if (!mat) return res.status(404).json({ success: false, message: '材料不存在' });
@@ -805,32 +807,36 @@ router.post('/materials/:id/prepare', async (req, res) => {
       return res.status(403).json({ success: false, message: '非法材料路径' });
     }
 
-    // 更新处理状态为 preparing
+    // A8: 更新处理状态为 preparing
     db.prepare(`UPDATE "material" SET processing_status = 'preparing' WHERE id = ?`).run(matId);
 
-    // 准备输出目录
+    // A8: 先写临时目录，校验通过后再原子重命名到目标
     const caseDir = path.join(uploadsDir, String(mat.case_id));
     const workDir = path.join(caseDir, `.work_${matId}`);
-    if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
+    tempDir = path.join(caseDir, `.tmp_prepare_${matId}_${Date.now()}`);
+    if (!existsSync(tempDir)) mkdirSync(tempDir, { recursive: true });
 
-    const previewPath = path.join(workDir, 'preview.md');
-    const manifestPath = path.join(workDir, 'manifest.json');
-    const sourceMapPath = path.join(workDir, 'source-map.json');
+    const tempPreview = path.join(tempDir, 'preview.md');
+    const tempManifest = path.join(tempDir, 'manifest.json');
+    const tempSourceMap = path.join(tempDir, 'source-map.json');
 
-    // 调用 legal-desens prepare
+    // A7: 构建 CLI 参数，包含 rulesConfig
     const args = [
       '-m', 'legal_desens.cli',
       'prepare', sourcePath,
       '--level', 'strict',
-      '--preview-md', previewPath,
-      '--manifest', manifestPath,
-      '--map', sourceMapPath,
+      '--preview-md', tempPreview,
+      '--manifest', tempManifest,
+      '--map', tempSourceMap,
     ];
 
-    // NER 状态
     if (!getIsNerEnabled()) {
       args.push('--regex-only');
     }
+
+    // A7: 日期关闭时，同时保留 DATE 和 TIME
+    // prepare 不支持 --entity-policy，改为后处理过滤候选
+    const dateOff = rulesConfig && rulesConfig.DATE === false;
 
     const PYTHON_BIN = process.env.PYTHON_BIN || 'python3';
     const DESENSITIZER_DIR = process.env.DESENSITIZER_DIR || '/Users/clukay/Program/lawchers-skills/legal-desensitizer';
@@ -840,17 +846,28 @@ router.post('/materials/:id/prepare', async (req, res) => {
       timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
     });
 
-    // 读取结果
-    const manifestRaw = await fs.readFile(manifestPath, 'utf-8');
+    // A8: 完整性校验
+    const manifestRaw = await fs.readFile(tempManifest, 'utf-8');
     const manifest = JSON.parse(manifestRaw);
-    const sourceMap = JSON.parse(await fs.readFile(sourceMapPath, 'utf-8'));
+    const sourceMap = JSON.parse(await fs.readFile(tempSourceMap, 'utf-8'));
     if (!manifest.sourceSha256 || sourceMap.source_sha256 !== manifest.sourceSha256) {
       throw new Error('预处理输出的原件哈希不一致');
     }
+    const previewRaw = await fs.readFile(tempPreview, 'utf-8');
+    if (!previewRaw || !previewRaw.trim()) {
+      throw new Error('预处理输出的预览内容为空');
+    }
+
+    // A8: 原子重命名到目标 workDir
+    if (existsSync(workDir)) {
+      await fs.rm(workDir, { recursive: true, force: true });
+    }
+    await fs.rename(tempDir, workDir);
+    tempDir = null; // 已移交，不再清理
 
     // 更新 material 表
-    const relPreview = path.relative(path.join(__dirname, '..'), previewPath);
-    const relManifest = path.relative(path.join(__dirname, '..'), manifestPath);
+    const relPreview = path.relative(path.join(__dirname, '..'), path.join(workDir, 'preview.md'));
+    const relManifest = path.relative(path.join(__dirname, '..'), path.join(workDir, 'manifest.json'));
 
     db.prepare(`
       UPDATE "material" SET
@@ -870,7 +887,11 @@ router.post('/materials/:id/prepare', async (req, res) => {
     );
 
     // 自动将 candidates 写入 redaction_decision（全量替换，prepare 初始化专用）
-    const candidates = manifest.candidates || [];
+    // A7: 日期关闭时，过滤掉 DATE/TIME 候选
+    let candidates = manifest.candidates || [];
+    if (dateOff) {
+      candidates = candidates.filter(c => c.entityType !== 'DATE' && c.entityType !== 'TIME');
+    }
     replaceAllDecisions(matId, candidates.map(c => ({
         candidateId: c.id,
         blockId: c.blockId,
@@ -882,7 +903,7 @@ router.post('/materials/:id/prepare', async (req, res) => {
         sourceLocator: c.sourceLocator,
       })));
 
-    // 写审计
+    // A7: 写审计，包含 rulesConfig
     await writeAuditLog({
       case_id: mat.case_id,
       action: 'prepare',
@@ -891,6 +912,8 @@ router.post('/materials/:id/prepare', async (req, res) => {
         documentKind: manifest.documentKind,
         blocks: manifest.blocks?.length || 0,
         candidates: candidates.length,
+        rulesConfig: rulesConfig || {},
+        datePreserved: dateOff,
       },
       human_confirmed: 0,
     });
@@ -908,6 +931,10 @@ router.post('/materials/:id/prepare', async (req, res) => {
     });
   } catch (error) {
     console.error('Prepare Error:', error);
+    // A8: 补偿清理临时目录
+    if (tempDir) {
+      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    }
     // 回退状态
     try {
       const { default: db } = await import('./db/index.js');
@@ -990,7 +1017,7 @@ router.put('/materials/:id/decisions', async (req, res) => {
       FROM "material" WHERE id = ?
     `).get(matId);
     if (!mat) return res.status(404).json({ success: false, message: '材料不存在' });
-    if (!['reviewing', 'ready'].includes(mat.processing_status)) {
+    if (!['reviewing', 'ready', 'exported'].includes(mat.processing_status)) {
       return res.status(409).json({ success: false, message: '材料尚未进入可编辑的复核状态' });
     }
 
@@ -1010,6 +1037,7 @@ router.put('/materials/:id/decisions', async (req, res) => {
 
     // 处理每条决策
     const allowedActions = new Set(['redact', 'keep', 'cancel']);
+    const addedDecisions = [];
     for (const d of decisions) {
       if (!allowedActions.has(d.action)) {
         return res.status(400).json({ success: false, message: `不支持的决策动作: ${d.action}` });
@@ -1027,16 +1055,12 @@ router.put('/materials/:id/decisions', async (req, res) => {
           if (existingDecision.origin !== 'manual') {
             return res.status(400).json({ success: false, message: '自动候选必须明确选择脱敏或保留' });
           }
-          if (deleteDecision(matId, d.id) === 0) {
-            return res.status(404).json({ success: false, message: '决策不存在或不属于当前材料' });
-          }
+          deleteDecision(d.id);
         } else {
-          if (updateDecision(matId, d.id, {
+          updateDecision(matId, d.id, {
             action: d.action,
             confirmed: 1,
-          }) === 0) {
-            return res.status(404).json({ success: false, message: '决策不存在或不属于当前材料' });
-          }
+          });
         }
       } else if (d.action !== 'cancel') {
         const block = blocksById.get(d.blockId);
@@ -1057,12 +1081,33 @@ router.put('/materials/:id/decisions', async (req, res) => {
           sourceLocator: block.sourceLocator || {},
           confirmed: true,
         }]);
+        // 查询刚插入的决策，返回真实 id
+        const lastDecision = db.prepare(`
+          SELECT * FROM "redaction_decision"
+          WHERE material_id = ? AND block_id = ? AND start = ? AND end = ? AND origin = 'manual'
+          ORDER BY id DESC LIMIT 1
+        `).get(matId, d.blockId, d.start, d.end);
+        if (lastDecision) {
+          addedDecisions.push({
+            id: lastDecision.id,
+            candidateId: lastDecision.candidate_id,
+            blockId: lastDecision.block_id,
+            start: lastDecision.start,
+            end: lastDecision.end,
+            action: lastDecision.action,
+            origin: lastDecision.origin,
+            entityType: lastDecision.entity_type,
+            sourceLocator: (() => { try { return JSON.parse(lastDecision.source_locator); } catch { return {}; } })(),
+            confirmed: lastDecision.confirmed === 1,
+          });
+        }
       }
     }
 
-    // P1: 决策变化后，使 ready 状态失效，退回 reviewing
+    // A4: 决策变化后，使 ready/exported 状态失效，退回 reviewing
     db.prepare(`
-      UPDATE "material" SET processing_status = 'reviewing', redact_status = 'todo' WHERE id = ? AND processing_status = 'ready'
+      UPDATE "material" SET processing_status = 'reviewing', redact_status = 'todo'
+      WHERE id = ? AND processing_status IN ('ready', 'exported')
     `).run(matId);
 
     await writeAuditLog({
@@ -1076,7 +1121,7 @@ router.put('/materials/:id/decisions', async (req, res) => {
     const updatedDecisions = getDecisionsByMaterialId(matId);
     res.json({
       success: true,
-      data: { count: updatedDecisions.length },
+      data: { count: updatedDecisions.length, added: addedDecisions },
     });
   } catch (error) {
     console.error('Update Decisions Error:', error);
@@ -1171,8 +1216,8 @@ router.post('/materials/:id/export', async (req, res) => {
     const mat = db.prepare('SELECT * FROM "material" WHERE id = ?').get(matId);
     if (!mat) return res.status(404).json({ success: false, message: '材料不存在' });
 
-    // 状态校验
-    if (!['reviewing', 'ready'].includes(mat.processing_status)) {
+    // 状态校验：允许 exported 状态重新导出
+    if (!['reviewing', 'ready', 'exported'].includes(mat.processing_status)) {
       return res.status(409).json({ success: false, message: `材料状态 ${mat.processing_status} 不允许导出，需先完成预处理和复核` });
     }
 
