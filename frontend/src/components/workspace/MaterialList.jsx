@@ -76,11 +76,6 @@ export default function MaterialList({
         <span aria-hidden="true">＋</span>
         {uploading ? uploadLabel : '添加材料'}
       </Button>
-
-      <div className="material-note">
-        <strong>原件只读</strong>
-        <p>标注仅写入本地映射；导出时从原件生成新副本。</p>
-      </div>
     </aside>
   );
 }

@@ -71,7 +71,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .app-shell { display: flex; width: 100vw; height: 100vh; overflow: hidden; background: var(--base3); }
 .sidebar {
   width: 68px; flex: 0 0 68px; height: 100%; display: flex; flex-direction: column; align-items: center;
-  padding: 14px 8px 12px; border-right: 1px solid var(--line); background: rgba(241, 237, 228, .66);
+  padding: 14px 8px 12px; background: rgba(241, 237, 228, .66);
 }
 .brand-mark {
   width: 42px; height: 42px; border: 0; background: transparent; color: var(--base02);
@@ -116,7 +116,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
   transition: transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease;
 }
 .case-register-row:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); border-color: var(--line-strong); }
-.case-register-title { min-width: 0; display: flex; flex-direction: column; gap: 6px; padding-right: 30px; }
+.case-register-title { min-width: 0; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px; }
 .case-register-title strong {
   font: 500 17px/1.4 var(--font-display); letter-spacing: .02em;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
@@ -161,8 +161,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .rules-grid input { accent-color: var(--cyan); }
 
 .workspace-grid { width: 100%; min-height: 0; display: grid; grid-template-columns: 246px minmax(0, 1fr); overflow: hidden; }
-.material-panel { min-height: 0; display: flex; flex-direction: column; background: rgba(241, 237, 228, .45); border-right: 1px solid var(--line); }
-.material-panel-head { min-height: 54px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; border-bottom: 1px solid var(--line); }
+.material-panel { min-height: 0; display: flex; flex-direction: column; background: rgba(241, 237, 228, .45); }
+.material-panel-head { min-height: 54px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; }
 .material-panel-head h2 { margin: 0; font: 500 18px/1 var(--font-display); }
 .material-panel-head span { color: var(--base01); font: 11px/1 var(--font-mono); }
 .material-list { min-height: 0; overflow: auto; padding: 8px; }
