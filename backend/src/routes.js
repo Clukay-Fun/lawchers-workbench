@@ -14,6 +14,11 @@ import path from 'path';
 import fs from 'fs/promises';
 import { existsSync, mkdirSync } from 'fs';
 import { fileURLToPath } from 'url';
+import { execFile as execFileCb } from 'child_process';
+import { createHash } from 'crypto';
+import { promisify } from 'util';
+
+const execFileAsync = promisify(execFileCb);
 
 // 导入业务服务
 import { parseDocument } from './services/parserService.js';
@@ -27,6 +32,7 @@ import { addMaterial, updateMaterialStatus, deleteMaterial, bulkInsertEntities, 
 import { getCaseElement, updateCaseElement } from './db/elementRepo.js';
 import { createOpinion, confirmOpinion, getOpinionsByCaseId, deleteOpinion } from './db/opinionRepo.js';
 import { writeAuditLog, getAuditLogsByCaseId } from './db/auditRepo.js';
+import { replaceAllDecisions, insertDecisions, getDecisionsByMaterialId, getDecisionReviewCounts, updateDecision, deleteDecision } from './db/decisionRepo.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -185,6 +191,25 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     const originalName = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
     const ext = path.extname(originalName).toLowerCase();
     const tmpPath = req.file.path; // multer 临时存储路径
+
+    if (!['.docx', '.pdf'].includes(ext)) {
+      await fs.unlink(tmpPath).catch(() => {});
+      return res.status(400).json({ success: false, message: '仅支持 DOCX 和 PDF 文件' });
+    }
+    const handle = await fs.open(tmpPath, 'r');
+    const signature = Buffer.alloc(4);
+    try {
+      await handle.read(signature, 0, 4, 0);
+    } finally {
+      await handle.close();
+    }
+    const validSignature = ext === '.pdf'
+      ? signature.toString('ascii') === '%PDF'
+      : signature[0] === 0x50 && signature[1] === 0x4b;
+    if (!validSignature) {
+      await fs.unlink(tmpPath).catch(() => {});
+      return res.status(400).json({ success: false, message: '文件内容与扩展名不匹配' });
+    }
 
     // 移动文件到 uploads/<case_id>/ 子目录
     const caseUploadDir = path.join(uploadsDir, String(caseId));
@@ -578,14 +603,18 @@ router.delete('/materials/:id', async (req, res) => {
       if (abs.startsWith(path.resolve(uploadsDir))) {
         const dir = path.dirname(abs);
         const base = path.basename(abs, path.extname(abs));
-        const candidates = [
+        const fileCandidates = [
           abs,
           path.join(dir, `${base}.raw.md`),
           path.join(dir, `${base}.redacted.txt`),
           path.join(dir, `${base}.map.json`),
           path.join(dir, `${base}.audit.json`),
         ];
-        await Promise.all(candidates.map((p) => fs.unlink(p).catch(() => {})));
+        await Promise.all(fileCandidates.map((p) => fs.unlink(p).catch(() => {})));
+
+        // P1: 清理 .work_<materialId> 工作目录（含 preview/manifest/decisions/export 产物）
+        const workDir = path.join(dir, `.work_${matId}`);
+        await fs.rm(workDir, { recursive: true, force: true }).catch(() => {});
       }
     }
 
@@ -759,6 +788,471 @@ router.get('/cases/:id/audit', (req, res) => {
 
 // #endregion
 
+// #region Markdown 复核工作流 API
+
+/**
+ * POST /api/materials/:id/prepare - 触发文档预处理（调 legal-desens prepare）
+ */
+router.post('/materials/:id/prepare', async (req, res) => {
+  try {
+    const matId = parseInt(req.params.id, 10);
+    const { default: db } = await import('./db/index.js');
+    const mat = db.prepare('SELECT * FROM "material" WHERE id = ?').get(matId);
+    if (!mat) return res.status(404).json({ success: false, message: '材料不存在' });
+
+    const sourcePath = path.resolve(path.join(__dirname, '..', mat.stored_path));
+    if (!sourcePath.startsWith(path.resolve(uploadsDir))) {
+      return res.status(403).json({ success: false, message: '非法材料路径' });
+    }
+
+    // 更新处理状态为 preparing
+    db.prepare(`UPDATE "material" SET processing_status = 'preparing' WHERE id = ?`).run(matId);
+
+    // 准备输出目录
+    const caseDir = path.join(uploadsDir, String(mat.case_id));
+    const workDir = path.join(caseDir, `.work_${matId}`);
+    if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
+
+    const previewPath = path.join(workDir, 'preview.md');
+    const manifestPath = path.join(workDir, 'manifest.json');
+    const sourceMapPath = path.join(workDir, 'source-map.json');
+
+    // 调用 legal-desens prepare
+    const args = [
+      '-m', 'legal_desens.cli',
+      'prepare', sourcePath,
+      '--level', 'strict',
+      '--preview-md', previewPath,
+      '--manifest', manifestPath,
+      '--map', sourceMapPath,
+    ];
+
+    // NER 状态
+    if (!getIsNerEnabled()) {
+      args.push('--regex-only');
+    }
+
+    const PYTHON_BIN = process.env.PYTHON_BIN || 'python3';
+    const DESENSITIZER_DIR = process.env.DESENSITIZER_DIR || '/Users/clukay/Program/lawchers-skills/legal-desensitizer';
+
+    await execFileAsync(PYTHON_BIN, args, {
+      cwd: DESENSITIZER_DIR,
+      timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
+    });
+
+    // 读取结果
+    const manifestRaw = await fs.readFile(manifestPath, 'utf-8');
+    const manifest = JSON.parse(manifestRaw);
+    const sourceMap = JSON.parse(await fs.readFile(sourceMapPath, 'utf-8'));
+    if (!manifest.sourceSha256 || sourceMap.source_sha256 !== manifest.sourceSha256) {
+      throw new Error('预处理输出的原件哈希不一致');
+    }
+
+    // 更新 material 表
+    const relPreview = path.relative(path.join(__dirname, '..'), previewPath);
+    const relManifest = path.relative(path.join(__dirname, '..'), manifestPath);
+
+    db.prepare(`
+      UPDATE "material" SET
+        document_kind = ?,
+        preview_path = ?,
+        manifest_path = ?,
+        source_sha256 = ?,
+        processing_status = 'reviewing',
+        redact_status = 'todo'
+      WHERE id = ?
+    `).run(
+      manifest.documentKind || '',
+      relPreview,
+      relManifest,
+      manifest.sourceSha256 || '',
+      matId,
+    );
+
+    // 自动将 candidates 写入 redaction_decision（全量替换，prepare 初始化专用）
+    const candidates = manifest.candidates || [];
+    replaceAllDecisions(matId, candidates.map(c => ({
+        candidateId: c.id,
+        blockId: c.blockId,
+        start: c.start,
+        end: c.end,
+        action: 'redact',
+        origin: 'automatic',
+        entityType: c.entityType,
+        sourceLocator: c.sourceLocator,
+      })));
+
+    // 写审计
+    await writeAuditLog({
+      case_id: mat.case_id,
+      action: 'prepare',
+      source: 'legal-desens',
+      model_config: {
+        documentKind: manifest.documentKind,
+        blocks: manifest.blocks?.length || 0,
+        candidates: candidates.length,
+      },
+      human_confirmed: 0,
+    });
+
+    res.json({
+      success: true,
+      data: {
+        materialId: matId,
+        documentKind: manifest.documentKind,
+        blockCount: manifest.blocks?.length || 0,
+        candidateCount: candidates.length,
+        previewPath: relPreview,
+        manifestPath: relManifest,
+      },
+    });
+  } catch (error) {
+    console.error('Prepare Error:', error);
+    // 回退状态
+    try {
+      const { default: db } = await import('./db/index.js');
+      db.prepare(`UPDATE "material" SET processing_status = 'failed' WHERE id = ?`).run(parseInt(req.params.id, 10));
+    } catch {}
+    res.status(500).json({ success: false, message: '文档预处理失败', error: error.message });
+  }
+});
+
+/**
+ * GET /api/materials/:id/review - 获取复核数据（preview + manifest + decisions）
+ */
+router.get('/materials/:id/review', async (req, res) => {
+  try {
+    const matId = parseInt(req.params.id, 10);
+    const { default: db } = await import('./db/index.js');
+    const mat = db.prepare('SELECT * FROM "material" WHERE id = ?').get(matId);
+    if (!mat) return res.status(404).json({ success: false, message: '材料不存在' });
+
+    // 读取 preview markdown
+    let previewMd = '';
+    if (mat.preview_path) {
+      const absPath = path.resolve(path.join(__dirname, '..', mat.preview_path));
+      try { previewMd = await fs.readFile(absPath, 'utf-8'); } catch {}
+    }
+
+    // 读取 manifest
+    let manifest = null;
+    if (mat.manifest_path) {
+      const absPath = path.resolve(path.join(__dirname, '..', mat.manifest_path));
+      try { manifest = JSON.parse(await fs.readFile(absPath, 'utf-8')); } catch {}
+    }
+
+    // 获取决策
+    const decisions = getDecisionsByMaterialId(matId);
+
+    res.json({
+      success: true,
+      data: {
+        materialId: matId,
+        processingStatus: mat.processing_status,
+        verificationStatus: mat.verification_status,
+        documentKind: mat.document_kind,
+        previewMd,
+        manifest,
+        decisions: decisions.map(d => ({
+          id: d.id,
+          candidateId: d.candidate_id,
+          blockId: d.block_id,
+          start: d.start,
+          end: d.end,
+          action: d.action,
+          origin: d.origin,
+          entityType: d.entity_type,
+          sourceLocator: (() => { try { return JSON.parse(d.source_locator); } catch { return {}; } })(),
+          confirmed: d.confirmed === 1,
+        })),
+      },
+    });
+  } catch (error) {
+    console.error('Get Review Error:', error);
+    res.status(500).json({ success: false, message: '获取复核数据失败', error: error.message });
+  }
+});
+
+/**
+ * PUT /api/materials/:id/decisions - 批量更新决策（脱敏/保留/取消）
+ */
+router.put('/materials/:id/decisions', async (req, res) => {
+  try {
+    const matId = parseInt(req.params.id, 10);
+    const { decisions } = req.body;
+    if (!Array.isArray(decisions)) {
+      return res.status(400).json({ success: false, message: 'decisions 必须是数组' });
+    }
+
+    const { default: db } = await import('./db/index.js');
+    const mat = db.prepare(`
+      SELECT case_id, manifest_path, processing_status
+      FROM "material" WHERE id = ?
+    `).get(matId);
+    if (!mat) return res.status(404).json({ success: false, message: '材料不存在' });
+    if (!['reviewing', 'ready'].includes(mat.processing_status)) {
+      return res.status(409).json({ success: false, message: '材料尚未进入可编辑的复核状态' });
+    }
+
+    let manifest = null;
+    if (mat.manifest_path) {
+      const manifestPath = path.resolve(path.join(__dirname, '..', mat.manifest_path));
+      if (!manifestPath.startsWith(path.resolve(uploadsDir))) {
+        return res.status(403).json({ success: false, message: '非法复核清单路径' });
+      }
+      try {
+        manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
+      } catch (error) {
+        return res.status(409).json({ success: false, message: '复核清单缺失或损坏，请重新预处理材料' });
+      }
+    }
+    const blocksById = new Map((manifest?.blocks || []).map((block) => [block.id, block]));
+
+    // 处理每条决策
+    const allowedActions = new Set(['redact', 'keep', 'cancel']);
+    for (const d of decisions) {
+      if (!allowedActions.has(d.action)) {
+        return res.status(400).json({ success: false, message: `不支持的决策动作: ${d.action}` });
+      }
+      if (d.id) {
+        const existingDecision = db.prepare(`
+          SELECT origin FROM "redaction_decision"
+          WHERE id = ? AND material_id = ?
+        `).get(d.id, matId);
+        if (!existingDecision) {
+          return res.status(404).json({ success: false, message: '决策不存在或不属于当前材料' });
+        }
+        // 更新已有决策
+        if (d.action === 'cancel') {
+          if (existingDecision.origin !== 'manual') {
+            return res.status(400).json({ success: false, message: '自动候选必须明确选择脱敏或保留' });
+          }
+          if (deleteDecision(matId, d.id) === 0) {
+            return res.status(404).json({ success: false, message: '决策不存在或不属于当前材料' });
+          }
+        } else {
+          if (updateDecision(matId, d.id, {
+            action: d.action,
+            confirmed: 1,
+          }) === 0) {
+            return res.status(404).json({ success: false, message: '决策不存在或不属于当前材料' });
+          }
+        }
+      } else if (d.action !== 'cancel') {
+        const block = blocksById.get(d.blockId);
+        const start = Number(d.start);
+        const end = Number(d.end);
+        if (!block || !Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start || end > block.text.length) {
+          return res.status(400).json({ success: false, message: '人工脱敏位置无效或已过期，请重新选择' });
+        }
+        // 新增手动决策（追加，不删除已有）
+        insertDecisions(matId, [{
+          candidateId: d.candidateId || null,
+          blockId: d.blockId,
+          start: d.start,
+          end: d.end,
+          action: d.action,
+          origin: 'manual',
+          entityType: d.entityType || '',
+          sourceLocator: block.sourceLocator || {},
+          confirmed: true,
+        }]);
+      }
+    }
+
+    // P1: 决策变化后，使 ready 状态失效，退回 reviewing
+    db.prepare(`
+      UPDATE "material" SET processing_status = 'reviewing', redact_status = 'todo' WHERE id = ? AND processing_status = 'ready'
+    `).run(matId);
+
+    await writeAuditLog({
+      case_id: mat.case_id,
+      action: 'decisions_update',
+      source: 'human',
+      model_config: { count: decisions.length },
+      human_confirmed: 1,
+    });
+
+    const updatedDecisions = getDecisionsByMaterialId(matId);
+    res.json({
+      success: true,
+      data: { count: updatedDecisions.length },
+    });
+  } catch (error) {
+    console.error('Update Decisions Error:', error);
+    res.status(500).json({ success: false, message: '更新决策失败', error: error.message });
+  }
+});
+
+/**
+ * POST /api/materials/:id/review-complete - 标记复核完成
+ */
+router.post('/materials/:id/review-complete', async (req, res) => {
+  try {
+    const matId = parseInt(req.params.id, 10);
+    const { default: db } = await import('./db/index.js');
+    const mat = db.prepare(`
+      SELECT case_id, processing_status, source_sha256, stored_path
+      FROM "material" WHERE id = ?
+    `).get(matId);
+    if (!mat) return res.status(404).json({ success: false, message: '材料不存在' });
+
+    // P1: 必须处于 reviewing 状态
+    if (mat.processing_status !== 'reviewing') {
+      return res.status(409).json({
+        success: false,
+        message: `材料当前状态为 ${mat.processing_status}，只有 reviewing 状态才能标记完成`,
+      });
+    }
+
+    const sourcePath = path.resolve(path.join(__dirname, '..', mat.stored_path));
+    if (!sourcePath.startsWith(path.resolve(uploadsDir))) {
+      return res.status(403).json({ success: false, message: '非法材料路径' });
+    }
+    const currentSourceSha256 = createHash('sha256')
+      .update(await fs.readFile(sourcePath))
+      .digest('hex');
+    if (!mat.source_sha256 || currentSourceSha256 !== mat.source_sha256) {
+      db.prepare(`UPDATE "material" SET processing_status = 'failed' WHERE id = ?`).run(matId);
+      return res.status(409).json({
+        success: false,
+        message: '原件自预处理后已发生变化，请重新预处理并复核',
+      });
+    }
+
+    // 每个候选都必须有明确的人工决策；零候选时点击本接口即为整份人工确认。
+    const reviewCounts = getDecisionReviewCounts(matId);
+    if (reviewCounts.confirmed !== reviewCounts.total) {
+      return res.status(409).json({
+        success: false,
+        message: `仍有 ${reviewCounts.total - reviewCounts.confirmed} 处候选未经人工确认`,
+      });
+    }
+
+    db.prepare(`
+      UPDATE "material" SET processing_status = 'ready', redact_status = 'done' WHERE id = ?
+    `).run(matId);
+
+    await writeAuditLog({
+      case_id: mat.case_id,
+      action: 'review_complete',
+      source: 'human',
+      model_config: null,
+      human_confirmed: 1,
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Review Complete Error:', error);
+    res.status(500).json({ success: false, message: '标记复核完成失败', error: error.message });
+  }
+});
+
+/**
+ * POST /api/materials/:id/export - 按决策导出脱敏副本
+ *
+ * 流程：隐式确认未确认的自动候选 → 调 legal-desens 生成原格式脱敏副本 → 残留复检 → 下载
+ */
+router.post('/materials/:id/export', async (req, res) => {
+  try {
+    const matId = parseInt(req.params.id, 10);
+    const { default: db } = await import('./db/index.js');
+    const mat = db.prepare('SELECT * FROM "material" WHERE id = ?').get(matId);
+    if (!mat) return res.status(404).json({ success: false, message: '材料不存在' });
+
+    const sourcePath = path.resolve(path.join(__dirname, '..', mat.stored_path));
+    if (!sourcePath.startsWith(path.resolve(uploadsDir))) {
+      return res.status(403).json({ success: false, message: '非法材料路径' });
+    }
+
+    // A6: 隐式确认所有未确认的自动候选（按当前 action）
+    const unconfirmedDecisions = db.prepare(`
+      SELECT id FROM "redaction_decision" WHERE material_id = ? AND confirmed = 0
+    `).all(matId);
+    if (unconfirmedDecisions.length > 0) {
+      const confirmStmt = db.prepare(`UPDATE "redaction_decision" SET confirmed = 1 WHERE id = ?`);
+      for (const d of unconfirmedDecisions) {
+        confirmStmt.run(d.id);
+      }
+    }
+
+    // 准备工作目录
+    const workDir = path.join(uploadsDir, String(mat.case_id), `.work_${matId}`);
+    if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
+
+    const ext = path.extname(mat.filename);
+    const safeBase = path.basename(mat.filename, ext).replace(/[^\p{L}\p{N}._-]+/gu, '-');
+    const exportFilename = `${safeBase || 'document'}.redacted${ext}`;
+    const exportPath = path.join(workDir, exportFilename);
+
+    // 调用 legal-desens redact 生成原格式脱敏副本
+    const PYTHON_BIN = process.env.PYTHON_BIN || 'python3';
+    const DESENSITIZER_DIR = process.env.DESENSITIZER_DIR || '/Users/clukay/Program/lawchers-skills/legal-desensitizer';
+    const auditPath = path.join(workDir, 'export-audit.json');
+
+    const args = [
+      '-m', 'legal_desens.cli',
+      'redact', sourcePath,
+      '--level', 'strict',
+      '--out', exportPath,
+      '--map', path.join(workDir, 'export-map.json'),
+      '--audit', auditPath,
+    ];
+    if (!getIsNerEnabled()) args.push('--regex-only');
+
+    await execFileAsync(PYTHON_BIN, args, {
+      cwd: DESENSITIZER_DIR,
+      timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
+    });
+
+    // 残留复检：必须显式 passed === true
+    let auditData = null;
+    try {
+      auditData = JSON.parse(await fs.readFile(auditPath, 'utf-8'));
+    } catch {
+      return res.status(500).json({ success: false, message: '无法读取审计文件，导出阻断' });
+    }
+
+    const residualPassed = auditData?.residual_scan?.passed === true;
+
+    // 更新状态
+    db.prepare(`
+      UPDATE "material" SET
+        verification_status = ?,
+        redacted_path = ?,
+        audit_json = ?,
+        processing_status = ?,
+        redact_status = 'done'
+      WHERE id = ?
+    `).run(
+      residualPassed ? 'passed' : 'failed',
+      path.relative(path.join(__dirname, '..'), exportPath),
+      JSON.stringify(auditData),
+      residualPassed ? 'exported' : 'reviewing',
+      matId,
+    );
+
+    await writeAuditLog({
+      case_id: mat.case_id,
+      action: 'export',
+      source: 'legal-desens',
+      model_config: { residualPassed, unconfirmedImplicitlyConfirmed: unconfirmedDecisions.length, format: ext },
+      human_confirmed: 1,
+    });
+
+    if (!residualPassed) {
+      return res.status(409).json({ success: false, message: '残留扫描未通过，导出已阻断' });
+    }
+
+    res.download(exportPath, exportFilename);
+  } catch (error) {
+    console.error('Export Error:', error);
+    res.status(500).json({ success: false, message: '导出失败', error: error.message });
+  }
+});
+
+// #endregion
+
 // #region Stage 7: 导出 .docx
 
 /**
@@ -777,6 +1271,13 @@ router.post('/export/redacted', async (req, res) => {
     const { default: db } = await import('./db/index.js');
     const mat = db.prepare('SELECT * FROM "material" WHERE id = ?').get(materialId);
     if (!mat) return res.status(404).json({ success: false, message: '材料不存在' });
+
+    if (mat.preview_path || ['preparing', 'reviewing', 'ready', 'exported'].includes(mat.processing_status)) {
+      return res.status(409).json({
+        success: false,
+        message: '该材料已进入 Markdown 复核流程，旧版导出已禁用。',
+      });
+    }
 
     const sourcePath = path.resolve(path.join(__dirname, '..', mat.stored_path));
     if (!sourcePath.startsWith(path.resolve(uploadsDir))) {
