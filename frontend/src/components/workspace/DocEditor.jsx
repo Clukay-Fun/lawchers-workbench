@@ -298,7 +298,7 @@ export default function DocEditor({
   const manualItems = material?.manualRedactions || [];
 
   const captureSelection = (event) => {
-    if (mode !== 'original') return;
+    // 两种模式都允许划词标注：在脱敏预览中标记后会即时被遮盖为高亮框
     if (event.target instanceof HTMLTextAreaElement) {
       const text = event.target.value.slice(event.target.selectionStart, event.target.selectionEnd).trim();
       if (!text || text.length > 500) {
@@ -381,10 +381,10 @@ export default function DocEditor({
         {!isDocx && !isPdf && !isText && !isImage && <div className="document-error">暂不支持预览该文件格式。</div>}
       </div>
 
-      {mode === 'original' && <div className="selection-hint">框选原文即可添加人工脱敏标注</div>}
+      {!isImage && <div className="selection-hint">框选文字即可手动脱敏，标记后即时遮盖为高亮框</div>}
       {selection && (
         <div className="selection-popover" style={{ left: selection.x, top: selection.y }}>
-          <Button variant="ghost" onClick={toggleManualSelection} className="text-[#f7f4ee] hover:bg-[#f7f4ee]/10 hover:text-[#f7f4ee] px-2.5 py-1.5 h-auto text-xs font-normal">
+          <Button variant="ghost" onClick={toggleManualSelection} className="text-white hover:bg-white/10 hover:text-white px-2.5 py-1.5 h-auto text-xs font-normal">
             {manualItems.some((item) => (typeof item === 'string' ? item : item.text) === selection.text) ? '取消标注' : '标记脱敏'}
           </Button>
         </div>
