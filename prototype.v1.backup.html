@@ -1,0 +1,1142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LAWCHERS 敬法智能办案工作台 - 交互原型</title>
+  <style>
+    /* #region 1. 全局设计系统与变量规范 */
+    
+    :root {
+      /* 敬法VI标准色 */
+      --primary: #3c4fa0;         /* 敬法蓝 */
+      --primary-hover: #2b3b80;
+      --primary-light: rgba(60, 79, 160, 0.08);
+      --accent: #a3d8f4;          /* 天青亮蓝 */
+      --danger: #ef4444;
+      --success: #10b981;
+      
+      /* 明亮主题扁平化背景 */
+      --bg-main: #f8fafc;         /* 实色超浅灰大背景 */
+      --bg-card: #ffffff;         /* 纯白实体卡片背景 */
+      --border-color: #e2e8f0;    /* 实体灰色细分割线 */
+      
+      /* 高对比度文字规范 */
+      --text-main: #0f172a;       /* 炭黑主文字 */
+      --text-muted: #64748b;      /* 深灰说明文字 */
+      
+      --font-sans: 'Clear Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      --transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      --card-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.05);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background-color: var(--bg-main);
+      color: var(--text-main);
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+    }
+
+    /* #endregion */
+
+    /* #region 2. 侧边导航栏样式 */
+
+    .sidebar {
+      width: 80px;
+      background-color: var(--primary);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 1.5rem 0;
+      border-right: 1px solid rgba(0, 0, 0, 0.1);
+      z-index: 100;
+    }
+
+    .brand-logo {
+      color: #ffffff;
+      margin-bottom: 2.5rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.25rem;
+    }
+
+    .brand-logo span {
+      font-size: 0.65rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      opacity: 0.9;
+    }
+
+    .nav-menu {
+      display: flex;
+      flex-direction: column;
+      gap: 1.2rem;
+      flex: 1;
+      width: 100%;
+    }
+
+    .nav-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.35rem;
+      color: rgba(255, 255, 255, 0.6);
+      cursor: pointer;
+      padding: 0.75rem 0;
+      width: 100%;
+      font-size: 0.75rem;
+      font-weight: 500;
+      text-decoration: none;
+      transition: var(--transition);
+      border-left: 3px solid transparent;
+    }
+
+    .nav-item:hover {
+      color: #ffffff;
+      background-color: rgba(255, 255, 255, 0.05);
+    }
+
+    .nav-item.active {
+      color: #ffffff;
+      background-color: rgba(255, 255, 255, 0.1);
+      border-left-color: var(--accent);
+    }
+
+    .nav-icon {
+      font-size: 1.3rem;
+    }
+
+    .user-profile {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background-color: rgba(255, 255, 255, 0.15);
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #ffffff;
+      font-weight: bold;
+      font-size: 0.9rem;
+    }
+
+    /* #endregion */
+
+    /* #region 3. 主操作区与分栏结构 */
+
+    .main-container {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      height: 100vh;
+    }
+
+    .top-header {
+      height: 60px;
+      background-color: var(--bg-card);
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0 2rem;
+    }
+
+    .top-header h2 {
+      font-size: 1.15rem;
+      font-weight: 600;
+      color: var(--text-main);
+    }
+
+    .page-wrapper {
+      flex: 1;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .page-view {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      display: none; /* 默认隐藏，通过 JS 切换 */
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .page-view.active {
+      display: flex;
+    }
+
+    /* 三栏办案区网格布局 */
+    .workspace-grid {
+      display: grid;
+      grid-template-columns: 280px 1fr 360px;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    .workspace-col-left {
+      background-color: #f1f5f9;
+      border-right: 1px solid var(--border-color);
+      display: flex;
+      flex-direction: column;
+      padding: 1.2rem;
+      overflow-y: auto;
+    }
+
+    .workspace-col-center {
+      background-color: var(--bg-card);
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid var(--border-color);
+      overflow: hidden;
+      position: relative;
+    }
+
+    .workspace-col-right {
+      background-color: #f8fafc;
+      display: flex;
+      flex-direction: column;
+      padding: 1.5rem;
+      overflow-y: auto;
+    }
+
+    /* 实体化卡片 */
+    .solid-card {
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      box-shadow: var(--card-shadow);
+      padding: 1.25rem;
+      margin-bottom: 1rem;
+    }
+
+    /* #endregion */
+
+    /* #region 4. Workspace (办案区) 内部元素组件样式 */
+
+    /* 左一栏：文件列表与拖拽上传 */
+    .file-item {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.6rem 0.75rem;
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      margin-bottom: 0.5rem;
+      font-size: 0.8rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: var(--transition);
+    }
+
+    .file-item:hover, .file-item.active {
+      border-color: var(--primary);
+      background-color: var(--primary-light);
+    }
+
+    .compact-upload {
+      border: 1.5px dashed rgba(60, 79, 160, 0.3);
+      background-color: rgba(255, 255, 255, 0.5);
+      border-radius: 10px;
+      padding: 1rem;
+      text-align: center;
+      cursor: pointer;
+      font-size: 0.75rem;
+      color: var(--primary);
+      transition: var(--transition);
+    }
+
+    .compact-upload:hover {
+      border-color: var(--primary);
+      background-color: var(--primary-light);
+    }
+
+    /* 中二栏：脱敏编辑器与高亮交互 */
+    .editor-header {
+      padding: 1rem 1.5rem;
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background-color: #fafbfc;
+    }
+
+    .editor-body {
+      flex: 1;
+      padding: 1.5rem;
+      overflow-y: auto;
+      font-family: Menlo, Monaco, Consolas, monospace;
+      font-size: 0.95rem;
+      line-height: 1.8;
+      white-space: pre-wrap;
+      color: #334155;
+    }
+
+    /* 实体黄色交互脱敏标签 */
+    .masked-tag {
+      background-color: #fef08a;
+      border: 1px solid #facc15;
+      color: #713f12;
+      padding: 0.08rem 0.3rem;
+      border-radius: 4px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.2rem;
+      transition: var(--transition);
+    }
+
+    .masked-tag:hover {
+      background-color: #fef9c3;
+    }
+
+    .masked-tag.disabled {
+      background-color: #f1f5f9;
+      border-color: #cbd5e1;
+      color: #64748b;
+      text-decoration: line-through;
+      opacity: 0.75;
+    }
+
+    .tag-label {
+      font-size: 0.65rem;
+      background-color: rgba(0, 0, 0, 0.08);
+      padding: 0 0.15rem;
+      border-radius: 2px;
+    }
+
+    /* 右三栏：要素表单与计算看板 */
+    .form-title {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border-bottom: 1px solid var(--border-color);
+      padding-bottom: 0.3rem;
+      margin-bottom: 0.75rem;
+    }
+
+    .form-group {
+      margin-bottom: 0.8rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+    }
+
+    .form-group label {
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: var(--text-muted);
+    }
+
+    .form-group input, .form-group select {
+      padding: 0.45rem 0.75rem;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      font-size: 0.85rem;
+      outline: none;
+      transition: var(--transition);
+    }
+
+    .form-group input:focus, .form-group select:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px var(--primary-light);
+    }
+
+    /* 测算明细 */
+    .pricing-card {
+      border-color: var(--primary);
+      background-color: var(--bg-card);
+    }
+
+    .price-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 0.5rem 0;
+      border-bottom: 1px solid var(--border-color);
+      font-size: 0.85rem;
+    }
+
+    .price-row.total {
+      border-bottom: none;
+      font-size: 1.05rem;
+      font-weight: bold;
+      color: var(--primary);
+      padding-top: 0.75rem;
+    }
+
+    .btn {
+      padding: 0.6rem 1rem;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: var(--transition);
+      text-align: center;
+      width: 100%;
+    }
+
+    .btn-primary {
+      background-color: var(--primary);
+      color: #ffffff;
+    }
+
+    .btn-primary:hover {
+      background-color: var(--primary-hover);
+    }
+
+    /* #endregion */
+
+    /* #region 5. Case Archive (卷宗档案库) 样式 */
+
+    .archive-container {
+      padding: 2rem;
+      overflow-y: auto;
+      flex: 1;
+    }
+
+    .search-bar-row {
+      display: flex;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .search-input {
+      flex: 1;
+      padding: 0.6rem 1rem;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      font-size: 0.85rem;
+      outline: none;
+    }
+
+    .search-input:focus {
+      border-color: var(--primary);
+    }
+
+    .flat-table {
+      width: 100%;
+      border-collapse: collapse;
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: var(--card-shadow);
+      font-size: 0.85rem;
+    }
+
+    .flat-table th, .flat-table td {
+      padding: 0.8rem 1.2rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .flat-table th {
+      background-color: #fafbfc;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+
+    .flat-table tr:last-child td {
+      border-bottom: none;
+    }
+
+    .badge-stage {
+      padding: 0.2rem 0.4rem;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-weight: 600;
+    }
+
+    .stage-todo { background-color: #fee2e2; color: #ef4444; }
+    .stage-doing { background-color: #fef3c7; color: #d97706; }
+    .stage-done { background-color: #d1fae5; color: #10b981; }
+
+    /* #endregion */
+
+    /* #region 6. Document Templates (模板库) 样式 */
+
+    .templates-grid {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    .template-sidebar {
+      background-color: #f1f5f9;
+      border-right: 1px solid var(--border-color);
+      padding: 1.2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      overflow-y: auto;
+    }
+
+    .template-item {
+      padding: 0.8rem;
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      font-weight: 500;
+      transition: var(--transition);
+    }
+
+    .template-item:hover, .template-item.active {
+      border-color: var(--primary);
+      background-color: var(--primary-light);
+    }
+
+    .template-preview-area {
+      background-color: #090d16;
+      padding: 2rem;
+      overflow-y: auto;
+      display: flex;
+      justify-content: center;
+    }
+
+    .preview-paper {
+      background-color: var(--bg-card);
+      width: 100%;
+      max-width: 750px;
+      min-height: 800px;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 2.5rem 3.5rem;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      color: #334155;
+    }
+
+    .preview-paper h1 {
+      font-size: 1.5rem;
+      text-align: center;
+      margin-bottom: 1.5rem;
+      color: var(--primary);
+      border-bottom: 2px solid var(--border-color);
+      padding-bottom: 0.5rem;
+    }
+
+    .preview-paper h3 {
+      font-size: 1.1rem;
+      margin: 1.2rem 0 0.5rem;
+      color: #000000;
+      border-bottom: 1px solid var(--border-color);
+      padding-bottom: 0.2rem;
+    }
+
+    .preview-paper p {
+      font-size: 0.9rem;
+      line-height: 1.6;
+      margin-bottom: 0.8rem;
+    }
+
+    /* #endregion */
+
+    /* #region 7. Settings (设置) 样式 */
+
+    .settings-view {
+      padding: 2rem;
+      max-width: 600px;
+      overflow-y: auto;
+      flex: 1;
+    }
+
+    /* #endregion */
+
+    /* #region 8. 意见书预览抽屉 (Opinion Drawer) */
+
+    .drawer-backdrop {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: rgba(15, 23, 42, 0.4);
+      backdrop-filter: blur(4px);
+      z-index: 200;
+      display: none;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .drawer-content {
+      width: 80vw;
+      height: 90vh;
+      max-width: 1000px;
+      background-color: var(--bg-card);
+      border-radius: 16px;
+      border: 1px solid var(--border-color);
+      box-shadow: 0 20px 40px rgba(0,0,0,0.2);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* #endregion */
+  </style>
+</head>
+<body>
+
+  <!-- #region A. 左侧常驻深蓝侧边导航栏 -->
+  <aside class="sidebar">
+    <div class="brand-logo">
+      <!-- 敬法规范：六边形外廓，天平连线构成眼睛的几何抽象狮子头 Logo -->
+      <svg viewBox="0 0 100 100" width="45" height="45" style="fill: none; stroke: currentColor; stroke-width: 2.8; stroke-linecap: round; stroke-linejoin: round;">
+        <!-- 六边形外廓 -->
+        <polygon points="50,5 90,28 90,72 50,95 10,72 10,28" />
+        <!-- 中间立柱 (鼻梁) -->
+        <line x1="50" y1="20" x2="50" y2="75" />
+        <!-- 秤梁 (狮子眉骨) -->
+        <path d="M 22 35 L 50 20 L 78 35" />
+        <!-- 狮子脸颊轮廓 -->
+        <path d="M 25 35 L 35 55 L 50 60 L 65 55 L 75 35" />
+        <!-- 秤盘 (狮子眼睛) -->
+        <circle cx="28" cy="42" r="5" />
+        <circle cx="72" cy="42" r="5" />
+        <!-- 天平底座与狮子口鼻折线 -->
+        <path d="M 40 68 L 50 75 L 60 68" />
+        <path d="M 45 60 L 50 65 L 55 60" />
+      </svg>
+      <span>LAWCHERS</span>
+    </div>
+
+    <nav class="nav-menu">
+      <div class="nav-item active" onclick="switchPage('workspace', this)">
+        <span class="nav-icon">🏠</span>
+        <span>办案区</span>
+      </div>
+      <div class="nav-item" onclick="switchPage('archive', this)">
+        <span class="nav-icon">📂</span>
+        <span>卷宗库</span>
+      </div>
+      <div class="nav-item" onclick="switchPage('templates', this)">
+        <span class="nav-icon">📝</span>
+        <span>模板库</span>
+      </div>
+      <div class="nav-item" onclick="switchPage('settings', this)">
+        <span class="nav-icon">⚙️</span>
+        <span>设置</span>
+      </div>
+    </nav>
+
+    <div class="user-profile" title="Sarah J. | 高级合伙人">SJ</div>
+  </aside>
+  <!-- #endregion -->
+
+  <!-- #region B. 右侧主操作区 -->
+  <div class="main-container">
+    
+    <header class="top-header">
+      <h2 id="top-title">智能办案 Workspace</h2>
+      <div style="font-size: 0.8rem; color: var(--text-muted)">
+        承办律师：<strong style="color: var(--primary)">Sarah J. 执业律师</strong>
+      </div>
+    </header>
+
+    <div class="page-wrapper">
+
+      <!-- ================= 页面 1：办案工作空间 (Workspace) ================= -->
+      <section id="view-workspace" class="page-view active">
+        <div class="workspace-grid">
+          
+          <!-- 左栏：卷宗小管理列表 -->
+          <div class="workspace-col-left">
+            <h4 class="form-title">📂 最近解析材料</h4>
+            <div class="file-item active">
+              <span>⚖️</span>
+              <div style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">王大锤争议案.txt</div>
+            </div>
+            <div class="file-item">
+              <span>⚖️</span>
+              <div style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">李美丽解约纠纷.docx</div>
+            </div>
+            <div class="file-item">
+              <span>⚖️</span>
+              <div style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">张伟诉图强科技.pdf</div>
+            </div>
+            
+            <div class="compact-upload" style="margin-top: 1rem;">
+              <span>➕ 拖入或点击追加材料</span>
+            </div>
+          </div>
+
+          <!-- 中栏：交互式文本脱敏编辑器 -->
+          <div class="workspace-col-center">
+            <div class="editor-header">
+              <span style="font-size: 0.85rem; font-weight: 600; color: var(--text-muted)">王大锤争议案.txt (文本校对区)</span>
+              <span style="font-size: 0.75rem; color: var(--primary); font-weight: 500">点击黄色标记可反向放行显示</span>
+            </div>
+            
+            <!-- 原生 JS 脱敏微交互 -->
+            <div class="editor-body" id="doc-text-body">
+申请人：<span class="masked-tag" onclick="toggleTag(this, '王大锤', '王*')">王* <span class="tag-label">姓名</span></span>，手机号：<span class="masked-tag" onclick="toggleTag(this, '13812345678', '138****5678')">138****5678 <span class="tag-label">手机</span></span>，系 <span class="masked-tag" onclick="toggleTag(this, '北京图强科技有限公司', '北京****有限公司')">北京****有限公司 <span class="tag-label">企业</span></span> 的技术开发工程师。
+
+被申请人因经营策略调整，于 2023 年 10 月 31 日口头通知解除与申请人自 2022 年 3 月 15 日起订立的劳动关系。截至解约当日，双方因协商未能达成一致，用人单位未签署书面劳动合同，且未支付任何经济补偿金。
+
+申请人月平均基本工资为 15,000 元，现依法向劳动争议仲裁委员会申请仲裁，主张违法解除赔偿金以及未签劳动合同双倍工资差额。
+            </div>
+          </div>
+
+          <!-- 右栏：要素确认表单与测算 -->
+          <div class="workspace-col-right">
+            <h4 class="form-title">🛠️ 劳动事实确认</h4>
+            
+            <div class="solid-card" style="padding: 1rem; margin-bottom: 0.8rem;">
+              <div class="form-group">
+                <label>当事人姓名</label>
+                <input type="text" value="王大锤" id="inp-name" oninput="updateFact()">
+              </div>
+              <div class="form-group">
+                <label>被申请人名称</label>
+                <input type="text" value="北京图强科技有限公司" id="inp-company" oninput="updateFact()">
+              </div>
+              <div class="form-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+                <div class="form-group">
+                  <label>入职日期</label>
+                  <input type="date" value="2022-03-15" id="inp-start" onchange="calcDuration()">
+                </div>
+                <div class="form-group">
+                  <label>离职日期</label>
+                  <input type="date" value="2023-10-31" id="inp-end" onchange="calcDuration()">
+                </div>
+              </div>
+              <div class="form-group">
+                <label>前12月均薪 (元)</label>
+                <input type="number" value="15000" id="inp-salary" oninput="recalculate()">
+              </div>
+              <div class="form-group">
+                <label>是否签署劳动合同</label>
+                <select id="inp-contract" onchange="recalculate()">
+                  <option value="false" selected>未签订书面合同</option>
+                  <option value="true">已签订书面合同</option>
+                </select>
+              </div>
+              <div class="form-group" style="margin-bottom: 0;">
+                <label>解除合同原因</label>
+                <select id="inp-reason" onchange="recalculate()">
+                  <option value="dismiss" selected>单位口头/违法解除</option>
+                  <option value="expire">合同期满不续签</option>
+                  <option value="quit">劳动者因个人原因辞职</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- 实时赔偿金测算 -->
+            <div class="solid-card pricing-card" style="padding: 1rem; margin-bottom: 1rem;">
+              <h5 style="font-size: 0.8rem; font-weight: 600; color: var(--primary); margin-bottom: 0.5rem;">💰 维权索赔计算明细</h5>
+              
+              <div class="price-row">
+                <span>双倍工资差额：</span>
+                <strong id="val-double">¥ 165,000</strong>
+              </div>
+              <div class="price-row">
+                <span id="label-compensation">违法解除赔偿金：</span>
+                <strong id="val-compensation" style="color: var(--danger)">¥ 60,000</strong>
+              </div>
+              <div class="price-row">
+                <span>在职月数折算：</span>
+                <strong id="val-months">19.5 个月</strong>
+              </div>
+              <div class="price-row total">
+                <span>索赔总额估算：</span>
+                <strong id="val-total">¥ 225,000</strong>
+              </div>
+            </div>
+
+            <button class="btn btn-primary" onclick="openOpinionDrawer()">📄 生成专业法律意见书</button>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- ================= 页面 2：历史案件卷宗库 (Case Archive) ================= -->
+      <section id="view-archive" class="page-view">
+        <div class="archive-container">
+          <div class="search-bar-row">
+            <input type="text" class="search-input" placeholder="输入原告姓名、被告企业或案件关键字搜索...">
+            <button class="btn btn-primary" style="width: auto; padding: 0 1.5rem;">检索</button>
+          </div>
+
+          <table class="flat-table">
+            <thead>
+              <tr>
+                <th>案件编号</th>
+                <th>劳动者 (原告)</th>
+                <th>被申请人 (被告)</th>
+                <th>测算索赔额</th>
+                <th>当前状态</th>
+                <th>归档时间</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>LC-2026-01</strong></td>
+                <td>王*锤</td>
+                <td>北京图强科技有限公司</td>
+                <td>¥ 225,000</td>
+                <td><span class="badge-stage stage-todo">待出意见书</span></td>
+                <td>2026-06-18</td>
+                <td><a href="#" style="color: var(--primary); font-weight: 600; text-decoration: none;" onclick="showWorkspaceFromArchive()">切入办案区</a></td>
+              </tr>
+              <tr>
+                <td><strong>LC-2026-02</strong></td>
+                <td>李*丽</td>
+                <td>迅捷快递有限公司</td>
+                <td>¥ 45,000</td>
+                <td><span class="badge-stage stage-doing">要素已核对</span></td>
+                <td>2026-06-15</td>
+                <td><span style="color: var(--text-muted)">查阅</span></td>
+              </tr>
+              <tr>
+                <td><strong>LC-2026-03</strong></td>
+                <td>张*</td>
+                <td>天宏百货商行</td>
+                <td>¥ 12,500</td>
+                <td><span class="badge-stage stage-done">意见书已发</span></td>
+                <td>2026-06-10</td>
+                <td><span style="color: var(--text-muted)">查阅</span></td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div style="margin-top: 1.5rem;">
+            <button class="btn" style="background-color: #fee2e2; color: #ef4444; width: auto; font-size: 0.8rem; border: 1px solid #fca5a5;">
+              🗑️ 批量销毁选中案件 (物理擦除本地 LocalStorage 缓存)
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= 页面 3：法律文书模板中心 (Document Templates) ================= -->
+      <section id="view-templates" class="page-view">
+        <div class="templates-grid">
+          
+          <!-- 左侧模板大纲 -->
+          <div class="template-sidebar">
+            <h4 class="form-title">📂 劳动争议高频模板</h4>
+            <div class="template-item active">
+              <span>📄 [推荐] 劳动争议法律意见书</span>
+            </div>
+            <div class="template-item">
+              <span>📄 劳动人事争议仲裁申请书</span>
+            </div>
+            <div class="template-item">
+              <span>📄 代理人代理词 (庭审用)</span>
+            </div>
+            <div class="template-item">
+              <span>📄 拖欠工资催收律师函</span>
+            </div>
+            <div class="template-item">
+              <span>📄 答辩状 (被申请人视角)</span>
+            </div>
+          </div>
+
+          <!-- 右侧渲染预览区 -->
+          <div class="template-preview-area">
+            <div class="preview-paper">
+              <h1>关于 <span class="var-name">王大锤</span> 与 <span class="var-company">北京图强科技有限公司</span><br>劳动争议案之专业法律意见书</h1>
+              <p style="text-align: right; font-size: 0.8rem; color: var(--text-muted)">文号：【律见字（2026）第 061801 号】</p>
+              
+              <h3>一、 案件基础事实要素</h3>
+              <p>经对阁下提交的证据材料进行脱敏与分析，校对确认出以下核心劳动关系事实要素：</p>
+              <p>● <strong>用人单位</strong>：<span class="var-company">北京图强科技有限公司</span></p>
+              <p>● <strong>劳动者</strong>：<span class="var-name">王大锤</span></p>
+              <p>● <strong>入职时间</strong>：2022 年 03 月 15 日</p>
+              <p>● <strong>解约时间</strong>：2023 年 10 月 31 日</p>
+              <p>● <strong>均薪基数</strong>：15,000 元 / 月</p>
+              
+              <h3>二、 法律依据与索赔项目测算</h3>
+              <p>根据《中华人民共和国劳动合同法》之规定，测算阁下主张之维权项目明细如下：</p>
+              <p>1. <strong>未签合同双倍工资差额</strong> (《劳动合同法》第82条)：自用工满1个月的次日起，最多计付11个月。本案符合主张条件。<br>
+                 <strong>测算金额</strong>：15,000元 × 11个月 = <strong style="color: var(--primary)" class="var-double">165,000元</strong>。</p>
+              <p>2. <strong>违法解除赔偿金</strong> (《劳动合同法》第87条)：被申请人违法口头辞退，应按经济补偿标准的二倍支付赔偿金。<br>
+                 <strong>测算金额</strong>：在职折算1.5年 × 15,000元 × 2倍 = <strong style="color: var(--danger)" class="var-comp">60,000元</strong>。</p>
+              <p style="margin-top: 1.5rem; font-weight: bold; border-top: 1px dashed var(--border-color); padding-top: 0.5rem;">
+                维权索赔推荐总额估算：<span style="color: var(--primary); font-size: 1.2rem;" class="var-total">225,000元</span>。
+              </p>
+              
+              <div style="margin-top: 2rem; display: flex; gap: 1rem;">
+                <button class="btn btn-primary" style="width: auto;" onclick="alert('已模拟一键生成 Word (.docx) 文件并导出至本地电脑Downloads目录')">📥 一键下载文书 (.docx)</button>
+                <button class="btn" style="width: auto; background-color: #f1f5f9; border: 1px solid var(--border-color);" onclick="alert('已模拟调起系统打印，输出为 PDF')">🖨️ 打印文书</button>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- ================= 页面 4：系统设置 (Settings) ================= -->
+      <section id="view-settings" class="page-view">
+        <div class="settings-view">
+          <h3 style="margin-bottom: 1.5rem; color: var(--primary)">⚙️ 系统配置与隐私设置</h3>
+          
+          <div class="solid-card">
+            <h4 class="form-title">👤 律师执业落款变量定义</h4>
+            <div class="form-group">
+              <label>承办律师姓名</label>
+              <input type="text" value="Sarah J.">
+            </div>
+            <div class="form-group">
+              <label>所属执业律所</label>
+              <input type="text" value="敬法律师事务所">
+            </div>
+            <div class="form-group">
+              <label>执业证号</label>
+              <input type="text" value="14403202110XXXXXX">
+            </div>
+          </div>
+
+          <div class="solid-card">
+            <h4 class="form-title">🛡️ 脱敏规则灵敏度定义</h4>
+            <div class="form-group">
+              <label>默认掩码隐藏符</label>
+              <select>
+                <option value="star" selected>星号 (王*锤 / 138****5678)</option>
+                <option value="blank">空白 [REDACTED]</option>
+                <option value="line">下划线 (王__锤)</option>
+              </select>
+            </div>
+          </div>
+
+          <button class="btn" style="background-color: #fee2e2; color: #ef4444; border: 1px solid #fca5a5; width: auto;" onclick="alert('已擦除本地全部 localStorage 缓存数据')">擦除本地缓存并退出登录</button>
+        </div>
+      </section>
+
+    </div>
+
+  </div>
+  <!-- #endregion -->
+
+  <!-- #region C. 法律意见书预览抽屉 (Modal) -->
+  <div class="drawer-backdrop" id="opinion-drawer">
+    <div class="drawer-content">
+      <div class="drawer-header" style="background-color: var(--primary); color: #ffffff;">
+        <h3 style="font-size: 1.05rem; color:#fff;">📝 法律意见书预览 (在线编辑微调)</h3>
+        <button onclick="closeOpinionDrawer()" style="background:none; border:none; color:#ffffff; font-size:1.5rem; cursor:pointer;">&times;</button>
+      </div>
+      <div class="drawer-body" style="background-color: #090d16; padding: 2rem;">
+        <div class="preview-paper" style="max-height: 100%; overflow-y: auto;">
+          <h1>关于 <span class="var-name">王大锤</span> 与 <span class="var-company">北京图强科技有限公司</span><br>劳动争议案之专业法律意见书</h1>
+          <p style="text-align: right; font-size: 0.8rem; color: var(--text-muted)">日期：2026年6月18日</p>
+          <p>致：<span class="var-name">王大锤</span> 阁下</p>
+          <hr style="border:0; border-top:1px solid var(--border-color); margin: 1rem 0;">
+          <p>经深度核查，被申请人 <span class="var-company">北京图强科技有限公司</span> 因口头辞退且未签署书面劳动合同，已触犯《劳动合同法》相关条款。本意见书为您提供索赔主张如下：</p>
+          <p>1. 未签劳动合同双倍工资差额：<strong class="var-double">¥ 165,000</strong>元。</p>
+          <p>2. 违法解除劳动合同赔偿金：<strong class="var-comp">¥ 60,000</strong>元。</p>
+          <p style="font-weight:bold; font-size:1rem; margin-top:1rem;">维权主张总额：<span style="color: var(--primary)" class="var-total">¥ 225,000</span>元。</p>
+          <p style="margin-top: 2rem; color: var(--text-muted); font-size: 0.75rem;">*注：本意见书由智能办案助理初拟，正式法律文书应以律师最终签章为准。</p>
+          
+          <div style="margin-top: 2rem; display: flex; gap: 1rem;">
+            <button class="btn btn-primary" style="width: auto;" onclick="closeOpinionDrawer()">💾 确认意见并保存</button>
+            <button class="btn" style="width: auto; background-color:#f1f5f9; border:1px solid var(--border-color);" onclick="closeOpinionDrawer()">取消</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <!-- #endregion -->
+
+  <!-- #region D. 核心交互 JavaScript 引擎 -->
+  <script>
+    
+    /**
+     * 功能: 切换左侧导航栏主页面视图
+     * 用处: 点击导航Tab时，隐藏其他View，展示选中View
+     */
+    function switchPage(pageId, element) {
+      // 1. 去除所有导航的激活高亮，为当前项加高亮
+      const navItems = document.querySelectorAll('.nav-item');
+      navItems.forEach(item => item.classList.remove('active'));
+      element.classList.add('active');
+
+      // 2. 隐藏所有的 View 盒子，只展示选中的 ID 盒子
+      const views = document.querySelectorAll('.page-view');
+      views.forEach(v => v.classList.remove('active'));
+      
+      const targetView = document.getElementById('view-' + pageId);
+      if (targetView) targetView.classList.add('active');
+
+      // 3. 动态切换顶栏的大标题
+      const titles = {
+        'workspace': '智能办案 Workspace',
+        'archive': '历史案件卷宗库 (LocalStorage)',
+        'templates': '文书模板一键套用中心',
+        'settings': '系统配置与隐私定义'
+      };
+      document.getElementById('top-title').innerText = titles[pageId] || '办案系统';
+    }
+
+    /**
+     * 功能: 在线脱敏 Badge 的点击切换（明文与掩码的切换）
+     * 用处: 律师用鼠标点击中栏黄色标签时，撤销或恢复脱敏
+     */
+    function toggleTag(element, originalText, maskedText) {
+      const isMasked = element.classList.contains('disabled');
+      if (isMasked) {
+        // 当前是禁用脱敏（显示明文），点击恢复脱敏（显示掩码）
+        element.classList.remove('disabled');
+        // 取出节点中的文字，只保留类型Badge，文字替换为掩码
+        const typeSpan = element.querySelector('.tag-label').outerHTML;
+        element.innerHTML = maskedText + ' ' + typeSpan;
+        element.title = "点击取消脱敏，恢复明文";
+      } else {
+        // 当前是激活脱敏（显示掩码），点击放行（显示明文）
+        element.classList.add('disabled');
+        const typeSpan = element.querySelector('.tag-label').outerHTML;
+        element.innerHTML = originalText + ' ' + typeSpan;
+        element.title = "已恢复明文，点击重新脱敏";
+      }
+    }
+
+    /**
+     * 功能: 计算两个日期之间的服务月数，并触发赔偿重算
+     */
+    function calcDuration() {
+      const startVal = document.getElementById('inp-start').value;
+      const endVal = document.getElementById('inp-end').value;
+      if (!startVal || !endVal) return;
+
+      const start = new Date(startVal);
+      const end = new Date(endVal);
+
+      let workingMonths = (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth());
+      if (end.getDate() - start.getDate() > 15) {
+        workingMonths += 1;
+      } else if (end.getDate() - start.getDate() > 0) {
+        workingMonths += 0.5;
+      }
+      workingMonths = Math.max(0, Math.round(workingMonths * 10) / 10);
+      
+      document.getElementById('val-months').innerText = workingMonths + ' 个月';
+      recalculate(workingMonths);
+    }
+
+    /**
+     * 功能: 劳动争议事实变更时的实时重算引擎 (根据劳动合同法计算)
+     */
+    function recalculate(workingMonthsInput) {
+      const salary = parseFloat(document.getElementById('inp-salary').value) || 0;
+      const hasContract = document.getElementById('inp-contract').value === 'true';
+      const reason = document.getElementById('inp-reason').value;
+
+      // 如果未传入月份，则主动计算一次
+      let workingMonths = workingMonthsInput;
+      if (workingMonths === undefined) {
+        const startVal = document.getElementById('inp-start').value;
+        const endVal = document.getElementById('inp-end').value;
+        if (startVal && endVal) {
+          const start = new Date(startVal);
+          const end = new Date(endVal);
+          workingMonths = (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth());
+          if (end.getDate() - start.getDate() > 15) workingMonths += 1;
+          else if (end.getDate() - start.getDate() > 0) workingMonths += 0.5;
+          workingMonths = Math.max(0, Math.round(workingMonths * 10) / 10);
+          document.getElementById('val-months').innerText = workingMonths + ' 个月';
+        } else {
+          workingMonths = 0;
+        }
+      }
+
+      // 1. 未签劳动合同双倍工资 (第82条)：最高11个月
+      let doubleCompensation = 0;
+      if (!hasContract && workingMonths > 1) {
+        const unpaidMonths = Math.min(11, workingMonths - 1);
+        doubleCompensation = unpaidMonths * salary;
+      }
+      document.getElementById('val-double').innerText = '¥ ' + doubleCompensation.toLocaleString();
+
+      // 2. 经济补偿金 (第47条)
+      const years = Math.floor(workingMonths / 12);
+      const remaining = workingMonths % 12;
+      let multiplier = years;
+      if (remaining >= 6) multiplier += 1;
+      else if (remaining > 0) multiplier += 0.5;
+      const compensation = multiplier * salary;
+
+      // 3. 违法解除赔偿金 (第87条)：双倍补偿
+      let damages = 0;
+      if (reason === 'dismiss') {
+        damages = compensation * 2;
+        document.getElementById('label-compensation').innerText = '违法解除赔偿金：';
+        document.getElementById('val-compensation').innerText = '¥ ' + damages.toLocaleString();
+        document.getElementById('val-compensation').style.color = 'var(--danger)';
+      } else if (reason === 'expire') {
+        damages = compensation; // 到期不续签为补偿金
+        document.getElementById('label-compensation').innerText = '期满终止补偿金：';
+        document.getElementById('val-compensation').innerText = '¥ ' + damages.toLocaleString();
+        document.getElementById('val-compensation').style.color = 'var(--text-main)';
+      } else {
+        damages = 0; // 员工主动辞职无补偿
+        document.getElementById('label-compensation').innerText = '辞职经济补偿金：';
+        document.getElementById('val-compensation').innerText = '¥ 0';
+        document.getElementById('val-compensation').style.color = 'var(--text-muted)';
+      }
+
+      // 4. 总标的额汇总并同步渲染至所有意见书标签变量中
+      const total = doubleCompensation + damages;
+      document.getElementById('val-total').innerText = '¥ ' + total.toLocaleString();
+
+      // 同步到文书模板和抽屉预览的 DOM 变量中
+      const clientName = document.getElementById('inp-name').value;
+      const companyName = document.getElementById('inp-company').value;
+
+      document.querySelectorAll('.var-name').forEach(el => el.innerText = clientName);
+      document.querySelectorAll('.var-company').forEach(el => el.innerText = companyName);
+      document.querySelectorAll('.var-double').forEach(el => el.innerText = doubleCompensation.toLocaleString() + '元');
+      document.querySelectorAll('.var-comp').forEach(el => el.innerText = damages.toLocaleString() + '元');
+      document.querySelectorAll('.var-total').forEach(el => el.innerText = total.toLocaleString() + '元');
+    }
+
+    /**
+     * 功能: 响应表单修改实时更新头部案卷要素文字
+     */
+    function updateFact() {
+      recalculate();
+    }
+
+    /**
+     * 功能: 唤起与关闭法律意见书抽屉弹层
+     */
+    function openOpinionDrawer() {
+      // 触发重算以同步变量
+      recalculate();
+      document.getElementById('opinion-drawer').style.display = 'flex';
+    }
+
+    function closeOpinionDrawer() {
+      document.getElementById('opinion-drawer').style.display = 'none';
+    }
+
+    /**
+     * 功能: 从卷宗表双击切回办案工作台
+     */
+    function showWorkspaceFromArchive() {
+      const workspaceTab = document.querySelectorAll('.nav-item')[0];
+      switchPage('workspace', workspaceTab);
+    }
+
+  </script>
+  <!-- #endregion -->
+
+</body>
+</html>
