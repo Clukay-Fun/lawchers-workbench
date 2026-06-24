@@ -15,6 +15,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
 } from '@/components/ui/dropdown-menu';
+import { FilePlus2 } from 'lucide-react';
 
 function formatUpdatedAt(value) {
   if (!value) return '最近更新';
@@ -53,7 +54,10 @@ export default function Home({ cases, onSelectCase, onCreateCase, onDeleteCase }
   return (
     <div className="home-container">
       <div className="case-register-head">
-        <p>{cases.length ? `${cases.length} 个本地案件` : '案件材料仅保存在本机'}</p>
+        <div className="register-heading">
+          <h2>案件</h2>
+          {cases.length > 0 && <span>{cases.length}</span>}
+        </div>
         <Button variant="default" onClick={() => setIsModalOpen(true)}>新建案件</Button>
       </div>
 
@@ -63,9 +67,10 @@ export default function Home({ cases, onSelectCase, onCreateCase, onDeleteCase }
         </div>
         {cases.length === 0 ? (
           <div className="empty-register">
-            <strong>还没有案件</strong>
-            <p>新建案件后，即可上传材料并在原格式文档中校对脱敏结果。</p>
-            <Button variant="default" onClick={() => setIsModalOpen(true)}>新建第一个案件</Button>
+            <span className="empty-icon"><FilePlus2 /></span>
+            <strong>暂无案件</strong>
+            <p>新建案件并上传材料，在原格式文档上脱敏校对。</p>
+            <Button variant="default" onClick={() => setIsModalOpen(true)}>新建案件</Button>
           </div>
         ) : cases.map((item) => {
           const materialText = `${item.materialCount || 0} 份材料 · ${formatUpdatedAt(item.updatedAt)} 更新`;
