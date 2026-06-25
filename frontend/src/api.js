@@ -48,6 +48,16 @@ export async function deleteHistory(id) {
   return response.json();
 }
 
+/** 重新下载已导出的脱敏文件 */
+export async function downloadHistoryFile(id) {
+  const response = await fetch(`${API_BASE}/history/${id}/download`, { method: 'GET' });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.message || '下载失败');
+  }
+  return response;
+}
+
 /** 还原脱敏文件 */
 export async function restoreFile(redactedFile, mapFile) {
   const formData = new FormData();

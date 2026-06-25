@@ -170,6 +170,7 @@ export default function DesensitizePage({ settings }) {
         action: 'redact',
         origin: 'automatic',
         entityType: c.entityType,
+        original: c.original || c.text || '',
         confirmed: false,
       }));
       setTask({ ...data, decisions });
@@ -227,11 +228,6 @@ export default function DesensitizePage({ settings }) {
     try {
       const response = await exportTask(task.taskId, {
         decisions: task.decisions,
-        manifest: task.manifest,
-        sourceMap: task.sourceMap,
-        filePath: task.filePath,
-        documentKind: task.documentKind,
-        filename: task.filename,
       });
       const blob = await response.blob();
       const ext = task.filename ? task.filename.substring(task.filename.lastIndexOf('.')) : '';
@@ -261,7 +257,6 @@ export default function DesensitizePage({ settings }) {
   if (!task && !loading) {
     return (
       <div className="tool-empty">
-        <div className="tool-empty-icon">📄</div>
         <strong>上传一份文档开始脱敏</strong>
         <p>支持 DOCX、PDF、TXT、MD</p>
         <Button variant="default" onClick={() => fileInputRef.current?.click()}>选择文件</Button>

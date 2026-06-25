@@ -5,8 +5,8 @@ const NAV_ITEMS = [
   { key: 'restore', label: '还原', Icon: RotateCcw },
   { key: 'history', label: '历史', Icon: History },
   { key: 'rules', label: '规则', Icon: BookOpen },
-  { key: 'settings', label: '设置', Icon: Settings },
   { key: 'download', label: '下载', Icon: Download },
+  { key: 'settings', label: '设置', Icon: Settings },
 ];
 
 export default function Sidebar({ currentView, onViewChange }) {

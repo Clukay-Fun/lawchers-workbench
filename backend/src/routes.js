@@ -68,6 +68,16 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 }
 });
 
+// #region 旧版 API 退役门控（默认关闭，设 LEGACY_API_ENABLED=true 可重新启用）
+if (!process.env.LEGACY_API_ENABLED) {
+  const legacyPaths = ['/cases', '/upload', '/analyze', '/generate', '/opinions', '/materials'];
+  for (const p of legacyPaths) {
+    router.all(`${p}`, (_req, res) => res.status(410).json({ success: false, message: '此 API 已退役，请使用工具模式' }));
+    router.all(`${p}/*`, (_req, res) => res.status(410).json({ success: false, message: '此 API 已退役，请使用工具模式' }));
+  }
+}
+// #endregion
+
 // #region Stage 4: 案件 CRUD API
 
 /**
@@ -1771,8 +1781,125 @@ router.get('/diagnostics', async (req, res) => {
 
 // #region 工具模式 API（脱敏/还原/历史/规则）
 
-import { createTask, getTaskList, getTaskById, deleteTask } from './db/taskRepo.js';
+import { createTask, getTaskList, getTaskById, deleteTask, updateTask } from './db/taskRepo.js';
 import { getAllRules, getRulesByCategory, createRule, updateRule, deleteRule } from './db/ruleRepo.js';
+
+/**
+ * 将引擎默认规则 + DB 自定义规则/强制脱敏词合并，写入临时 rules 文件。
+ * 保留词库不写入 rules：legal-desens 的 rules.json 只表达“检测候选”，
+ * 保留语义由工作台在 prepare 后过滤候选完成。
+ * @returns {Promise<string>} 临时 rules 文件路径
+ */
+async function buildMergedRulesFile(workDir) {
+  const { resolveLegalDesensBin } = await import('./services/cliResolver.js');
+  const { execFile: execFileCb } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const execFileAsync = promisify(execFileCb);
+  const bin = resolveLegalDesensBin();
+
+  // 读取引擎默认规则
+  let engineRules = [];
+  try {
+    const { stdout } = await execFileAsync(bin, ['paths', '--json'], { timeout: 10000 });
+    const paths = JSON.parse(stdout);
+    if (paths.rules && existsSync(paths.rules)) {
+      engineRules = JSON.parse(await fs.readFile(paths.rules, 'utf-8'));
+    }
+  } catch {
+    // fallback: 尝试 getRulesPath
+    try {
+      const { getRulesPath } = await import('./services/cliResolver.js');
+      const rp = getRulesPath();
+      if (rp && existsSync(rp)) engineRules = JSON.parse(await fs.readFile(rp, 'utf-8'));
+    } catch { /* ignore */ }
+  }
+
+  // 读取 DB 中的自定义规则 + 强制脱敏词
+  let dbRules = [];
+  try {
+    dbRules = getAllRules().filter(r => r.is_active && r.regex && r.category !== 'whitelist');
+  } catch { /* ignore */ }
+
+  // 合并：DB 规则作为附加规则条目
+  for (const r of dbRules) {
+    try {
+      new RegExp(r.regex); // 验证正则合法性
+    } catch { continue; } // 跳过不合法正则
+
+    const category = r.category || 'custom';
+    if (category === 'blacklist') {
+      // 强制脱敏词：作为高优先级检测规则，命中后一定进入候选
+      engineRules.push({
+        id: `db_force_${r.id}`,
+        name: r.name || `强制脱敏词 #${r.id}`,
+        entity_type: r.token_prefix || 'FORCE',
+        label_prefix: r.description || '强制脱敏',
+        pattern: r.regex,
+        enabled: true,
+        priority: 10000,
+      });
+    } else {
+      // 自定义规则：作为普通检测规则
+      engineRules.push({
+        id: `db_custom_${r.id}`,
+        name: r.name || `自定义 #${r.id}`,
+        entity_type: r.token_prefix || 'CUSTOM',
+        label_prefix: r.description || '自定义规则',
+        pattern: r.regex,
+        enabled: true,
+        priority: 500,
+      });
+    }
+  }
+
+  const mergedPath = path.join(workDir, 'merged-rules.json');
+  await fs.writeFile(mergedPath, JSON.stringify(engineRules, null, 2), 'utf-8');
+  return mergedPath;
+}
+
+function activeWhitelistMatchers() {
+  try {
+    return getRulesByCategory('whitelist')
+      .filter(r => r.is_active && r.regex)
+      .map((rule) => {
+        try {
+          return { id: rule.id, re: new RegExp(rule.regex) };
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function candidateText(candidate, blocksById) {
+  if (candidate.original || candidate.text) return candidate.original || candidate.text;
+  const blockText = blocksById.get(candidate.blockId) || '';
+  if (
+    Number.isInteger(candidate.start) &&
+    Number.isInteger(candidate.end) &&
+    candidate.start >= 0 &&
+    candidate.end >= candidate.start
+  ) {
+    return blockText.slice(candidate.start, candidate.end);
+  }
+  return '';
+}
+
+function applyWhitelistToManifest(manifest) {
+  const matchers = activeWhitelistMatchers();
+  if (!matchers.length || !Array.isArray(manifest?.candidates)) return manifest;
+
+  const blocksById = new Map((manifest.blocks || []).map((block) => [block.id, block.text || '']));
+  const candidates = manifest.candidates.filter((candidate) => {
+    const text = candidateText(candidate, blocksById);
+    return !text || !matchers.some(({ re }) => re.test(text));
+  });
+
+  return { ...manifest, candidates };
+}
 
 /**
  * POST /api/tasks - 上传文件 + 自动 prepare + 返回 candidates/preview
@@ -1811,8 +1938,14 @@ router.post('/tasks', upload.single('file'), async (req, res) => {
     const finalPath = path.join(tasksDir, newFilename);
     await fs.rename(tmpPath, finalPath);
 
-    // 调用 legal-desens prepare
-    const { rulesConfig } = req.body || {};
+    // 解析 rulesConfig（FormData 中是 JSON 字符串）
+    let rulesConfig = {};
+    try {
+      rulesConfig = typeof req.body?.rulesConfig === 'string'
+        ? JSON.parse(req.body.rulesConfig)
+        : (req.body?.rulesConfig || {});
+    } catch { rulesConfig = {}; }
+
     const { resolveLegalDesensBin } = await import('./services/cliResolver.js');
     const legalDesensBin = resolveLegalDesensBin();
 
@@ -1823,6 +1956,14 @@ router.post('/tasks', upload.single('file'), async (req, res) => {
     const tempManifest = path.join(tempDir, 'manifest.json');
     const tempSourceMap = path.join(tempDir, 'source-map.json');
 
+    // 构建合并规则文件（引擎默认 + DB 自定义/黑名单/白名单）
+    let mergedRulesPath = null;
+    try {
+      mergedRulesPath = await buildMergedRulesFile(tempDir);
+    } catch (mergeErr) {
+      console.warn('[WARN] 构建合并规则文件失败，使用引擎默认:', mergeErr.message);
+    }
+
     const args = [
       'prepare', finalPath,
       '--level', 'strict',
@@ -1830,6 +1971,7 @@ router.post('/tasks', upload.single('file'), async (req, res) => {
       '--manifest', tempManifest,
       '--map', tempSourceMap,
     ];
+    if (mergedRulesPath) args.push('--rules', mergedRulesPath);
 
     const { getIsNerEnabled } = await import('./services/redactService.js');
     if (!getIsNerEnabled()) args.push('--regex-only');
@@ -1837,7 +1979,7 @@ router.post('/tasks', upload.single('file'), async (req, res) => {
     // entity-policy for date/time preservation
     const preserveTypes = [];
     const typeAliases = { LOC: ['ADDRESS'], DATE: ['DATE', 'TIME'] };
-    for (const [type, enabled] of Object.entries(rulesConfig || {})) {
+    for (const [type, enabled] of Object.entries(rulesConfig)) {
       if (enabled === false) preserveTypes.push(...(typeAliases[type] || [type]));
     }
     if (preserveTypes.length) {
@@ -1850,7 +1992,8 @@ router.post('/tasks', upload.single('file'), async (req, res) => {
       timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
     });
 
-    const manifest = JSON.parse(await fs.readFile(tempManifest, 'utf-8'));
+    const manifest = applyWhitelistToManifest(JSON.parse(await fs.readFile(tempManifest, 'utf-8')));
+    await fs.writeFile(tempManifest, JSON.stringify(manifest, null, 2), 'utf-8');
     const sourceMap = JSON.parse(await fs.readFile(tempSourceMap, 'utf-8'));
     const previewMd = await fs.readFile(tempPreview, 'utf-8');
 
@@ -1859,10 +2002,23 @@ router.post('/tasks', upload.single('file'), async (req, res) => {
     await fs.rename(tempDir, workDir);
     tempDir = null;
 
+    // 写入 DB（服务端拥有任务生命周期）
+    const task = createTask({
+      filename: originalName,
+      ext,
+      document_kind: manifest.documentKind || '',
+      entity_stats: null,
+      source_path: finalPath,
+      work_dir: workDir,
+      manifest_path: path.join(workDir, 'manifest.json'),
+      source_map_path: path.join(workDir, 'source-map.json'),
+      rules_config: rulesConfig,
+    });
+
     res.json({
       success: true,
       data: {
-        taskId: Date.now(), // 临时 ID，后续可改为 DB 写入
+        taskId: task.id,
         filename: originalName,
         ext,
         documentKind: manifest.documentKind || '',
@@ -1871,8 +2027,6 @@ router.post('/tasks', upload.single('file'), async (req, res) => {
         previewMd,
         manifest,
         sourceMap,
-        filePath: finalPath,
-        workDir,
       },
     });
   } catch (error) {
@@ -1883,36 +2037,58 @@ router.post('/tasks', upload.single('file'), async (req, res) => {
 });
 
 /**
- * POST /api/tasks/:id/export - 按决策导出脱敏副本 + 残留审计 + 写历史
+ * POST /api/tasks/:id/export - 按决策导出脱敏副本 + 残留审计 + 更新任务
+ * 只接受 decisions，其余路径从 DB 读取
  */
 router.post('/tasks/:id/export', async (req, res) => {
   try {
-    const { decisions, manifest, sourceMap, filePath, documentKind, filename } = req.body;
-    if (!decisions || !manifest || !filePath) {
-      return res.status(400).json({ success: false, message: '缺少导出必需数据' });
+    const taskId = parseInt(req.params.id, 10);
+    const task = getTaskById(taskId);
+    if (!task) return res.status(404).json({ success: false, message: '任务不存在' });
+
+    const { decisions } = req.body;
+    if (!decisions || !Array.isArray(decisions)) {
+      return res.status(400).json({ success: false, message: '缺少 decisions' });
     }
 
-    // PDF 暂不支持（需逐页混合管线）
-    if (documentKind && documentKind.includes('pdf')) {
+    const filePath = task.source_path;
+    if (!filePath || !existsSync(filePath)) {
+      return res.status(409).json({ success: false, message: '源文件已丢失，请重新上传' });
+    }
+
+    // PDF 暂不支持
+    if (task.document_kind && task.document_kind.includes('pdf')) {
       return res.status(501).json({ success: false, message: 'PDF 按决策导出尚未支持' });
     }
 
     const { resolveLegalDesensBin } = await import('./services/cliResolver.js');
     const legalDesensBin = resolveLegalDesensBin();
 
-    // 临时 decisions.json
-    const workDir = path.join(uploadsDir, 'tasks', `.export_${Date.now()}`);
+    // 使用已有的 work_dir 作为导出工作目录
+    const workDir = task.work_dir || path.join(uploadsDir, 'tasks', `.export_${Date.now()}`);
     if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
 
     const decisionsPath = path.join(workDir, 'decisions.json');
-    const sourceMapPath = path.join(workDir, 'source-map.json');
-    const exportPath = path.join(workDir, `redacted${path.extname(filePath)}`);
+    const sourceMapPath = task.source_map_path || path.join(workDir, 'source-map.json');
+    const exportPath = path.join(workDir, `redacted${path.extname(task.filename || '.docx')}`);
     const auditPath = path.join(workDir, 'export-audit.json');
     const mapPath = path.join(workDir, 'export-map.json');
 
-    // 写 decisions + source-map
+    // 写 decisions
     await fs.writeFile(decisionsPath, JSON.stringify(decisions, null, 2), 'utf-8');
-    await fs.writeFile(sourceMapPath, JSON.stringify(sourceMap, null, 2), 'utf-8');
+
+    // 如果 source-map 不在 work_dir 中，复制一份
+    if (task.source_map_path && existsSync(task.source_map_path) && task.source_map_path !== sourceMapPath) {
+      await fs.copyFile(task.source_map_path, sourceMapPath);
+    }
+
+    // 构建合并规则文件
+    let mergedRulesPath = null;
+    try {
+      mergedRulesPath = await buildMergedRulesFile(workDir);
+    } catch (mergeErr) {
+      console.warn('[WARN] 导出时构建合并规则文件失败:', mergeErr.message);
+    }
 
     // 调用 legal-desens redact --decisions
     const args = [
@@ -1924,6 +2100,8 @@ router.post('/tasks/:id/export', async (req, res) => {
       '--map', mapPath,
       '--audit', auditPath,
     ];
+    if (mergedRulesPath) args.push('--rules', mergedRulesPath);
+
     const { getIsNerEnabled } = await import('./services/redactService.js');
     if (!getIsNerEnabled()) args.push('--regex-only');
 
@@ -1951,7 +2129,7 @@ router.post('/tasks/:id/export', async (req, res) => {
       return res.status(409).json({ success: false, message: '残留扫描未通过，导出已阻断' });
     }
 
-    // 写历史
+    // 更新 DB 任务记录（不新建，而是更新已有记录）
     const entityStats = {};
     for (const d of decisions) {
       if (d.action === 'redact') {
@@ -1959,10 +2137,7 @@ router.post('/tasks/:id/export', async (req, res) => {
         entityStats[t] = (entityStats[t] || 0) + 1;
       }
     }
-    const task = createTask({
-      filename: filename || 'unknown',
-      ext: path.extname(filename || ''),
-      document_kind: documentKind || '',
+    updateTask(taskId, {
       entity_stats: entityStats,
       export_path: path.relative(path.join(__dirname, '..'), exportPath),
       map_path: path.relative(path.join(__dirname, '..'), mapPath),
@@ -1971,7 +2146,7 @@ router.post('/tasks/:id/export', async (req, res) => {
     });
 
     // 返回文件下载
-    const downloadName = (filename || 'document').replace(/(\.[^.]+)?$/, '.redacted$1');
+    const downloadName = (task.filename || 'document').replace(/(\.[^.]+)?$/, '.redacted$1');
     res.download(exportPath, downloadName);
   } catch (error) {
     console.error('Task Export Error:', error);
@@ -2007,11 +2182,64 @@ router.get('/history/:id', (req, res) => {
 });
 
 /**
- * DELETE /api/history/:id - 删除历史记录
+ * GET /api/history/:id/download - 重新下载已导出的脱敏文件
  */
-router.delete('/history/:id', (req, res) => {
+router.get('/history/:id/download', (req, res) => {
   try {
-    deleteTask(parseInt(req.params.id, 10));
+    const task = getTaskById(parseInt(req.params.id, 10));
+    if (!task) return res.status(404).json({ success: false, message: '任务不存在' });
+    if (!task.export_path || !task.residual_passed) {
+      return res.status(409).json({ success: false, message: '此任务尚无可下载的脱敏文件' });
+    }
+
+    const backendRoot = path.resolve(__dirname, '..');
+    const exportPath = path.isAbsolute(task.export_path)
+      ? path.resolve(task.export_path)
+      : path.resolve(backendRoot, task.export_path);
+
+    if (!exportPath.startsWith(`${backendRoot}${path.sep}`)) {
+      return res.status(403).json({ success: false, message: '导出文件路径非法' });
+    }
+    if (!existsSync(exportPath)) {
+      return res.status(404).json({ success: false, message: '脱敏文件不存在，可能已被清理' });
+    }
+
+    const downloadName = (task.filename || 'document').replace(/(\.[^.]+)?$/, '.redacted$1');
+    res.download(exportPath, downloadName);
+  } catch (error) {
+    console.error('History Download Error:', error);
+    res.status(500).json({ success: false, message: '下载失败', error: error.message });
+  }
+});
+
+/**
+ * DELETE /api/history/:id - 删除历史记录 + 清理关联文件
+ */
+router.delete('/history/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const task = getTaskById(id);
+    if (task) {
+      // 清理 export/map/audit 文件（敏感残留）
+      const basePath = path.join(__dirname, '..');
+      for (const filePath of [task.export_path, task.map_path, task.audit_path]) {
+        if (filePath) {
+          const abs = path.isAbsolute(filePath) ? filePath : path.resolve(basePath, filePath);
+          await fs.unlink(abs).catch(() => {});
+        }
+      }
+      // 清理 work_dir（含 source-map、manifest、原始文件等）
+      if (task.work_dir) {
+        const absWork = path.isAbsolute(task.work_dir) ? task.work_dir : path.resolve(basePath, task.work_dir);
+        await fs.rm(absWork, { recursive: true, force: true }).catch(() => {});
+      }
+      // 清理 source_path（上传原件）
+      if (task.source_path) {
+        const absSrc = path.isAbsolute(task.source_path) ? task.source_path : path.resolve(basePath, task.source_path);
+        await fs.unlink(absSrc).catch(() => {});
+      }
+    }
+    deleteTask(id);
     res.json({ success: true });
   } catch (error) {
     console.error('Delete History Error:', error);
@@ -2066,7 +2294,10 @@ router.post('/restore', upload.fields([
     await fs.unlink(mapFile.path).catch(() => {});
 
     const downloadName = redactedFile.originalname.replace(/(\.[^.]+)?$/, '.restored$1');
-    res.download(outPath, downloadName);
+    res.download(outPath, downloadName, async () => {
+      // 下载完成后清理还原产物（敏感残留）
+      await fs.unlink(outPath).catch(() => {});
+    });
   } catch (error) {
     console.error('Restore Error:', error);
     res.status(500).json({ success: false, message: '还原失败', error: error.message });
@@ -2147,7 +2378,7 @@ router.delete('/rules/:id', (req, res) => {
 });
 
 /**
- * POST /api/rules/test - 测试正则样例匹配
+ * POST /api/rules/test - 测试正则样例匹配（带超时保护）
  */
 router.post('/rules/test', (req, res) => {
   try {
@@ -2155,12 +2386,26 @@ router.post('/rules/test', (req, res) => {
     if (!regex) return res.status(400).json({ success: false, message: '缺少正则' });
     if (!sample) return res.json({ success: true, data: { matches: [] } });
 
-    const re = new RegExp(regex, 'g');
+    // 验证正则合法性
+    let re;
+    try { re = new RegExp(regex, 'g'); } catch {
+      return res.status(400).json({ success: false, message: '正则表达式不合法' });
+    }
+
+    // 超时保护：复杂正则可能卡住
+    const TIMEOUT_MS = 3000;
+    const start = Date.now();
     const matches = [];
     let m;
     while ((m = re.exec(sample)) !== null) {
+      if (Date.now() - start > TIMEOUT_MS) {
+        return res.json({ success: true, data: { matches, warning: '匹配超时，已截断' } });
+      }
       matches.push({ text: m[0], index: m.index });
       if (!m[0]) break; // 防止零宽匹配死循环
+      if (matches.length > 1000) {
+        return res.json({ success: true, data: { matches, warning: '匹配数过多，已截断' } });
+      }
     }
     res.json({ success: true, data: { matches } });
   } catch (error) {

@@ -1,69 +1,129 @@
-import { useState, useEffect } from 'react';
-import { getDiagnostics } from '../api';
+import { useEffect, useState } from 'react';
+import { deleteHistory, downloadHistoryFile, getHistory } from '../api';
+import { Button } from '@/components/ui/button';
+
+function formatDate(value) {
+  if (!value) return '—';
+  const d = new Date(value.replace?.(' ', 'T') || value);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function parseStats(value) {
+  try {
+    return JSON.parse(value || '{}');
+  } catch {
+    return {};
+  }
+}
+
+function redactedFilename(filename = 'document') {
+  return filename.replace(/(\.[^.]+)?$/, '.redacted$1');
+}
 
 export default function DownloadPage() {
-  const [diagnostics, setDiagnostics] = useState(null);
+  const [tasks, setTasks] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [downloadingId, setDownloadingId] = useState(null);
+  const [toast, setToast] = useState('');
 
-  useEffect(() => {
-    getDiagnostics().then(setDiagnostics).catch(() => {});
-  }, []);
+  const showToast = (msg) => {
+    setToast(msg);
+    setTimeout(() => setToast(''), 2200);
+  };
+
+  const load = async () => {
+    try {
+      const rows = await getHistory();
+      setTasks((rows || []).filter((task) => task.export_path));
+    } catch (err) {
+      showToast(err.message || '加载下载列表失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const handleDownload = async (task) => {
+    setDownloadingId(task.id);
+    try {
+      const response = await downloadHistoryFile(task.id);
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = redactedFilename(task.filename);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      showToast(err.message || '下载失败');
+    } finally {
+      setDownloadingId(null);
+    }
+  };
+
+  const handleDelete = async (id) => {
+    if (!window.confirm('确认删除这条下载记录及关联文件？')) return;
+    try {
+      await deleteHistory(id);
+      setTasks((prev) => prev.filter((task) => task.id !== id));
+    } catch (err) {
+      showToast(err.message || '删除失败');
+    }
+  };
+
+  if (loading) return <div className="tool-loading">加载中…</div>;
 
   return (
-    <div className="settings-view">
-      <section className="settings-section">
-        <h2>本机安装状态</h2>
-        <div className="engine-status-grid">
-          <div className="engine-status-row">
-            <span className="engine-status-label">引擎路径</span>
-            <span className="engine-status-value">{diagnostics?.binPath || 'unknown'}</span>
-          </div>
-          <div className="engine-status-row">
-            <span className="engine-status-label">引擎版本</span>
-            <span className="engine-status-value">{diagnostics?.installedVersion || 'unknown'}</span>
-          </div>
-          <div className="engine-status-row">
-            <span className="engine-status-label">NER 模型</span>
-            <span className="engine-status-value">{diagnostics?.nerEnabled === true ? '已安装' : '未安装'}</span>
-          </div>
-          <div className="engine-status-row">
-            <span className="engine-status-label">模型路径</span>
-            <span className="engine-status-value">{diagnostics?.modelDir || 'unknown'}</span>
-          </div>
-          <div className="engine-status-row">
-            <span className="engine-status-label">requirements pin</span>
-            <span className="engine-status-value">{diagnostics?.pinnedCommit || 'unknown'}</span>
-          </div>
-        </div>
-      </section>
+    <div className="tool-page">
+      <div className="tool-card">
 
-      <section className="settings-section">
-        <h2>macOS 安装说明</h2>
-        <div className="install-steps">
-          <ol>
-            <li>双击「安装 LAWCHERS.command」或在终端运行 <code>npm run setup</code></li>
-            <li>首次安装会自动下载引擎和 NER 模型，需要几分钟</li>
-            <li>安装完成后双击「启动 LAWCHERS.command」或运行 <code>npm run dev</code></li>
-          </ol>
-          <p className="tool-note">
-            若 Gatekeeper 拦截，请在「系统设置 → 隐私与安全性」中允许运行。
-          </p>
-        </div>
-      </section>
-
-      <section className="settings-section">
-        <h2>Windows（best-effort）</h2>
-        <p className="tool-note">
-          Windows 支持为 best-effort，未经完整测试。运行 <code>安装 LAWCHERS.bat</code>。
-        </p>
-      </section>
-
-      <section className="settings-section">
-        <h2>清理缓存</h2>
-        <p className="tool-note">
-          上传的原件和脱敏产物保存在 <code>uploads/</code> 目录，历史记录保存在 SQLite 数据库。
-          手动删除这些文件即可清理缓存。
-        </p>
-      </section>
+        {tasks.length === 0 ? (
+          <div className="tool-empty-inline">暂无可下载文件。完成脱敏导出后，会出现在这里。</div>
+        ) : (
+          <div className="download-table">
+            <div className="download-header">
+              <span>脱敏文件</span><span>格式</span><span>脱敏统计</span><span>复检</span><span>导出时间</span><span></span>
+            </div>
+            {tasks.map((task) => {
+              const stats = parseStats(task.entity_stats);
+              const statStr = Object.entries(stats).map(([key, count]) => `${key}×${count}`).join(' ') || '—';
+              const canDownload = task.residual_passed && task.export_path;
+              return (
+                <div key={task.id} className="download-row">
+                  <span className="history-filename">{redactedFilename(task.filename)}</span>
+                  <span>{(task.ext || '').replace('.', '').toUpperCase() || '—'}</span>
+                  <span className="history-stats">{statStr}</span>
+                  <span className={task.residual_passed ? 'history-pass' : 'history-fail'}>
+                    {task.residual_passed ? '通过' : '阻断'}
+                  </span>
+                  <span className="history-date">{formatDate(task.created_at)}</span>
+                  <span className="download-actions">
+                    <Button
+                      size="sm"
+                      disabled={!canDownload || downloadingId === task.id}
+                      onClick={() => handleDownload(task)}
+                    >
+                      {downloadingId === task.id ? '下载中' : '下载'}
+                    </Button>
+                    <Button variant="ghost" size="icon" aria-label="删除" onClick={() => handleDelete(task.id)}>×</Button>
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+      <div className={`toast ${toast ? 'show' : ''}`}>{toast}</div>
     </div>
   );
 }

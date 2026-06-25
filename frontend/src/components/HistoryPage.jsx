@@ -42,7 +42,6 @@ export default function HistoryPage() {
   return (
     <div className="tool-page">
       <div className="tool-card">
-        <h2>任务历史</h2>
         {tasks.length === 0 ? (
           <div className="tool-empty-inline">暂无历史记录。完成脱敏导出后，任务会自动记录在此。</div>
         ) : (

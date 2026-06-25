@@ -43,7 +43,6 @@ export default function RestorePage() {
   return (
     <div className="tool-page">
       <div className="tool-card">
-        <h2>还原脱敏文件</h2>
         <p className="tool-desc">上传脱敏文件和对应的 map.json，还原为原始内容。仅支持可逆格式（txt / md / csv / docx / xlsx）。</p>
 
         <div className="upload-zone">

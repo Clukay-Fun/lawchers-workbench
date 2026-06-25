@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { getRules, createRule, updateRule, deleteRule, testRegex } from '../api';
 import { Button } from '@/components/ui/button';
 
@@ -9,7 +9,16 @@ const TABS = [
   { key: 'whitelist', label: '保留词库' },
 ];
 
-export default function RulesPage() {
+const RULE_TO_CONFIG_KEY = {
+  phone_cn: 'PHONE', landline_cn: 'LANDLINE', id_card_cn: 'ID_CARD',
+  passport_cn: 'PASSPORT', email: 'EMAIL', case_no: 'CASE_NO',
+  case_no_contract: 'CASE_NO', execution_no: 'CASE_NO',
+  org_code: 'ORG_CODE', bank_account_cn: 'BANK_CARD', bank_card_cn: 'BANK_CARD',
+  bank_branch_cn: 'BANK_BRANCH', money_cn: 'MONEY', date_cn: 'DATE',
+  plate_cn: 'PLATE', property_cert: 'PROPERTY', api_token: 'API_TOKEN',
+};
+
+export default function RulesPage({ settings, onSettingsChange }) {
   const [tab, setTab] = useState('system');
   const [rules, setRules] = useState({ system: [], custom: [] });
   const [loading, setLoading] = useState(true);
@@ -33,6 +42,17 @@ export default function RulesPage() {
 
   const currentRules = tab === 'system' ? rules.system : rules.custom.filter((r) => r.category === tab);
 
+  const handleSystemToggle = useCallback((ruleId) => {
+    if (!settings || !onSettingsChange) return;
+    const configKey = RULE_TO_CONFIG_KEY[ruleId];
+    if (!configKey) { showToast('此规则无法单独控制'); return; }
+    const current = settings.rulesConfig?.[configKey] !== false;
+    onSettingsChange({
+      ...settings,
+      rulesConfig: { ...settings.rulesConfig, [configKey]: !current },
+    });
+  }, [settings, onSettingsChange, showToast]);
+
   const handleCreate = async () => {
     if (!form.name.trim()) { showToast('名称不能为空'); return; }
     if (form.regex) {
@@ -50,9 +70,9 @@ export default function RulesPage() {
     }
   };
 
-  const handleToggle = async (id, isActive) => {
+  const handleToggle = async (id, currentActive) => {
     try {
-      await updateRule(id, { is_active: isActive ? 0 : 1 });
+      await updateRule(id, { is_active: currentActive ? 0 : 1 });
       await load();
     } catch (err) { showToast(err.message || '更新失败'); }
   };
@@ -67,6 +87,7 @@ export default function RulesPage() {
     try {
       const result = await testRegex(form.regex, form.sample);
       setTestResult(result.data?.matches || []);
+      if (result.data?.warning) showToast(result.data.warning);
     } catch (err) {
       setTestResult([]);
       showToast(err.message || '测试失败');
@@ -78,7 +99,6 @@ export default function RulesPage() {
   return (
     <div className="tool-page">
       <div className="tool-card">
-        <h2>脱敏规则</h2>
         <div className="tabs">
           {TABS.map((t) => (
             <button key={t.key} className={`tab ${tab === t.key ? 'active' : ''}`} onClick={() => { setTab(t.key); setShowForm(false); }}>
@@ -130,35 +150,33 @@ export default function RulesPage() {
           {currentRules.length === 0 && tab !== 'system' && (
             <div className="tool-empty-inline">暂无规则。点击上方按钮添加。</div>
           )}
-          {tab === 'system' && (
-            <div className="tool-note">
-              系统规则来自 legal-desens 引擎（只读）。运行时通过 entity-policy 控制开关，不修改引擎规则文件。
-            </div>
-          )}
           {currentRules.map((rule) => (
             <div key={rule.id} className="rule-row">
               <div className="rule-info">
                 <strong>{rule.name}</strong>
+                {rule.description && rule.description !== rule.name && <span className="rule-desc">{rule.description}</span>}
                 {rule.regex && <code className="rule-regex">{rule.regex}</code>}
-                {rule.description && <span className="rule-desc">{rule.description}</span>}
               </div>
               <div className="rule-actions">
-                {tab !== 'system' && (
+                {tab === 'system' ? (
+                  <button
+                    className={`toggle-btn ${settings?.rulesConfig?.[RULE_TO_CONFIG_KEY[rule.id]] !== false ? 'on' : 'off'}`}
+                    onClick={() => handleSystemToggle(rule.id)}
+                    title="点击切换"
+                  >
+                    {settings?.rulesConfig?.[RULE_TO_CONFIG_KEY[rule.id]] !== false ? '已启用' : '已停用'}
+                  </button>
+                ) : (
                   <>
                     <button
                       className={`toggle-btn ${rule.is_active ? 'on' : 'off'}`}
                       onClick={() => handleToggle(rule.id, rule.is_active)}
                       title={rule.is_active ? '点击停用' : '点击启用'}
                     >
-                      {rule.is_active ? '启用' : '停用'}
+                      {rule.is_active ? '已启用' : '已停用'}
                     </button>
                     <Button variant="ghost" size="icon" aria-label="删除" onClick={() => handleDelete(rule.id)}>×</Button>
                   </>
-                )}
-                {tab === 'system' && (
-                  <span className={`toggle-btn ${rule.is_active ? 'on' : 'off'}`}>
-                    {rule.is_active ? '启用' : '停用'}
-                  </span>
                 )}
               </div>
             </div>

@@ -30,11 +30,11 @@ defaultRules.DATE = false;
 
 const VIEW_TITLES = {
   desensitize: '脱敏',
-  restore: '还原',
-  history: '历史',
-  rules: '规则',
+  restore: '还原脱敏文件',
+  history: '任务历史',
+  rules: '脱敏规则',
   settings: '设置',
-  download: '下载',
+  download: '下载中心',
 };
 
 export default function App() {
@@ -56,7 +56,7 @@ export default function App() {
       case 'history':
         return <HistoryPage />;
       case 'rules':
-        return <RulesPage />;
+        return <RulesPage settings={settings} onSettingsChange={setSettings} />;
       case 'settings':
         return <SettingsPage settings={settings} onSettingsChange={setSettings} />;
       case 'download':
@@ -70,9 +70,11 @@ export default function App() {
     <div className="app-shell">
       <Sidebar currentView={currentView} onViewChange={setCurrentView} />
       <main className="main-container">
-        <header className="top-header">
-          <h1>{VIEW_TITLES[currentView] || '脱敏'}</h1>
-        </header>
+        {currentView !== 'desensitize' && (
+          <header className="top-header">
+            <h1>{VIEW_TITLES[currentView] || ''}</h1>
+          </header>
+        )}
         <div className="page-wrapper">
           {renderPage()}
         </div>

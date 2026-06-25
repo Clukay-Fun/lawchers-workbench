@@ -1,16 +1,25 @@
 import { useState, useEffect } from 'react';
 import { getDiagnostics } from '../api';
 
+let cachedDiagnostics = null;
+let diagnosticsPromise = null;
+
 export default function SettingsPage({ settings, onSettingsChange }) {
-  const [diagnostics, setDiagnostics] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [diagnostics, setDiagnostics] = useState(cachedDiagnostics);
+  const [loading, setLoading] = useState(!cachedDiagnostics);
 
   useEffect(() => {
+    if (cachedDiagnostics) return;
     let cancelled = false;
     setLoading(true);
-    getDiagnostics()
-      .then((data) => { if (!cancelled) setDiagnostics(data); })
+    if (!diagnosticsPromise) {
+      diagnosticsPromise = getDiagnostics().finally(() => {});
+    }
+    diagnosticsPromise
+      .then((data) => {
+        cachedDiagnostics = data;
+        if (!cancelled) setDiagnostics(data);
+      })
       .catch(() => {})
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
@@ -31,8 +40,8 @@ export default function SettingsPage({ settings, onSettingsChange }) {
 
   return (
     <div className="settings-view">
+      <h2 className="settings-group-title">引擎状态</h2>
       <section className="settings-section">
-        <h2>引擎状态</h2>
         {isNerOff && (
           <div className="engine-alert">
             <strong>NER 未启用：</strong>当前将以 regex-only 运行，姓名/机构/地址识别能力会下降。
@@ -54,8 +63,8 @@ export default function SettingsPage({ settings, onSettingsChange }) {
         )}
       </section>
 
+      <h2 className="settings-group-title">脱敏配置</h2>
       <section className="settings-section">
-        <h2>脱敏配置</h2>
         <label className="settings-row">
           <span><strong>默认掩码样式</strong><small>用于文本预览中的统一脱敏标记</small></span>
           <select value={settings.maskChar} onChange={(e) => onSettingsChange({ ...settings, maskChar: e.target.value })}>
@@ -66,44 +75,30 @@ export default function SettingsPage({ settings, onSettingsChange }) {
         </label>
       </section>
 
+      <h2 className="settings-group-title">导出</h2>
       <section className="settings-section">
-        <h2>导出</h2>
         <div className="settings-row">
           <span><strong>保持原文件格式</strong><small>DOCX、PDF、Markdown 与 TXT 均生成同格式副本</small></span>
-          <input type="checkbox" checked={settings.preserveFormat} onChange={(e) => onSettingsChange({ ...settings, preserveFormat: e.target.checked })} />
+          <button
+            className={`toggle-btn ${settings.preserveFormat ? 'on' : 'off'}`}
+            onClick={() => onSettingsChange({ ...settings, preserveFormat: !settings.preserveFormat })}
+          >
+            {settings.preserveFormat ? '已启用' : '已停用'}
+          </button>
         </div>
         <div className="settings-row">
           <span><strong>导出前再次检查敏感信息</strong><small>复检失败时阻止下载</small></span>
-          <input type="checkbox" checked={settings.verifyBeforeExport} onChange={(e) => onSettingsChange({ ...settings, verifyBeforeExport: e.target.checked })} />
+          <button
+            className={`toggle-btn ${settings.verifyBeforeExport ? 'on' : 'off'}`}
+            onClick={() => onSettingsChange({ ...settings, verifyBeforeExport: !settings.verifyBeforeExport })}
+          >
+            {settings.verifyBeforeExport ? '已启用' : '已停用'}
+          </button>
         </div>
       </section>
 
-      <section className="settings-section disclosure-section">
-        <button className="disclosure" onClick={() => setAdvancedOpen(!advancedOpen)} aria-expanded={advancedOpen}>
-          <span><strong>高级脱敏规则</strong><small>类型只影响识别与审计，文档中始终统一显示</small></span>
-          <span aria-hidden="true">{advancedOpen ? '−' : '+'}</span>
-        </button>
-        {advancedOpen && (
-          <div className="rules-grid">
-            {Object.entries(settings.rulesConfig || {}).map(([key, enabled]) => (
-              <label key={key}>
-                <input
-                  type="checkbox"
-                  checked={Boolean(enabled)}
-                  onChange={(e) => onSettingsChange({
-                    ...settings,
-                    rulesConfig: { ...settings.rulesConfig, [key]: e.target.checked },
-                  })}
-                />
-                {key}
-              </label>
-            ))}
-          </div>
-        )}
-      </section>
-
+      <h2 className="settings-group-title">数据管理</h2>
       <section className="settings-section">
-        <h2>数据管理</h2>
         <div className="settings-row">
           <span><strong>数据目录</strong><small>所有材料和脱敏产物保存在本机 uploads/ 目录</small></span>
           <span className="engine-status-value">uploads/</span>
