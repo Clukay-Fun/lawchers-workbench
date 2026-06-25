@@ -253,7 +253,6 @@ export default function DesensitizePage({ settings }) {
   const manualCount = task?.decisions?.filter((d) => d.origin === 'manual').length || 0;
   const unconfirmedCount = task?.decisions?.filter((d) => d.action === 'redact' && !d.confirmed).length || 0;
   const isUnsupportedPdf = task?.documentKind === 'pdf-scan' || task?.documentKind === 'pdf-hybrid';
-  const isPdfText = task?.documentKind === 'pdf-text';
 
   if (!task && !loading) {
     return (

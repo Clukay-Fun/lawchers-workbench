@@ -1,7 +1,7 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { createTask, analyzeTask, updateTaskBoxes, maskExportTask } from '../api';
 import { Button } from '@/components/ui/button';
-import { normalizedToCSS, cssToNormalized, computeDisplaySize, createNormalizedBox, validateNormalizedBox } from '../services/coords';
+import { normalizedToCSS, computeDisplaySize, createNormalizedBox } from '../services/coords';
 
 // ─── Constants ───────────────────────────────────────────────
 
@@ -10,14 +10,13 @@ const BOX_MIN_SIZE = 0.005; // minimum 0.5% of page
 // ─── Page Image Component ────────────────────────────────────
 
 function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth }) {
-  const canvasRef = useRef(null);
   const overlayRef = useRef(null);
   const [drawing, setDrawing] = useState(null); // { startX, startY } in normalized
   const [dragging, setDragging] = useState(null); // { boxId, offsetX, offsetY }
   const [resizing, setResizing] = useState(null); // { boxId, handle }
   const [hoveredBox, setHoveredBox] = useState(null);
 
-  const { displayWidth, displayHeight, scale } = computeDisplaySize(pageInfo, containerWidth, 900);
+  const { displayWidth, displayHeight } = computeDisplaySize(pageInfo, containerWidth, 900);
 
   // Convert mouse event to normalized coordinates
   const toNormalized = useCallback((e) => {
@@ -44,7 +43,7 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth }) {
   const handleMouseMove = useCallback((e) => {
     if (drawing) {
       const pos = toNormalized(e);
-      // Update preview rect (handled in render)
+      setDrawing(prev => prev ? { ...prev, currentX: pos.x, currentY: pos.y } : prev);
     }
     if (dragging) {
       const pos = toNormalized(e);
@@ -249,8 +248,14 @@ function MaskPreview({ pageInfo, boxes, containerWidth }) {
   const pageBoxes = boxes.filter(b => b.page === pageInfo.pageNumber);
 
   return (
-    <div className="mask-preview" style={{ position: 'relative', width: displayWidth, height: displayHeight, background: '#1a1a1a' }}>
-      {/* Render black rectangles on dark background */}
+    <div className="mask-preview" style={{ position: 'relative', width: displayWidth, height: displayHeight, background: '#fff' }}>
+      <img
+        src={`/api/tasks/${pageInfo.taskId}/page-image/${pageInfo.pageNumber}`}
+        alt={`Masked page ${pageInfo.pageNumber}`}
+        style={{ width: displayWidth, height: displayHeight, display: 'block', userSelect: 'none' }}
+        draggable={false}
+      />
+      {/* Render black rectangles over the page image */}
       <svg width={displayWidth} height={displayHeight} style={{ position: 'absolute', top: 0, left: 0 }}>
         {pageBoxes.map(box => {
           const css = normalizedToCSS(box, displayWidth, displayHeight);
@@ -266,7 +271,8 @@ function MaskPreview({ pageInfo, boxes, containerWidth }) {
       </svg>
       <div style={{
         position: 'absolute', bottom: 8, right: 8,
-        color: 'rgba(255,255,255,0.5)', fontSize: 11,
+        color: 'rgba(0,0,0,0.45)', fontSize: 11,
+        background: 'rgba(255,255,255,0.75)', padding: '2px 6px', borderRadius: 4,
       }}>
         遮蔽预览 · {pageBoxes.length} 个区域
       </div>
@@ -459,7 +465,7 @@ export default function VisualMaskPage({ settings }) {
         <div className="mask-right-panel">
           {pageInfo && (
             <MaskPreview
-              pageInfo={pageInfo}
+              pageInfo={{ ...pageInfo, taskId: task?.taskId }}
               boxes={boxes}
               containerWidth={400}
             />

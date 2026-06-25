@@ -2251,8 +2251,11 @@ router.patch('/tasks/:id/boxes', async (req, res) => {
         return res.status(400).json({ success: false, message: '框缺少必要字段 (page, x, y, width, height)' });
       }
       if (box.x < 0 || box.x > 1 || box.y < 0 || box.y > 1 ||
-          box.width < 0 || box.width > 1 || box.height < 0 || box.height > 1) {
+          box.width <= 0 || box.width > 1 || box.height <= 0 || box.height > 1) {
         return res.status(400).json({ success: false, message: '坐标必须在 [0,1] 范围内' });
+      }
+      if (box.x + box.width > 1 || box.y + box.height > 1) {
+        return res.status(400).json({ success: false, message: '遮蔽框不能超出页面边界' });
       }
     }
 
@@ -2287,6 +2290,18 @@ router.post('/tasks/:id/mask-export', async (req, res) => {
     if (!Array.isArray(boxes) || boxes.length === 0) {
       return res.status(400).json({ success: false, message: '缺少遮蔽框' });
     }
+    for (const box of boxes) {
+      if (typeof box.x !== 'number' || typeof box.y !== 'number' ||
+          typeof box.width !== 'number' || typeof box.height !== 'number' ||
+          typeof box.page !== 'number') {
+        return res.status(400).json({ success: false, message: '框缺少必要字段 (page, x, y, width, height)' });
+      }
+      if (box.x < 0 || box.x > 1 || box.y < 0 || box.y > 1 ||
+          box.width <= 0 || box.width > 1 || box.height <= 0 || box.height > 1 ||
+          box.x + box.width > 1 || box.y + box.height > 1) {
+        return res.status(400).json({ success: false, message: '遮蔽框坐标非法或超出页面边界' });
+      }
+    }
 
     const { resolveLegalDesensBin } = await import('./services/cliResolver.js');
     const bin = resolveLegalDesensBin();
@@ -2319,13 +2334,16 @@ router.post('/tasks/:id/mask-export', async (req, res) => {
       return res.status(500).json({ success: false, message: '遮蔽导出失败', error: cliErr.message });
     }
 
-    // Verify audit passed
-    let auditData = {};
+    // Verify audit passed. Missing/malformed audit must fail closed.
+    let auditData = null;
     try {
       auditData = JSON.parse(await fs.readFile(auditPath, 'utf-8'));
-    } catch { /* ignore */ }
+    } catch {
+      await fs.unlink(exportPath).catch(() => {});
+      return res.status(500).json({ success: false, message: '无法读取遮蔽审计文件，导出阻断' });
+    }
 
-    const passed = auditData?.verification?.passed !== false;
+    const passed = auditData?.verification?.passed === true;
     if (!passed) {
       await fs.unlink(exportPath).catch(() => {});
       return res.status(409).json({ success: false, message: '遮蔽验证未通过' });
