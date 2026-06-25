@@ -29,7 +29,7 @@ const SENSITIVE_TYPES = new Set([
   'PHONE', 'LANDLINE', 'ID_CARD', 'PASSPORT', 'EMAIL',
   'PERSON', 'ORG', 'BANK_CARD', 'BANK_BRANCH', 'MONEY',
   'CASE_NO', 'ORG_CODE', 'API_TOKEN', 'ADDRESS', 'LOC',
-  'SEAL', 'DENYLIST', 'FORCE', 'CUSTOM',
+  'DATE', 'TIME', 'SEAL', 'DENYLIST', 'FORCE', 'CUSTOM',
 ]);
 
 // ─── Star mask (module level) ────────────────────────────────
@@ -313,14 +313,22 @@ export default function VisualMaskPage({ settings: _settings }) {
       const allOcr = (analyzeData.ocrBoxes || []);
 
       // ── #3: OCR entities for text mode (all with entityType) ──
-      const entities = allOcr
-        .filter(b => b.entityType || b.entity_type)
-        .map((b) => ({
-          original: b.text || '',
-          entity_type: b.entityType || b.entity_type || 'MANUAL',
-          start: 0, end: 0, // resolved by engine on export
-          confidence: b.confidence ?? null,
-        }));
+      // Compute real start/end positions in the concatenated OCR text
+      let offset = 0;
+      const entities = [];
+      for (const b of allOcr) {
+        const t = b.entityType || b.entity_type;
+        if (t) {
+          entities.push({
+            original: b.text || '',
+            entity_type: t,
+            start: offset,
+            end: offset + (b.text || '').length,
+            confidence: b.confidence ?? null,
+          });
+        }
+        offset += (b.text || '').length + 1; // +1 for \n join
+      }
       const fullText = allOcr.map(b => b.text || '').join('\n');
       setOcrEntities(entities);
       setOcrText(fullText);

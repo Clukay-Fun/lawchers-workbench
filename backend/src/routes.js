@@ -2567,12 +2567,12 @@ router.post('/tasks/:id/text-export', async (req, res) => {
     // For PDF sources, we need OCR text
     const sourceExt = path.extname(sourcePath).toLowerCase();
     if (sourceExt === '.pdf') {
-      // Run analyze to get OCR text
+      // Run analyze to get OCR text (with rules for entity type tagging)
       const analyzeOut = path.join(workDir, 'analyze.json');
       try {
-        await execFileAsync(bin, ['analyze', sourcePath, '--out', analyzeOut], {
-          timeout: 120000,
-        });
+        const analyzeArgs = ['analyze', sourcePath, '--out', analyzeOut];
+        if (mergedRulesPath) analyzeArgs.push('--rules', mergedRulesPath);
+        await execFileAsync(bin, analyzeArgs, { timeout: 120000 });
         const analyzeData = JSON.parse(await fs.readFile(analyzeOut, 'utf-8'));
         const ocrText = (analyzeData.ocrBoxes || []).map(b => b.text).join('\n');
         const ocrPath = path.join(workDir, 'ocr-text.txt');
@@ -2625,7 +2625,8 @@ router.post('/tasks/:id/text-export', async (req, res) => {
       residual_passed: true,
     });
 
-    const downloadName = (task.filename || 'document').replace(/(\.[^.]+)?$/, `.replaced${ext}`);
+    const baseName = (task.filename || 'document').replace(/\.[^.]+$/, '');
+    const downloadName = `${baseName}_脱敏.${format}`;
     res.download(exportPath, downloadName);
   } catch (error) {
     console.error('Text Export Error:', error);
