@@ -2617,12 +2617,55 @@ router.post('/batch', upload.array('files', 20), async (req, res) => {
     const { resolveLegalDesensBin } = await import('./services/cliResolver.js');
     const bin = resolveLegalDesensBin();
 
+    // Validate rules ONCE before processing any files
+    let mergedRulesPath = null;
+    let denylistPath = null;
+    let whitelistPath = null;
+
+    const tasksDir = path.join(uploadsDir, 'tasks');
+    if (!existsSync(tasksDir)) mkdirSync(tasksDir, { recursive: true });
+
+    // Pre-validate rules in a temp dir
+    const precheckDir = path.join(tasksDir, `.precheck_${Date.now()}`);
+    try {
+      mkdirSync(precheckDir, { recursive: true });
+      mergedRulesPath = await buildMergedRulesFile(precheckDir);
+    } catch (rulesErr) {
+      // Cleanup precheck dir
+      await fs.rm(precheckDir, { recursive: true, force: true }).catch(() => {});
+      return res.status(500).json({
+        success: false,
+        message: `规则加载失败，批量处理中止: ${rulesErr.message}`,
+      });
+    }
+
+    // Build denylist/whitelist once
+    try {
+      const blRules = getRulesByCategory('blacklist').filter(r => r.is_active && r.regex);
+      if (blRules.length) {
+        denylistPath = path.join(precheckDir, 'denylist.txt');
+        await fs.writeFile(denylistPath, blRules.map(r => r.regex).join('\n'), 'utf-8');
+      }
+    } catch {}
+
+    try {
+      const wlRules = getRulesByCategory('whitelist').filter(r => r.is_active && r.regex);
+      if (wlRules.length) {
+        whitelistPath = path.join(precheckDir, 'whitelist.txt');
+        await fs.writeFile(whitelistPath, wlRules.map(r => r.regex).join('\n'), 'utf-8');
+      }
+    } catch {}
+
     const results = [];
 
     for (const file of files) {
       const originalName = Buffer.from(file.originalname, 'latin1').toString('utf8');
       const ext = path.extname(originalName).toLowerCase();
       const result = { filename: originalName, success: false };
+
+      let taskId = null;
+      let finalPath = null;
+      let actualWorkDir = null;
 
       try {
         if (!['.docx', '.pdf', '.txt', '.md'].includes(ext)) {
@@ -2632,61 +2675,31 @@ router.post('/batch', upload.array('files', 20), async (req, res) => {
           continue;
         }
 
-        // Move to tasks dir
-        const tasksDir = path.join(uploadsDir, 'tasks');
-        if (!existsSync(tasksDir)) mkdirSync(tasksDir, { recursive: true });
+        // Move uploaded file
         const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
         const newFilename = `${uniqueSuffix}-${originalName}`;
-        const finalPath = path.join(tasksDir, newFilename);
+        finalPath = path.join(tasksDir, newFilename);
         await fs.rename(file.path, finalPath);
 
-        // Create task with work_dir
-        const workDir = path.join(tasksDir, `.work_${Date.now()}`);
-        if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
-
+        // Create task — DB row created BEFORE workDir so we can clean up on failure
         const task = createTask({
           filename: originalName,
           ext,
           document_kind: ext === '.pdf' ? 'pdf-text' : ext.replace('.', ''),
           source_path: finalPath,
-          work_dir: workDir,
         });
-        const taskId = task.id;
+        taskId = task.id;
 
-        // Rename work dir to include task ID
-        const finalWorkDir = path.join(tasksDir, `.work_${taskId}`);
-        if (workDir !== finalWorkDir) {
-          await fs.rename(workDir, finalWorkDir).catch(() => {});
-        }
-        const actualWorkDir = existsSync(finalWorkDir) ? finalWorkDir : workDir;
+        // Work dir named after task ID from the start
+        actualWorkDir = path.join(tasksDir, `.work_${taskId}`);
+        if (!existsSync(actualWorkDir)) mkdirSync(actualWorkDir, { recursive: true });
 
-        // Build merged rules + denylist + whitelist — must succeed
-        let mergedRulesPath;
-        try {
-          mergedRulesPath = await buildMergedRulesFile(actualWorkDir);
-        } catch (rulesErr) {
-          result.error = `规则加载失败: ${rulesErr.message}`;
-          results.push(result);
-          continue;
-        }
+        // Update task with work_dir
+        updateTask(taskId, { work_dir: actualWorkDir });
 
-        let denylistPath = null;
-        try {
-          const blRules = getRulesByCategory('blacklist').filter(r => r.is_active && r.regex);
-          if (blRules.length) {
-            denylistPath = path.join(actualWorkDir, 'denylist.txt');
-            await fs.writeFile(denylistPath, blRules.map(r => r.regex).join('\n'), 'utf-8');
-          }
-        } catch {}
-
-        let whitelistPath = null;
-        try {
-          const wlRules = getRulesByCategory('whitelist').filter(r => r.is_active && r.regex);
-          if (wlRules.length) {
-            whitelistPath = path.join(actualWorkDir, 'whitelist.txt');
-            await fs.writeFile(whitelistPath, wlRules.map(r => r.regex).join('\n'), 'utf-8');
-          }
-        } catch {}
+        // Copy merged rules to work dir
+        const workMergedRules = path.join(actualWorkDir, 'merged-rules.json');
+        await fs.copyFile(mergedRulesPath, workMergedRules);
 
         // Analyze (OCR for PDF, text extraction for others)
         const analyzeOut = path.join(actualWorkDir, 'analyze.json');
@@ -2695,11 +2708,11 @@ router.post('/batch', upload.array('files', 20), async (req, res) => {
 
         if (ext === '.pdf') {
           const analyzeArgs = ['analyze', finalPath, '--out', analyzeOut];
-          if (mergedRulesPath) analyzeArgs.push('--rules', mergedRulesPath);
+          if (workMergedRules) analyzeArgs.push('--rules', workMergedRules);
           await execFileAsync(bin, analyzeArgs, { timeout: 120000 });
           const analyzeData = JSON.parse(await fs.readFile(analyzeOut, 'utf-8'));
           ocrText = (analyzeData.ocrBoxes || []).map(b => b.text).join('\n');
-          entities = (analyzeData.ocrBoxes || []).map((b, i) => ({
+          entities = (analyzeData.ocrBoxes || []).map((b) => ({
             original: b.text,
             entity_type: b.entityType || 'MANUAL',
             start: 0, end: 0,
@@ -2714,13 +2727,13 @@ router.post('/batch', upload.array('files', 20), async (req, res) => {
 
         if (mode === 'mask' && ext === '.pdf') {
           // Mask export: find denylist terms → create boxes → mask
-          exportPath = path.join(workDir, 'masked.pdf');
-          const boxesPath = path.join(workDir, 'batch-boxes.json');
+          exportPath = path.join(actualWorkDir, 'masked.pdf');
+          const boxesPath = path.join(actualWorkDir, 'batch-boxes.json');
           await fs.writeFile(boxesPath, '[]', 'utf-8'); // No user boxes in batch
 
           const args = ['mask-export', finalPath, '--boxes', boxesPath, '--out', exportPath,
             '--document-kind', 'pdf-text', '--audit', auditPath];
-          if (mergedRulesPath) args.push('--rules', mergedRulesPath);
+          if (workMergedRules) args.push('--rules', workMergedRules);
           if (denylistPath) args.push('--denylist', denylistPath);
 
           await execFileAsync(bin, args, { timeout: 120000 });
@@ -2739,7 +2752,7 @@ router.post('/batch', upload.array('files', 20), async (req, res) => {
             await fs.writeFile(ocrPath, ocrText, 'utf-8');
             args.push('--ocr-text', ocrPath);
           }
-          if (mergedRulesPath) args.push('--rules', mergedRulesPath);
+          if (workMergedRules) args.push('--rules', workMergedRules);
           if (denylistPath) args.push('--denylist', denylistPath);
           if (whitelistPath) args.push('--whitelist', whitelistPath);
 
@@ -2788,12 +2801,26 @@ router.post('/batch', upload.array('files', 20), async (req, res) => {
         result.audit = auditData?.verification || { passed: true, note: 'text export verified by content diff' };
       } catch (fileErr) {
         result.error = fileErr.message;
+        // Cleanup on failure: delete task record, source file, work dir
+        if (taskId) {
+          try { deleteTask(taskId); } catch {}
+        }
+        if (finalPath) {
+          await fs.unlink(finalPath).catch(() => {});
+        }
+        if (actualWorkDir) {
+          await fs.rm(actualWorkDir, { recursive: true, force: true }).catch(() => {});
+        }
       }
 
       results.push(result);
     }
 
     const successCount = results.filter(r => r.success).length;
+
+    // Cleanup precheck dir
+    await fs.rm(precheckDir, { recursive: true, force: true }).catch(() => {});
+
     res.json({
       success: true,
       data: {
