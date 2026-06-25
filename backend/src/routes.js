@@ -1893,6 +1893,63 @@ async function buildMergedRulesFile(workDir) {
   return mergedPath;
 }
 
+/**
+ * Refine OCR line-level boxes to entity-level sub-boxes.
+ * Given OCR boxes (line-level) and textEntities (precise start/end in OCR text),
+ * splits each line box into entity sub-boxes using character-width proportioning.
+ * Lines without entities are dropped.
+ */
+function refineToEntityBoxes(ocrBoxes, textEntities) {
+  if (!textEntities?.length || !ocrBoxes?.length) return [];
+
+  // Build line offset map
+  const lineOffsets = [];
+  let offset = 0;
+  for (let i = 0; i < ocrBoxes.length; i++) {
+    const box = ocrBoxes[i];
+    const lineLen = (box.text || '').length;
+    lineOffsets.push({ i, start: offset, end: offset + lineLen });
+    offset += lineLen + 1; // +1 for \n join
+  }
+
+  const refined = [];
+  for (const entity of textEntities) {
+    const entStart = entity.start ?? 0;
+    const entEnd = entity.end ?? 0;
+    if (entStart >= entEnd || !entity.original) continue;
+
+    for (const { i: boxIdx, start: lineStart, end: lineEnd } of lineOffsets) {
+      const overlapStart = Math.max(entStart, lineStart);
+      const overlapEnd = Math.min(entEnd, lineEnd);
+      if (overlapStart >= overlapEnd) continue;
+
+      const box = ocrBoxes[boxIdx];
+      const lineLen = (box.text || '').length;
+      if (lineLen === 0) continue;
+
+      const charStart = Math.max(0, overlapStart - lineStart);
+      const charEnd = Math.min(lineLen, overlapEnd - lineStart);
+      const charWidth = box.width / lineLen;
+
+      const subX = Math.max(0, Math.min(1, box.x + charStart * charWidth));
+      const subWidth = Math.max(0.001, Math.min(1 - subX, (charEnd - charStart) * charWidth));
+
+      refined.push({
+        text: entity.original,
+        page: box.page,
+        x: Math.round(subX * 1e6) / 1e6,
+        y: box.y,
+        width: Math.round(subWidth * 1e6) / 1e6,
+        height: box.height,
+        confidence: box.confidence,
+        entityType: entity.entity_type || 'CUSTOM',
+        source: 'ocr',
+      });
+    }
+  }
+  return refined;
+}
+
 function activeWhitelistMatchers() {
   try {
     return getRulesByCategory('whitelist')
@@ -2325,6 +2382,7 @@ router.post('/tasks/:id/analyze', async (req, res) => {
       success: true,
       data: {
         ocrBoxes: analyzeData.ocrBoxes || [],
+        refinedBoxes: refineToEntityBoxes(analyzeData.ocrBoxes || [], textEntities),
         textEntities,
         sealBoxes,
         manifest: analyzeData.manifest || {},

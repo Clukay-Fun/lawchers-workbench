@@ -24,14 +24,6 @@ const TEXT_FORMATS = [
   { value: 'md', label: '导出 MD' },
 ];
 
-// Sensitive entity types that should become redaction boxes
-const SENSITIVE_TYPES = new Set([
-  'PHONE', 'LANDLINE', 'ID_CARD', 'PASSPORT', 'EMAIL',
-  'PERSON', 'ORG', 'BANK_CARD', 'BANK_BRANCH', 'MONEY',
-  'CASE_NO', 'ORG_CODE', 'API_TOKEN', 'ADDRESS', 'LOC',
-  'DATE', 'TIME', 'SEAL', 'DENYLIST', 'FORCE', 'CUSTOM',
-]);
-
 // ─── Star mask (module level) ────────────────────────────────
 
 function starMask(text, entityType) {
@@ -310,7 +302,6 @@ export default function VisualMaskPage({ settings: _settings }) {
       const analyzeData = await analyzeTask(taskData.taskId);
 
       setProcessingStep('正在规则匹配…');
-      const allOcr = (analyzeData.ocrBoxes || []);
 
       // ── Text entities from backend (precise rule-based, not line-level OCR) ──
       const backendTextEntities = (analyzeData.textEntities || []).map(e => ({
@@ -319,24 +310,19 @@ export default function VisualMaskPage({ settings: _settings }) {
         start: e.start ?? 0,
         end: e.end ?? 0,
       }));
-      const fullText = allOcr.map(b => b.text || '').join('\n');
+      const fullText = (analyzeData.ocrBoxes || []).map(b => b.text || '').join('\n');
       setTextEntities(backendTextEntities);
       setOcrText(fullText);
 
-      // ── #3: Redaction boxes = only sensitive types + seal + manual ──
-      const candidateBoxes = allOcr
-        .filter(b => {
-          const t = b.entityType || b.entity_type;
-          return t && SENSITIVE_TYPES.has(t);
-        })
-        .map((b, i) => createNormalizedBox({
-          id: `cand_${i}`, page: b.page,
-          x: b.x, y: b.y, width: b.width, height: b.height,
-          pageWidth: analyzeData.manifest?.pages?.[b.page - 1]?.pageWidth || 595,
-          pageHeight: analyzeData.manifest?.pages?.[b.page - 1]?.pageHeight || 842,
-          source: 'ocr', entityType: b.entityType || b.entity_type,
-          text: b.text || '', confidence: b.confidence ?? null,
-        }));
+      // ── Redaction boxes: refined entity-level sub-boxes from backend ──
+      const refined = (analyzeData.refinedBoxes || []).map((b, i) => createNormalizedBox({
+        id: `cand_${i}`, page: b.page,
+        x: b.x, y: b.y, width: b.width, height: b.height,
+        pageWidth: analyzeData.manifest?.pages?.[b.page - 1]?.pageWidth || 595,
+        pageHeight: analyzeData.manifest?.pages?.[b.page - 1]?.pageHeight || 842,
+        source: 'ocr', entityType: b.entityType || 'CUSTOM',
+        text: b.text || '', confidence: b.confidence ?? null,
+      }));
 
       const sealBoxes = (analyzeData.sealBoxes || []).map((b, i) => createNormalizedBox({
         id: b.id || `seal_${i}`, page: b.page,
@@ -346,12 +332,12 @@ export default function VisualMaskPage({ settings: _settings }) {
         source: 'seal', entityType: 'SEAL',
       }));
 
-      setBoxes([...candidateBoxes, ...sealBoxes]);
+      setBoxes([...refined, ...sealBoxes]);
       setPageImages(analyzeData.manifest?.pages || []);
       setCurrentPage(1);
 
       setProcessingStep('生成预览…');
-      showToast(`识别到 ${candidateBoxes.length} 个敏感区域、${backendTextEntities.length} 个文本实体${sealBoxes.length > 0 ? `、${sealBoxes.length} 个公章候选` : ''}`);
+      showToast(`识别到 ${refined.length} 个敏感区域、${backendTextEntities.length} 个文本实体${sealBoxes.length > 0 ? `、${sealBoxes.length} 个公章候选` : ''}`);
     } catch (err) {
       setError(err.message);
     } finally {
