@@ -1,11 +1,16 @@
 import { useState, useRef, useCallback } from 'react';
-import { createTask, analyzeTask, updateTaskBoxes, maskExportTask } from '../api';
+import { createTask, analyzeTask, updateTaskBoxes, maskExportTask, textExportTask } from '../api';
 import { Button } from '@/components/ui/button';
 import { normalizedToCSS, computeDisplaySize, createNormalizedBox } from '../services/coords';
 
 // ─── Constants ───────────────────────────────────────────────
 
 const BOX_MIN_SIZE = 0.005; // minimum 0.5% of page
+const MODES = [
+  { key: 'mask', label: '遮蔽', desc: '黑色遮挡块 → PDF' },
+  { key: 'star', label: '星号', desc: '部分可见 → TXT/MD/DOCX' },
+  { key: 'placeholder', label: '占位', desc: '类型标签 → TXT/MD/DOCX' },
+];
 
 // ─── Page Image Component ────────────────────────────────────
 
@@ -292,6 +297,8 @@ export default function VisualMaskPage({ settings }) {
   const [currentPage, setCurrentPage] = useState(1);
   const [toast, setToast] = useState('');
   const [exporting, setExporting] = useState(false);
+  const [mode, setMode] = useState('mask'); // 'mask' | 'star' | 'placeholder'
+  const [exportFormat, setExportFormat] = useState('txt'); // 'txt' | 'md' | 'docx'
   const containerRef = useRef(null);
   const fileInputRef = useRef(null);
 
@@ -364,14 +371,12 @@ export default function VisualMaskPage({ settings }) {
     }
   };
 
-  // Export masked PDF
-  const handleExport = async () => {
+  // Export masked PDF (mask mode)
+  const handleExportMask = async () => {
     if (!task || boxes.length === 0) return;
     setExporting(true);
     try {
-      // Save boxes first
       await updateTaskBoxes(task.taskId, boxes);
-
       const response = await maskExportTask(task.taskId, boxes);
       const blob = await response.blob();
       const ext = task.filename ? task.filename.substring(task.filename.lastIndexOf('.')) : '.pdf';
@@ -391,6 +396,39 @@ export default function VisualMaskPage({ settings }) {
       setExporting(false);
     }
   };
+
+  // Export text replacement (star/placeholder mode)
+  const handleExportText = async () => {
+    if (!task || boxes.length === 0) return;
+    setExporting(true);
+    try {
+      // Convert boxes to entities format for text export
+      const entities = boxes.map(b => ({
+        original: b.text || '', // OCR text from box
+        entity_type: b.entityType || 'MANUAL',
+        start: 0, end: 0, // Will be resolved by engine from OCR text
+      })).filter(e => e.original);
+
+      const response = await textExportTask(task.taskId, entities, mode, exportFormat);
+      const blob = await response.blob();
+      const baseName = task.filename ? task.filename.substring(0, task.filename.lastIndexOf('.')) : 'document';
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${baseName}.${mode === 'star' ? 'star' : 'placeholder'}.${exportFormat}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      showToast(`${mode === 'star' ? '星号' : '占位'}导出成功 (${exportFormat.toUpperCase()})`);
+    } catch (err) {
+      showToast(err.message || '导出失败');
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleExport = mode === 'mask' ? handleExportMask : handleExportText;
 
   const pageInfo = pageImages[currentPage - 1];
   const totalPages = pageImages.length;
@@ -433,6 +471,29 @@ export default function VisualMaskPage({ settings }) {
           )}
         </div>
         <div className="mask-toolbar-center">
+          <div className="mode-switch">
+            {MODES.map(m => (
+              <button
+                key={m.key}
+                className={`mode-btn ${mode === m.key ? 'active' : ''}`}
+                onClick={() => setMode(m.key)}
+                title={m.desc}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+          {mode !== 'mask' && (
+            <select
+              className="format-select"
+              value={exportFormat}
+              onChange={(e) => setExportFormat(e.target.value)}
+            >
+              <option value="txt">TXT</option>
+              <option value="md">MD</option>
+              <option value="docx">DOCX</option>
+            </select>
+          )}
           {totalPages > 1 && (
             <div className="page-nav">
               <Button variant="ghost" size="sm" disabled={currentPage <= 1} onClick={() => setCurrentPage(p => p - 1)}>←</Button>
@@ -445,7 +506,7 @@ export default function VisualMaskPage({ settings }) {
           <Button variant="outline" size="sm" onClick={handleSaveBoxes}>保存框</Button>
           <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>换文件</Button>
           <Button variant="default" size="sm" onClick={handleExport} disabled={exporting || boxes.length === 0}>
-            {exporting ? '导出中…' : '导出遮蔽 PDF'}
+            {exporting ? '导出中…' : mode === 'mask' ? '导出遮蔽 PDF' : `导出${mode === 'star' ? '星号' : '占位'} ${exportFormat.toUpperCase()}`}
           </Button>
         </div>
       </div>

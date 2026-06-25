@@ -2421,6 +2421,97 @@ router.get('/tasks/:id/page-image/:pageNum', async (req, res) => {
   }
 });
 
+/**
+ * POST /api/tasks/:id/text-export - 文本替换导出（星号/占位）
+ */
+router.post('/tasks/:id/text-export', async (req, res) => {
+  try {
+    const taskId = parseInt(req.params.id, 10);
+    const task = getTaskById(taskId);
+    if (!task) return res.status(404).json({ success: false, message: '任务不存在' });
+
+    const sourcePath = task.source_path;
+    if (!sourcePath || !existsSync(sourcePath)) {
+      return res.status(409).json({ success: false, message: '源文件已丢失' });
+    }
+
+    const { entities, mode, format } = req.body;
+    if (!entities || !Array.isArray(entities)) {
+      return res.status(400).json({ success: false, message: '缺少 entities' });
+    }
+    if (!['star', 'placeholder'].includes(mode)) {
+      return res.status(400).json({ success: false, message: 'mode 必须是 star 或 placeholder' });
+    }
+    if (!['txt', 'md', 'docx'].includes(format)) {
+      return res.status(400).json({ success: false, message: 'format 必须是 txt、md 或 docx' });
+    }
+
+    const { resolveLegalDesensBin } = await import('./services/cliResolver.js');
+    const bin = resolveLegalDesensBin();
+
+    const workDir = task.work_dir || path.join(uploadsDir, 'tasks', `.work_${taskId}`);
+    if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
+
+    // Write entities to temp file
+    const entitiesPath = path.join(workDir, 'text-entities.json');
+    await fs.writeFile(entitiesPath, JSON.stringify(entities, null, 2), 'utf-8');
+
+    const ext = `.${format}`;
+    const exportPath = path.join(workDir, `replaced${ext}`);
+
+    const args = [
+      'text-export', sourcePath,
+      '--entities', entitiesPath,
+      '--out', exportPath,
+      '--mode', mode,
+      '--format', format,
+    ];
+
+    // For PDF sources, we need OCR text
+    const sourceExt = path.extname(sourcePath).toLowerCase();
+    if (sourceExt === '.pdf') {
+      // Run analyze to get OCR text
+      const analyzeOut = path.join(workDir, 'analyze.json');
+      try {
+        await execFileAsync(bin, ['analyze', sourcePath, '--out', analyzeOut], {
+          timeout: 120000,
+        });
+        const analyzeData = JSON.parse(await fs.readFile(analyzeOut, 'utf-8'));
+        const ocrText = (analyzeData.ocrBoxes || []).map(b => b.text).join('\n');
+        const ocrPath = path.join(workDir, 'ocr-text.txt');
+        await fs.writeFile(ocrPath, ocrText, 'utf-8');
+        args.push('--ocr-text', ocrPath);
+      } catch (analyzeErr) {
+        return res.status(500).json({ success: false, message: 'PDF OCR 分析失败', error: analyzeErr.message });
+      }
+    }
+
+    try {
+      await execFileAsync(bin, args, {
+        timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
+      });
+    } catch (cliErr) {
+      return res.status(500).json({ success: false, message: '文本替换导出失败', error: cliErr.message });
+    }
+
+    if (!existsSync(exportPath)) {
+      return res.status(500).json({ success: false, message: '导出文件未生成' });
+    }
+
+    // Update task
+    updateTask(taskId, {
+      export_path: path.relative(path.join(__dirname, '..'), exportPath),
+      residual_passed: true,
+    });
+
+    const downloadName = (task.filename || 'document').replace(/(\.[^.]+)?$/, `.replaced${ext}`);
+    res.download(exportPath, downloadName);
+  } catch (error) {
+    console.error('Text Export Error:', error);
+    res.status(500).json({ success: false, message: '文本替换导出失败', error: error.message });
+  }
+});
+
 // #endregion
 
 /**

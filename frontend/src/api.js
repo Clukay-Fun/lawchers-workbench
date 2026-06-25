@@ -170,6 +170,20 @@ export async function maskExportTask(taskId, boxes) {
   return response;
 }
 
+/** 文本替换导出（星号/占位） */
+export async function textExportTask(taskId, entities, mode, format) {
+  const response = await fetch(`${API_BASE}/tasks/${taskId}/text-export`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entities, mode, format }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.message || '文本替换导出失败');
+  }
+  return response;
+}
+
 // #endregion
 
 // #region 诊断 API
