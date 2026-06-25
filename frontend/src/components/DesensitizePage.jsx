@@ -252,7 +252,8 @@ export default function DesensitizePage({ settings }) {
   const keepCount = task?.decisions?.filter((d) => d.action === 'keep').length || 0;
   const manualCount = task?.decisions?.filter((d) => d.origin === 'manual').length || 0;
   const unconfirmedCount = task?.decisions?.filter((d) => d.action === 'redact' && !d.confirmed).length || 0;
-  const isUnsupportedPdf = task?.documentKind?.includes('pdf');
+  const isUnsupportedPdf = task?.documentKind === 'pdf-scan' || task?.documentKind === 'pdf-hybrid';
+  const isPdfText = task?.documentKind === 'pdf-text';
 
   if (!task && !loading) {
     return (
@@ -300,7 +301,7 @@ export default function DesensitizePage({ settings }) {
               variant="default"
               onClick={handleExportClick}
               disabled={exporting || isUnsupportedPdf}
-              title={isUnsupportedPdf ? 'PDF 按决策导出尚未支持' : ''}
+              title={isUnsupportedPdf ? '扫描 PDF 暂不支持按决策导出' : ''}
             >
               {exporting ? '导出中…' : isUnsupportedPdf ? '导出尚未支持' : '导出脱敏副本'}
             </Button>
@@ -308,7 +309,7 @@ export default function DesensitizePage({ settings }) {
         </div>
 
         {isUnsupportedPdf && (
-          <div className="review-scan-note">PDF 按决策导出尚未支持，请转换为 DOCX 或拆分处理。</div>
+          <div className="review-scan-note">文本层 PDF 可导出；扫描 PDF 暂不支持按决策导出。</div>
         )}
 
         <PreviewPane
@@ -355,7 +356,7 @@ export default function DesensitizePage({ settings }) {
 
   function handleExportClick() {
     if (isUnsupportedPdf) {
-      showToast('PDF 按决策导出尚未支持，请转换为 DOCX 或拆分处理');
+      showToast('扫描 PDF 暂不支持按决策导出');
       return;
     }
     setShowExportConfirm(true);

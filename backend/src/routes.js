@@ -2057,9 +2057,15 @@ router.post('/tasks/:id/export', async (req, res) => {
       return res.status(409).json({ success: false, message: '源文件已丢失，请重新上传' });
     }
 
-    // PDF 暂不支持
+    // PDF sub-kind routing: pdf-text allowed, pdf-scan/pdf-hybrid blocked
     if (task.document_kind && task.document_kind.includes('pdf')) {
-      return res.status(501).json({ success: false, message: 'PDF 按决策导出尚未支持' });
+      if (task.document_kind === 'pdf-scan') {
+        return res.status(501).json({ success: false, message: '扫描 PDF 按决策导出未支持（需要像素级多边形红action）' });
+      }
+      if (task.document_kind === 'pdf-hybrid') {
+        return res.status(501).json({ success: false, message: '混合 PDF 按决策导出未支持（需要逐页混合管线）' });
+      }
+      // pdf-text is allowed — continue to export
     }
 
     const { resolveLegalDesensBin } = await import('./services/cliResolver.js');
