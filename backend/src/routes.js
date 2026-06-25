@@ -2167,7 +2167,7 @@ router.post('/tasks/:id/export', async (req, res) => {
 // #region 视觉遮蔽模式 API（P1 遮蔽主干）
 
 /**
- * POST /api/tasks/:id/analyze - OCR 分析 PDF，返回归一化文字框
+ * POST /api/tasks/:id/analyze - OCR 分析 PDF，返回归一化文字框 + 公章检测
  */
 router.post('/tasks/:id/analyze', async (req, res) => {
   try {
@@ -2187,21 +2187,39 @@ router.post('/tasks/:id/analyze', async (req, res) => {
     if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
 
     const analyzeOut = path.join(workDir, 'analyze.json');
+    const sealOut = path.join(workDir, 'seals.json');
 
-    const args = ['analyze', sourcePath, '--out', analyzeOut];
-    const { getIsNerEnabled } = await import('./services/redactService.js');
-    // analyze always uses OCR, no --regex-only
-
-    await execFileAsync(bin, args, {
+    // Run OCR analyze
+    await execFileAsync(bin, ['analyze', sourcePath, '--out', analyzeOut], {
       timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
     });
 
     const analyzeData = JSON.parse(await fs.readFile(analyzeOut, 'utf-8'));
 
+    // Run seal detection (best-effort, don't fail if it errors)
+    let sealBoxes = [];
+    try {
+      await execFileAsync(bin, ['detect-seals', sourcePath, '--out', sealOut], {
+        timeout: 60000,
+      });
+      const sealData = JSON.parse(await fs.readFile(sealOut, 'utf-8'));
+      sealBoxes = (sealData.seals || []).map((s, i) => ({
+        id: `seal_${i}`,
+        page: s.page,
+        x: s.x, y: s.y, width: s.width, height: s.height,
+        source: 'seal',
+        confidence: s.confidence,
+        areaRatio: s.area_ratio,
+      }));
+    } catch (sealErr) {
+      console.warn('Seal detection failed (non-fatal):', sealErr.message);
+    }
+
     res.json({
       success: true,
       data: {
         ocrBoxes: analyzeData.ocrBoxes || [],
+        sealBoxes,
         manifest: analyzeData.manifest || {},
       },
     });

@@ -157,6 +157,9 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth }) {
         {pageBoxes.map(box => {
           const css = normalizedToCSS(box, displayWidth, displayHeight);
           const isHovered = hoveredBox === box.id;
+          const isSeal = box.source === 'seal';
+          const borderColor = isSeal ? '#ef4444' : (isHovered ? '#ef4444' : '#3b82f6');
+          const bgColor = isSeal ? 'rgba(239,68,68,0.15)' : (isHovered ? 'rgba(239,68,68,0.15)' : 'rgba(59,130,246,0.1)');
           return (
             <div key={box.id}>
               {/* Box rectangle */}
@@ -166,8 +169,8 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth }) {
                   position: 'absolute',
                   left: css.left, top: css.top,
                   width: css.width, height: css.height,
-                  border: `2px solid ${isHovered ? '#ef4444' : '#3b82f6'}`,
-                  background: isHovered ? 'rgba(239,68,68,0.15)' : 'rgba(59,130,246,0.1)',
+                  border: `2px solid ${borderColor}`,
+                  background: bgColor,
                   cursor: 'move',
                   transition: 'border-color 0.15s, background 0.15s',
                 }}
@@ -175,6 +178,13 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth }) {
                 onMouseEnter={() => setHoveredBox(box.id)}
                 onMouseLeave={() => setHoveredBox(null)}
               >
+                {/* Source label */}
+                {isSeal && (
+                  <span style={{
+                    position: 'absolute', top: -16, left: 0,
+                    fontSize: 10, color: '#ef4444', whiteSpace: 'nowrap',
+                  }}>公章</span>
+                )}
                 {/* Delete button */}
                 {isHovered && (
                   <button
@@ -310,10 +320,24 @@ export default function VisualMaskPage({ settings }) {
         entityType: null,
       }));
 
-      setBoxes(ocrBoxes);
+      // Convert seal boxes to normalized boxes
+      const sealBoxes = (analyzeData.sealBoxes || []).map((b, i) => createNormalizedBox({
+        id: b.id || `seal_${i}`,
+        page: b.page,
+        x: b.x, y: b.y, width: b.width, height: b.height,
+        pageWidth: analyzeData.manifest?.pages?.[b.page - 1]?.pageWidth || 595,
+        pageHeight: analyzeData.manifest?.pages?.[b.page - 1]?.pageHeight || 842,
+        source: 'seal',
+        entityType: 'SEAL',
+      }));
+
+      const allBoxes = [...ocrBoxes, ...sealBoxes];
+      setBoxes(allBoxes);
       setPageImages(analyzeData.manifest?.pages || []);
       setCurrentPage(1);
-      showToast(`识别到 ${ocrBoxes.length} 个文字区域`);
+      const sealCount = sealBoxes.length;
+      const ocrCount = ocrBoxes.length;
+      showToast(`识别到 ${ocrCount} 个文字区域${sealCount > 0 ? `、${sealCount} 个公章（best-effort）` : ''}`);
     } catch (err) {
       setError(err.message);
       setAnalyzing(false);
@@ -398,6 +422,9 @@ export default function VisualMaskPage({ settings }) {
         <div className="mask-toolbar-left">
           <span className="mask-filename">{task?.filename}</span>
           <span className="mask-box-count">{boxes.length} 个遮蔽区域</span>
+          {boxes.some(b => b.source === 'seal') && (
+            <span className="mask-seal-notice">公章识别为 best-effort，不保证全中</span>
+          )}
         </div>
         <div className="mask-toolbar-center">
           {totalPages > 1 && (

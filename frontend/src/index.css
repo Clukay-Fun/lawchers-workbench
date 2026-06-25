@@ -416,6 +416,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .mask-toolbar-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .mask-filename { font-weight: 600; font-size: 13px; color: var(--base02); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mask-box-count { font: 11px var(--font-mono); color: var(--base01); padding: 2px 8px; background: rgba(0,0,0,.04); border-radius: 999px; }
+.mask-seal-notice { font: 10px var(--font-mono); color: #ef4444; padding: 2px 8px; background: rgba(239,68,68,.08); border-radius: 999px; }
 .page-nav { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--base01); }
 .page-nav span { min-width: 40px; text-align: center; }
 .mask-dual-column { flex: 1; display: flex; min-height: 0; overflow: auto; gap: 16px; padding: 16px; }
