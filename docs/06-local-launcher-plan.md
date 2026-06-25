@@ -49,7 +49,22 @@
 
 ### 1.6 单服务的同源 API（必做，否则 dist 仍打 3001）
 - 生产构建时前端 API 基址改为**同源相对**（`VITE_API_BASE` 设为 `''` 或 `/api`），使 `frontend/dist` 调用 `http://localhost:3000/api` 同端口，而非写死 3001。
-- backend 增加：生产模式 `express.static('frontend/dist')` + SPA 回退（非 `/api` 路由回 `index.html`）。
+- backend 增加：生产模式 `express.static('frontend/dist')` + SPA 回退（见 1.7 顺序）。
+
+### 1.7 执行防坑（三个必须钉死的点）
+1. **端口统一**：后端实际读 `process.env.PORT || 3001`（`backend/src/index.js:24`）。`start-app.sh` 对用户暴露 `APP_PORT`，但**启动 backend 时必须导出 `PORT=${APP_PORT:-3000}`**，否则会出现"启动器开 3000、后端跑 3001"。
+2. **前端写死 3001 不止一处**：生产 dist 中**任何地方都不得写死 `localhost:3001`**，至少两处要改成同源：
+   - `frontend/src/api.js:11` 的 `API_BASE`（`VITE_API_BASE || 'http://localhost:3001/api'`）
+   - `frontend/src/App.jsx:107` 的 `backendOrigin`（`VITE_BACKEND_ORIGIN || …:3001`，用于 uploads / 文件预览 URL）
+   - 生产模式两者统一走**同源**（相对 `/api`、`/uploads` 或空 origin）。
+3. **SPA fallback 顺序写死**：必须是
+   ```
+   /api      → routes
+   /uploads  → static uploads（已挂在 index.js:41）
+   frontend/dist 静态
+   其余「非 /api、非 /uploads 的普通 GET」 → index.html
+   ```
+   SPA 回退**必须排在 `/api` 和 `/uploads` 之后**，且只处理页面路由 GET——否则会把 `/api` 请求或上传文件预览回退成 `index.html` 打坏。
 
 ---
 
