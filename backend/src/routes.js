@@ -2319,9 +2319,14 @@ router.post('/tasks/:id/analyze', async (req, res) => {
 
     // ── Run rule-based text entity detection on OCR text ──
     // This produces precise start/end entities for text mode (star/placeholder)
-    let textEntities = [];
+    const ocrText = (analyzeData.ocrBoxes || []).map(b => b.text || '').join('\n');
+    let regexEntities = [];
+    let nerEntities = [];
+    let nerEnabled = false;
+    let nerWarning = null;
+
+    // 1) Regex detection (always runs)
     try {
-      const ocrText = (analyzeData.ocrBoxes || []).map(b => b.text || '').join('\n');
       if (ocrText && mergedRulesPath) {
         const rulesRaw = JSON.parse(await fs.readFile(mergedRulesPath, 'utf-8'));
         for (const rule of rulesRaw) {
@@ -2331,32 +2336,83 @@ router.post('/tasks/:id/analyze', async (req, res) => {
             let match;
             while ((match = re.exec(ocrText)) !== null) {
               if (match[0].length >= 2) {
-                textEntities.push({
+                regexEntities.push({
                   original: match[0],
                   entity_type: rule.entity_type || 'CUSTOM',
                   start: match.index,
                   end: match.index + match[0].length,
                   rule_id: rule.id,
+                  source: 'regex',
                 });
               }
-              if (!match[0]) break; // prevent infinite loop on zero-width match
+              if (!match[0]) break;
             }
           } catch { /* skip invalid regex */ }
         }
-        // Deduplicate overlapping entities (keep longer match)
-        textEntities.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
-        const deduped = [];
-        let lastEnd = -1;
-        for (const ent of textEntities) {
-          if (ent.start >= lastEnd) {
-            deduped.push(ent);
-            lastEnd = ent.end;
-          }
-        }
-        textEntities = deduped;
       }
     } catch (detectErr) {
-      console.warn('[WARN] Text entity detection failed (non-fatal):', detectErr.message);
+      console.warn('[WARN] Regex entity detection failed (non-fatal):', detectErr.message);
+    }
+
+    // 2) NER detection (best-effort, degrade gracefully)
+    const { getIsNerEnabled } = await import('./services/redactService.js');
+    nerEnabled = getIsNerEnabled();
+
+    if (nerEnabled && ocrText.trim().length > 0) {
+      try {
+        const nerTextPath = path.join(workDir, 'ner-input.txt');
+        const nerOutPath = path.join(workDir, 'ner-spans.json');
+        await fs.writeFile(nerTextPath, ocrText, 'utf-8');
+
+        const nerArgs = ['ner-spans', nerTextPath, '--out', nerOutPath];
+        const modelDir = process.env.LEGAL_DESENS_MODEL_DIR;
+        if (modelDir) nerArgs.push('--model-dir', modelDir);
+
+        await execFileAsync(bin, nerArgs, {
+          timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '60000', 10),
+        });
+
+        const nerData = JSON.parse(await fs.readFile(nerOutPath, 'utf-8'));
+        for (const span of (nerData.spans || [])) {
+          if (span.text && span.text.length >= 2 && span.start != null && span.end != null) {
+            nerEntities.push({
+              original: span.text,
+              entity_type: span.entity_type || 'PERSON',
+              start: span.start,
+              end: span.end,
+              source: 'ner',
+              engine: span.engine || 'ner',
+              priority: span.priority || 0,
+            });
+          }
+        }
+      } catch (nerErr) {
+        console.warn('[WARN] NER detection failed, degrading to regex-only:', nerErr.message);
+        nerWarning = 'NER 模型不可用，已降级为仅正则识别';
+        nerEnabled = false;
+      }
+    } else if (!nerEnabled) {
+      nerWarning = '扫描件当前仅正则识别，姓名/机构/地址可能不会自动脱敏';
+    }
+
+    // 3) Merge: regex + NER + denylist, deduplicate overlapping (keep longer/higher-priority)
+    // Priority: denylist > regex > NER
+    let textEntities = [];
+    const denylistEntities = []; // denylist is already in regex via rules, but track source
+
+    // Combine all sources
+    const allEntities = [...regexEntities, ...nerEntities];
+
+    // Sort by start, then by length descending (prefer longer match)
+    allEntities.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
+
+    // Greedy dedup: keep non-overlapping, prefer longer
+    let lastEnd = -1;
+    for (const ent of allEntities) {
+      if (ent.start >= lastEnd) {
+        textEntities.push(ent);
+        lastEnd = ent.end;
+      }
     }
 
     // Run seal detection (best-effort, don't fail if it errors)
@@ -2386,6 +2442,15 @@ router.post('/tasks/:id/analyze', async (req, res) => {
         textEntities,
         sealBoxes,
         manifest: analyzeData.manifest || {},
+        diagnostics: {
+          ocrLines: (analyzeData.ocrBoxes || []).length,
+          regexHits: regexEntities.length,
+          nerHits: nerEntities.length,
+          sealHits: sealBoxes.length,
+          totalEntities: textEntities.length,
+          nerEnabled,
+          nerWarning: nerWarning || null,
+        },
       },
     });
   } catch (error) {

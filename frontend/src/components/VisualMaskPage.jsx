@@ -258,6 +258,7 @@ export default function VisualMaskPage({ settings: _settings }) {
   // textEntities = precise rule-based entities for text mode (from backend analyze)
   const [textEntities, setTextEntities] = useState([]);
   const [ocrText, setOcrText] = useState('');
+  const [diagnostics, setDiagnostics] = useState(null);
   const [pageImages, setPageImages] = useState([]);
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedBox, setSelectedBox] = useState(null);
@@ -293,7 +294,7 @@ export default function VisualMaskPage({ settings: _settings }) {
 
   const handleFile = async (file) => {
     if (!file) return;
-    setLoading(true); setError(null); setBoxes([]); setTextEntities([]); setOcrText(''); setPageImages([]); setUploadPercent(0); setProcessingStep('上传中…');
+    setLoading(true); setError(null); setBoxes([]); setTextEntities([]); setOcrText(''); setDiagnostics(null); setPageImages([]); setUploadPercent(0); setProcessingStep('上传中…');
     try {
       const taskData = await uploadWithProgress(file, _settings?.rulesConfig, setUploadPercent);
       setTask(taskData); setUploadPercent(100);
@@ -335,9 +336,12 @@ export default function VisualMaskPage({ settings: _settings }) {
       setBoxes([...refined, ...sealBoxes]);
       setPageImages(analyzeData.manifest?.pages || []);
       setCurrentPage(1);
+      setDiagnostics(analyzeData.diagnostics || null);
 
       setProcessingStep('生成预览…');
-      showToast(`识别到 ${refined.length} 个敏感区域、${backendTextEntities.length} 个文本实体${sealBoxes.length > 0 ? `、${sealBoxes.length} 个公章候选` : ''}`);
+      const diag = analyzeData.diagnostics;
+      const nerNote = diag?.nerWarning ? ` (${diag.nerWarning})` : '';
+      showToast(`识别到 ${refined.length} 个敏感区域、${backendTextEntities.length} 个文本实体${sealBoxes.length > 0 ? `、${sealBoxes.length} 个公章候选` : ''}${nerNote}`);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -454,6 +458,15 @@ export default function VisualMaskPage({ settings: _settings }) {
               <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>换文件</Button>
             </div>
           </div>
+          {diagnostics && (
+            <div className="mask-diagnostics">
+              <span>OCR {diagnostics.ocrLines} 行</span>
+              <span>正则 {diagnostics.regexHits}</span>
+              <span>NER {diagnostics.nerHits}</span>
+              <span>公章 {diagnostics.sealHits}</span>
+              {diagnostics.nerWarning && <span className="diag-warn">{diagnostics.nerWarning}</span>}
+            </div>
+          )}
           {pageImages.map((pg) => {
             const pgInfo = { ...pg, taskId: task?.taskId };
             return (

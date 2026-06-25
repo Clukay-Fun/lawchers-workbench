@@ -423,6 +423,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .mask-doc-toolbar-right { display: flex; align-items: center; gap: 8px; }
 .mask-box-count { font: 11px var(--font-mono); color: var(--base01); padding: 2px 8px; background: rgba(0,0,0,.04); border-radius: 999px; }
 .mask-seal-notice { font: 10px var(--font-mono); color: var(--blue); padding: 2px 8px; background: rgba(59,130,246,.08); border-radius: 999px; }
+.mask-diagnostics { display: flex; gap: 12px; padding: 4px 0; font: 10px var(--font-mono); color: var(--base01); border-bottom: 1px solid var(--line); }
+.mask-diagnostics span { padding: 1px 6px; background: rgba(0,0,0,.03); border-radius: 3px; }
+.mask-diagnostics .diag-warn { color: #b45309; background: rgba(180,83,9,.08); }
 
 /* Mode switch */
 .mode-switch { display: flex; gap: 0; border: 1px solid var(--line-strong); border-radius: var(--radius-control); overflow: hidden; }
