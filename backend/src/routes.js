@@ -21,6 +21,25 @@ import { resolveLegalDesensBin, getRulesPath } from './services/cliResolver.js';
 
 const execFileAsync = promisify(execFileCb);
 
+function describeCliFailure(error, fallback = '本地引擎执行失败') {
+  if (error?.killed || error?.signal === 'SIGTERM') {
+    return '本地 OCR 引擎执行超时，请尝试页数更少或体积更小的 PDF';
+  }
+
+  const raw = String(error?.stderr || error?.stdout || error?.message || '').trim();
+  if (!raw) return fallback;
+
+  const line = raw
+    .split('\n')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .find((item) => !item.startsWith('Traceback')) || raw;
+
+  return line
+    .replace(/\/[^\s'"]+/g, '[path]')
+    .slice(0, 240);
+}
+
 // 导入业务服务
 import { parseDocument } from './services/parserService.js';
 import { analyzeCaseElements } from './services/analyzeService.js';
@@ -1874,6 +1893,63 @@ async function buildMergedRulesFile(workDir) {
   return mergedPath;
 }
 
+/**
+ * Refine OCR line-level boxes to entity-level sub-boxes.
+ * Given OCR boxes (line-level) and textEntities (precise start/end in OCR text),
+ * splits each line box into entity sub-boxes using character-width proportioning.
+ * Lines without entities are dropped.
+ */
+function refineToEntityBoxes(ocrBoxes, textEntities) {
+  if (!textEntities?.length || !ocrBoxes?.length) return [];
+
+  // Build line offset map
+  const lineOffsets = [];
+  let offset = 0;
+  for (let i = 0; i < ocrBoxes.length; i++) {
+    const box = ocrBoxes[i];
+    const lineLen = (box.text || '').length;
+    lineOffsets.push({ i, start: offset, end: offset + lineLen });
+    offset += lineLen + 1; // +1 for \n join
+  }
+
+  const refined = [];
+  for (const entity of textEntities) {
+    const entStart = entity.start ?? 0;
+    const entEnd = entity.end ?? 0;
+    if (entStart >= entEnd || !entity.original) continue;
+
+    for (const { i: boxIdx, start: lineStart, end: lineEnd } of lineOffsets) {
+      const overlapStart = Math.max(entStart, lineStart);
+      const overlapEnd = Math.min(entEnd, lineEnd);
+      if (overlapStart >= overlapEnd) continue;
+
+      const box = ocrBoxes[boxIdx];
+      const lineLen = (box.text || '').length;
+      if (lineLen === 0) continue;
+
+      const charStart = Math.max(0, overlapStart - lineStart);
+      const charEnd = Math.min(lineLen, overlapEnd - lineStart);
+      const charWidth = box.width / lineLen;
+
+      const subX = Math.max(0, Math.min(1, box.x + charStart * charWidth));
+      const subWidth = Math.max(0.001, Math.min(1 - subX, (charEnd - charStart) * charWidth));
+
+      refined.push({
+        text: entity.original,
+        page: box.page,
+        x: Math.round(subX * 1e6) / 1e6,
+        y: box.y,
+        width: Math.round(subWidth * 1e6) / 1e6,
+        height: box.height,
+        confidence: box.confidence,
+        entityType: entity.entity_type || 'CUSTOM',
+        source: 'ocr',
+      });
+    }
+  }
+  return refined;
+}
+
 function activeWhitelistMatchers() {
   try {
     return getRulesByCategory('whitelist')
@@ -2206,23 +2282,82 @@ router.post('/tasks/:id/analyze', async (req, res) => {
     const analyzeOut = path.join(workDir, 'analyze.json');
     const sealOut = path.join(workDir, 'seals.json');
 
-    // Build merged rules for entity type tagging
+    // Build merged rules for entity type tagging — must succeed
     let mergedRulesPath = null;
     try {
       mergedRulesPath = await buildMergedRulesFile(workDir);
     } catch (mergeErr) {
-      console.warn('[WARN] 构建合并规则文件失败:', mergeErr.message);
+      return res.status(500).json({ success: false, message: `规则加载失败: ${mergeErr.message}` });
     }
 
     // Run OCR analyze with rules for entity type tagging
-    const analyzeArgs = ['analyze', sourcePath, '--out', analyzeOut];
+    const analyzeArgs = [];
     if (mergedRulesPath) analyzeArgs.push('--rules', mergedRulesPath);
+    analyzeArgs.push('analyze', sourcePath, '--out', analyzeOut);
 
-    await execFileAsync(bin, analyzeArgs, {
-      timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
-    });
+    try {
+      await execFileAsync(bin, analyzeArgs, {
+        timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
+      });
+    } catch (cliErr) {
+      return res.status(500).json({
+        success: false,
+        message: 'OCR 分析失败',
+        error: describeCliFailure(cliErr, 'OCR 引擎执行失败'),
+      });
+    }
+
+    if (!existsSync(analyzeOut)) {
+      return res.status(500).json({
+        success: false,
+        message: 'OCR 分析失败',
+        error: 'OCR 引擎没有生成分析结果',
+      });
+    }
 
     const analyzeData = JSON.parse(await fs.readFile(analyzeOut, 'utf-8'));
+
+    // ── Run rule-based text entity detection on OCR text ──
+    // This produces precise start/end entities for text mode (star/placeholder)
+    let textEntities = [];
+    try {
+      const ocrText = (analyzeData.ocrBoxes || []).map(b => b.text || '').join('\n');
+      if (ocrText && mergedRulesPath) {
+        const rulesRaw = JSON.parse(await fs.readFile(mergedRulesPath, 'utf-8'));
+        for (const rule of rulesRaw) {
+          if (!rule.enabled || !rule.pattern) continue;
+          try {
+            const re = new RegExp(rule.pattern, 'g');
+            let match;
+            while ((match = re.exec(ocrText)) !== null) {
+              if (match[0].length >= 2) {
+                textEntities.push({
+                  original: match[0],
+                  entity_type: rule.entity_type || 'CUSTOM',
+                  start: match.index,
+                  end: match.index + match[0].length,
+                  rule_id: rule.id,
+                });
+              }
+              if (!match[0]) break; // prevent infinite loop on zero-width match
+            }
+          } catch { /* skip invalid regex */ }
+        }
+        // Deduplicate overlapping entities (keep longer match)
+        textEntities.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
+        const deduped = [];
+        let lastEnd = -1;
+        for (const ent of textEntities) {
+          if (ent.start >= lastEnd) {
+            deduped.push(ent);
+            lastEnd = ent.end;
+          }
+        }
+        textEntities = deduped;
+      }
+    } catch (detectErr) {
+      console.warn('[WARN] Text entity detection failed (non-fatal):', detectErr.message);
+    }
 
     // Run seal detection (best-effort, don't fail if it errors)
     let sealBoxes = [];
@@ -2247,6 +2382,8 @@ router.post('/tasks/:id/analyze', async (req, res) => {
       success: true,
       data: {
         ocrBoxes: analyzeData.ocrBoxes || [],
+        refinedBoxes: refineToEntityBoxes(analyzeData.ocrBoxes || [], textEntities),
+        textEntities,
         sealBoxes,
         manifest: analyzeData.manifest || {},
       },
@@ -2345,22 +2482,23 @@ router.post('/tasks/:id/mask-export', async (req, res) => {
     const auditPath = path.join(workDir, 'mask-audit.json');
 
     const docKind = task.document_kind || 'pdf-text';
-    const args = [
-      'mask-export', sourcePath,
-      '--boxes', boxesPath,
-      '--out', exportPath,
-      '--document-kind', docKind,
-      '--audit', auditPath,
-    ];
-
     // Add merged rules file (system + custom + blacklist)
     let mergedRulesPath = null;
+    const args = [];
     try {
       mergedRulesPath = await buildMergedRulesFile(workDir);
       if (mergedRulesPath) args.push('--rules', mergedRulesPath);
     } catch (mergeErr) {
       console.warn('[WARN] 构建合并规则文件失败，使用引擎默认:', mergeErr.message);
     }
+
+    args.push(
+      'mask-export', sourcePath,
+      '--boxes', boxesPath,
+      '--out', exportPath,
+      '--document-kind', docKind,
+      '--audit', auditPath,
+    );
 
     // Add denylist (forced redaction words)
     let denylistPath = null;
@@ -2509,23 +2647,33 @@ router.post('/tasks/:id/text-export', async (req, res) => {
     const ext = `.${format}`;
     const exportPath = path.join(workDir, `replaced${ext}`);
 
-    const args = [
+    const args = [];
+    // Add merged rules file — must succeed (fail-closed)
+    let mergedRulesPath = null;
+    try {
+      mergedRulesPath = await buildMergedRulesFile(workDir);
+      if (mergedRulesPath) args.push('--rules', mergedRulesPath);
+    } catch (mergeErr) {
+      return res.status(500).json({ success: false, message: `规则加载失败，导出阻断: ${mergeErr.message}` });
+    }
+
+    args.push(
       'text-export', sourcePath,
       '--entities', entitiesPath,
       '--out', exportPath,
       '--mode', mode,
       '--format', format,
-    ];
+    );
 
     // For PDF sources, we need OCR text
     const sourceExt = path.extname(sourcePath).toLowerCase();
     if (sourceExt === '.pdf') {
-      // Run analyze to get OCR text
+      // Run analyze to get OCR text (with rules for entity type tagging)
       const analyzeOut = path.join(workDir, 'analyze.json');
       try {
-        await execFileAsync(bin, ['analyze', sourcePath, '--out', analyzeOut], {
-          timeout: 120000,
-        });
+        const analyzeArgs = ['analyze', sourcePath, '--out', analyzeOut];
+        if (mergedRulesPath) analyzeArgs.push('--rules', mergedRulesPath);
+        await execFileAsync(bin, analyzeArgs, { timeout: 120000 });
         const analyzeData = JSON.parse(await fs.readFile(analyzeOut, 'utf-8'));
         const ocrText = (analyzeData.ocrBoxes || []).map(b => b.text).join('\n');
         const ocrPath = path.join(workDir, 'ocr-text.txt');
@@ -2534,15 +2682,6 @@ router.post('/tasks/:id/text-export', async (req, res) => {
       } catch (analyzeErr) {
         return res.status(500).json({ success: false, message: 'PDF OCR 分析失败', error: analyzeErr.message });
       }
-    }
-
-    // Add merged rules file
-    let mergedRulesPath = null;
-    try {
-      mergedRulesPath = await buildMergedRulesFile(workDir);
-      if (mergedRulesPath) args.push('--rules', mergedRulesPath);
-    } catch (mergeErr) {
-      console.warn('[WARN] 构建合并规则文件失败:', mergeErr.message);
     }
 
     // Add denylist (forced redaction words)
@@ -2587,7 +2726,8 @@ router.post('/tasks/:id/text-export', async (req, res) => {
       residual_passed: true,
     });
 
-    const downloadName = (task.filename || 'document').replace(/(\.[^.]+)?$/, `.replaced${ext}`);
+    const baseName = (task.filename || 'document').replace(/\.[^.]+$/, '');
+    const downloadName = `${baseName}_脱敏.${format}`;
     res.download(exportPath, downloadName);
   } catch (error) {
     console.error('Text Export Error:', error);
@@ -2707,8 +2847,9 @@ router.post('/batch', upload.array('files', 20), async (req, res) => {
         let ocrText = '';
 
         if (ext === '.pdf') {
-          const analyzeArgs = ['analyze', finalPath, '--out', analyzeOut];
+          const analyzeArgs = [];
           if (workMergedRules) analyzeArgs.push('--rules', workMergedRules);
+          analyzeArgs.push('analyze', finalPath, '--out', analyzeOut);
           await execFileAsync(bin, analyzeArgs, { timeout: 120000 });
           const analyzeData = JSON.parse(await fs.readFile(analyzeOut, 'utf-8'));
           ocrText = (analyzeData.ocrBoxes || []).map(b => b.text).join('\n');
@@ -2731,9 +2872,10 @@ router.post('/batch', upload.array('files', 20), async (req, res) => {
           const boxesPath = path.join(actualWorkDir, 'batch-boxes.json');
           await fs.writeFile(boxesPath, '[]', 'utf-8'); // No user boxes in batch
 
-          const args = ['mask-export', finalPath, '--boxes', boxesPath, '--out', exportPath,
-            '--document-kind', 'pdf-text', '--audit', auditPath];
+          const args = [];
           if (workMergedRules) args.push('--rules', workMergedRules);
+          args.push('mask-export', finalPath, '--boxes', boxesPath, '--out', exportPath,
+            '--document-kind', 'pdf-text', '--audit', auditPath);
           if (denylistPath) args.push('--denylist', denylistPath);
 
           await execFileAsync(bin, args, { timeout: 120000 });
@@ -2744,15 +2886,16 @@ router.post('/batch', upload.array('files', 20), async (req, res) => {
           const entitiesPath = path.join(actualWorkDir, 'entities.json');
           await fs.writeFile(entitiesPath, JSON.stringify(entities, null, 2), 'utf-8');
 
-          const args = ['text-export', finalPath, '--entities', entitiesPath,
+          const args = [];
+          if (workMergedRules) args.push('--rules', workMergedRules);
+          args.push('text-export', finalPath, '--entities', entitiesPath,
             '--out', exportPath, '--mode', mode === 'mask' ? 'star' : mode,
-            '--format', exportFormat];
+            '--format', exportFormat);
           if (ocrText) {
             const ocrPath = path.join(actualWorkDir, 'ocr-text.txt');
             await fs.writeFile(ocrPath, ocrText, 'utf-8');
             args.push('--ocr-text', ocrPath);
           }
-          if (workMergedRules) args.push('--rules', workMergedRules);
           if (denylistPath) args.push('--denylist', denylistPath);
           if (whitelistPath) args.push('--whitelist', whitelistPath);
 
