@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import Sidebar from './components/Sidebar';
 import DesensitizePage from './components/DesensitizePage';
+import VisualMaskPage from './components/VisualMaskPage';
 import RestorePage from './components/RestorePage';
 import HistoryPage from './components/HistoryPage';
 import RulesPage from './components/RulesPage';
@@ -50,7 +51,7 @@ export default function App() {
   const renderPage = () => {
     switch (currentView) {
       case 'desensitize':
-        return <DesensitizePage settings={settings} />;
+        return <VisualMaskPage settings={settings} />;
       case 'restore':
         return <RestorePage />;
       case 'history':

@@ -1,3 +1,4 @@
 # legal-desens engine pinned to a specific commit for reproducibility.
 # To upgrade: change the commit hash below and re-run `npm run setup`.
-legal-desens[pdf,ocr] @ git+https://github.com/Clukay-Fun/lawchers-skills.git@44d92f0#subdirectory=legal-desensitizer
+# legal-desens[pdf,ocr] @ git+https://github.com/Clukay-Fun/lawchers-skills.git@a92ae53#subdirectory=legal-desensitizer
+legal-desens[pdf,ocr] @ file:///Users/clukay/Program/lawchers-skills/legal-desensitizer

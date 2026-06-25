@@ -47,7 +47,7 @@ export function deleteTask(id) {
 }
 
 export function updateTask(id, {
-  entity_stats, export_path, map_path, audit_path, residual_passed,
+  entity_stats, export_path, map_path, audit_path, residual_passed, work_dir,
 }) {
   const fields = [];
   const values = [];
@@ -56,6 +56,7 @@ export function updateTask(id, {
   if (map_path !== undefined) { fields.push('map_path = ?'); values.push(map_path); }
   if (audit_path !== undefined) { fields.push('audit_path = ?'); values.push(audit_path); }
   if (residual_passed !== undefined) { fields.push('residual_passed = ?'); values.push(residual_passed ? 1 : 0); }
+  if (work_dir !== undefined) { fields.push('work_dir = ?'); values.push(work_dir); }
   if (!fields.length) return;
   values.push(id);
   db.prepare(`UPDATE "task" SET ${fields.join(', ')} WHERE id = ?`).run(...values);

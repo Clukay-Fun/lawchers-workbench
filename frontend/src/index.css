@@ -407,3 +407,25 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .modal-card p { font-size: 13px; color: var(--base01); line-height: 1.6; margin-bottom: 16px; }
 .modal-card p strong { color: var(--base02); }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+/* ── 视觉遮蔽模式 ── */
+.visual-mask-page { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+.mask-toolbar { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; padding: 8px 16px; border-bottom: 1px solid var(--line); background: rgba(247,244,238,.9); gap: 12px; }
+.mask-toolbar-left { display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1; }
+.mask-toolbar-center { display: flex; align-items: center; gap: 8px; }
+.mask-toolbar-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.mask-filename { font-weight: 600; font-size: 13px; color: var(--base02); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mask-box-count { font: 11px var(--font-mono); color: var(--base01); padding: 2px 8px; background: rgba(0,0,0,.04); border-radius: 999px; }
+.mask-seal-notice { font: 10px var(--font-mono); color: #ef4444; padding: 2px 8px; background: rgba(239,68,68,.08); border-radius: 999px; }
+.mode-switch { display: flex; gap: 0; border: 1px solid var(--line-strong); border-radius: var(--radius-control); overflow: hidden; }
+.mode-btn { padding: 4px 12px; border: 0; background: transparent; color: var(--base01); font-size: 12px; cursor: pointer; transition: background 120ms, color 120ms; }
+.mode-btn:hover { background: rgba(0,0,0,.04); }
+.mode-btn.active { background: var(--blue); color: #fff; }
+.format-select { padding: 4px 8px; border: 1px solid var(--line-strong); border-radius: var(--radius-control); font-size: 12px; background: var(--card); color: var(--base02); }
+.page-nav { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--base01); }
+.page-nav span { min-width: 40px; text-align: center; }
+.mask-dual-column { flex: 1; display: flex; min-height: 0; overflow: auto; gap: 16px; padding: 16px; }
+.mask-left-panel { flex: 1.2; min-width: 0; overflow: auto; display: flex; justify-content: center; }
+.mask-right-panel { flex: 0.8; min-width: 0; overflow: auto; display: flex; justify-content: center; }
+.page-canvas { box-shadow: var(--shadow-sm); border: 1px solid var(--line); border-radius: 2px; overflow: hidden; }
+.mask-preview { border-radius: 2px; box-shadow: var(--shadow-sm); border: 1px solid var(--line); overflow: hidden; }
