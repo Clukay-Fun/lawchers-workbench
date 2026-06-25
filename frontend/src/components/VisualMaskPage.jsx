@@ -24,7 +24,15 @@ const TEXT_FORMATS = [
   { value: 'md', label: '导出 MD' },
 ];
 
-// ─── Star mask (module level, before any component) ──────────
+// Sensitive entity types that should become redaction boxes
+const SENSITIVE_TYPES = new Set([
+  'PHONE', 'LANDLINE', 'ID_CARD', 'PASSPORT', 'EMAIL',
+  'PERSON', 'ORG', 'BANK_CARD', 'BANK_BRANCH', 'MONEY',
+  'CASE_NO', 'ORG_CODE', 'API_TOKEN', 'ADDRESS', 'LOC',
+  'SEAL', 'DENYLIST', 'FORCE', 'CUSTOM',
+]);
+
+// ─── Star mask (module level) ────────────────────────────────
 
 function starMask(text, entityType) {
   if (!text) return '';
@@ -35,7 +43,17 @@ function starMask(text, entityType) {
   if (entityType === 'PERSON') return chars[0] + '*'.repeat(Math.max(1, len - 1));
   if (entityType === 'ORG') return len > 4 ? chars.slice(0, 2).join('') + '*'.repeat(Math.max(2, len - 4)) + chars.slice(-2).join('') : chars[0] + '*'.repeat(Math.max(1, len - 1));
   if (entityType === 'MONEY') return '****' + (chars[len - 1] || '');
+  if (entityType === 'DATE') return chars.map(c => '年月日号'.includes(c) ? c : '*').join('');
   return chars[0] + '***';
+}
+
+function placeholderMask(entityType) {
+  const labels = {
+    PHONE: '手机', ID_CARD: '证件号', PERSON: '姓名', ORG: '单位',
+    EMAIL: '邮箱', MONEY: '金额', DATE: '日期', BANK_CARD: '银行卡',
+    CASE_NO: '案号', LOC: '地址', API_TOKEN: '密钥',
+  };
+  return `<${labels[entityType] || entityType}>`;
 }
 
 // ─── Upload with real progress ────────────────────────────────
@@ -46,19 +64,13 @@ function uploadWithProgress(file, rulesConfig, onProgress) {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('rulesConfig', JSON.stringify(rulesConfig || {}));
-
-    xhr.upload.addEventListener('progress', (e) => {
-      if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
-    });
+    xhr.upload.addEventListener('progress', (e) => { if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100)); });
     xhr.addEventListener('load', () => {
       if (xhr.status >= 200 && xhr.status < 300) {
-        try {
-          const result = JSON.parse(xhr.responseText);
-          if (result.success) resolve(result.data);
-          else reject(new Error(result.message || '上传失败'));
-        } catch { reject(new Error('解析响应失败')); }
+        try { const r = JSON.parse(xhr.responseText); r.success ? resolve(r.data) : reject(new Error(r.message || '上传失败')); }
+        catch { reject(new Error('解析响应失败')); }
       } else {
-        try { const err = JSON.parse(xhr.responseText); reject(new Error(err.message || `HTTP ${xhr.status}`)); }
+        try { reject(new Error(JSON.parse(xhr.responseText).message || `HTTP ${xhr.status}`)); }
         catch { reject(new Error(`HTTP ${xhr.status}`)); }
       }
     });
@@ -69,6 +81,25 @@ function uploadWithProgress(file, rulesConfig, onProgress) {
   });
 }
 
+// ─── Horizontal Progress Bar ─────────────────────────────────
+
+function ProgressBar({ percent, step }) {
+  const isUpload = percent > 0 && percent < 100;
+  return (
+    <div className="progress-container">
+      <div className="progress-bar-wrapper">
+        <div
+          className={`progress-bar-fill ${isUpload ? 'determinate' : 'indeterminate'}`}
+          style={isUpload ? { width: `${percent}%` } : undefined}
+        />
+      </div>
+      <div className="progress-step-text">
+        {isUpload ? `上传中 ${percent}%` : step || '处理中…'}
+      </div>
+    </div>
+  );
+}
+
 // ─── Page Image Component ────────────────────────────────────
 
 function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBox, onSelectBox }) {
@@ -77,7 +108,6 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
   const [dragging, setDragging] = useState(null);
   const [resizing, setResizing] = useState(null);
   const [hoveredBox, setHoveredBox] = useState(null);
-
   const { displayWidth, displayHeight } = computeDisplaySize(pageInfo, containerWidth, 900);
 
   const toNormalized = useCallback((e) => {
@@ -88,34 +118,27 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
 
   const handleMouseDown = useCallback((e) => {
     if (e.button !== 0) return;
-    const target = e.target;
-    if (target.dataset.boxId || target.dataset.handle) return;
-    const pos = toNormalized(e);
-    setDrawing({ startX: pos.x, startY: pos.y });
+    if (e.target.dataset.boxId || e.target.dataset.handle) return;
+    setDrawing({ startX: toNormalized(e).x, startY: toNormalized(e).y });
     onSelectBox?.(null);
   }, [toNormalized, onSelectBox]);
 
   const handleMouseMove = useCallback((e) => {
-    if (drawing) {
-      const pos = toNormalized(e);
-      setDrawing(prev => prev ? { ...prev, currentX: pos.x, currentY: pos.y } : prev);
-    }
+    if (drawing) { const p = toNormalized(e); setDrawing(prev => prev ? { ...prev, currentX: p.x, currentY: p.y } : prev); }
     if (dragging) {
-      const pos = toNormalized(e);
-      const newX = Math.max(0, Math.min(1 - dragging.boxW, pos.x - dragging.offsetX));
-      const newY = Math.max(0, Math.min(1 - dragging.boxH, pos.y - dragging.offsetY));
-      onBoxesChange(prev => prev.map(b => b.id === dragging.boxId ? { ...b, x: newX, y: newY } : b));
+      const p = toNormalized(e);
+      onBoxesChange(prev => prev.map(b => b.id === dragging.boxId ? { ...b, x: Math.max(0, Math.min(1 - dragging.boxW, p.x - dragging.offsetX)), y: Math.max(0, Math.min(1 - dragging.boxH, p.y - dragging.offsetY)) } : b));
     }
     if (resizing) {
-      const pos = toNormalized(e);
+      const p = toNormalized(e);
       onBoxesChange(prev => prev.map(b => {
         if (b.id !== resizing.boxId) return b;
-        const { handle } = resizing;
         let { x, y, width, height } = b;
-        if (handle.includes('e')) width = Math.max(BOX_MIN_SIZE, pos.x - x);
-        if (handle.includes('s')) height = Math.max(BOX_MIN_SIZE, pos.y - y);
-        if (handle.includes('w')) { const newX = Math.min(pos.x, x + width - BOX_MIN_SIZE); width = width + (x - newX); x = newX; }
-        if (handle.includes('n')) { const newY = Math.min(pos.y, y + height - BOX_MIN_SIZE); height = height + (y - newY); y = newY; }
+        const h = resizing.handle;
+        if (h.includes('e')) width = Math.max(BOX_MIN_SIZE, p.x - x);
+        if (h.includes('s')) height = Math.max(BOX_MIN_SIZE, p.y - y);
+        if (h.includes('w')) { const nx = Math.min(p.x, x + width - BOX_MIN_SIZE); width += x - nx; x = nx; }
+        if (h.includes('n')) { const ny = Math.min(p.y, y + height - BOX_MIN_SIZE); height += y - ny; y = ny; }
         return { ...b, x: Math.max(0, x), y: Math.max(0, y), width: Math.min(1 - x, width), height: Math.min(1 - y, height) };
       }));
     }
@@ -123,119 +146,43 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
 
   const handleMouseUp = useCallback((e) => {
     if (drawing) {
-      const pos = toNormalized(e);
-      const x = Math.min(drawing.startX, pos.x);
-      const y = Math.min(drawing.startY, pos.y);
-      const width = Math.abs(pos.x - drawing.startX);
-      const height = Math.abs(pos.y - drawing.startY);
-      if (width > BOX_MIN_SIZE && height > BOX_MIN_SIZE) {
+      const p = toNormalized(e);
+      const x = Math.min(drawing.startX, p.x), y = Math.min(drawing.startY, p.y);
+      const w = Math.abs(p.x - drawing.startX), h = Math.abs(p.y - drawing.startY);
+      if (w > BOX_MIN_SIZE && h > BOX_MIN_SIZE) {
         onBoxesChange(prev => [...prev, createNormalizedBox({
-          id: `manual_${Date.now()}`, page: pageInfo.pageNumber,
-          x, y, width, height, pageWidth: pageInfo.pageWidth, pageHeight: pageInfo.pageHeight, source: 'manual',
+          id: `manual_${Date.now()}`, page: pageInfo.pageNumber, x, y, width: w, height: h,
+          pageWidth: pageInfo.pageWidth, pageHeight: pageInfo.pageHeight, source: 'manual',
         })]);
       }
       setDrawing(null);
     }
-    setDragging(null);
-    setResizing(null);
+    setDragging(null); setResizing(null);
   }, [drawing, toNormalized, pageInfo, onBoxesChange]);
 
-  const handleBoxMouseDown = useCallback((e, box) => {
-    e.stopPropagation();
-    if (e.button !== 0) return;
-    onSelectBox?.(box.id);
-    const pos = toNormalized(e);
-    setDragging({ boxId: box.id, offsetX: pos.x - box.x, offsetY: pos.y - box.y, boxW: box.width, boxH: box.height });
-  }, [toNormalized, onSelectBox]);
-
-  const handleDeleteBox = useCallback((e, boxId) => {
-    e.stopPropagation();
-    onBoxesChange(prev => prev.filter(b => b.id !== boxId));
-  }, [onBoxesChange]);
-
-  const handleResizeStart = useCallback((e, boxId, handle) => {
-    e.stopPropagation();
-    setResizing({ boxId, handle });
-  }, []);
+  const handleBoxMouseDown = useCallback((e, box) => { e.stopPropagation(); if (e.button !== 0) return; onSelectBox?.(box.id); const p = toNormalized(e); setDragging({ boxId: box.id, offsetX: p.x - box.x, offsetY: p.y - box.y, boxW: box.width, boxH: box.height }); }, [toNormalized, onSelectBox]);
+  const handleDeleteBox = useCallback((e, boxId) => { e.stopPropagation(); onBoxesChange(prev => prev.filter(b => b.id !== boxId)); }, [onBoxesChange]);
+  const handleResizeStart = useCallback((e, boxId, handle) => { e.stopPropagation(); setResizing({ boxId, handle }); }, []);
 
   const pageBoxes = boxes.filter(b => b.page === pageInfo.pageNumber);
 
   return (
     <div className="page-canvas" style={{ position: 'relative', width: displayWidth, height: displayHeight }}>
-      <img
-        src={`/api/tasks/${pageInfo.taskId}/page-image/${pageInfo.pageNumber}`}
-        alt={`Page ${pageInfo.pageNumber}`}
-        style={{ width: displayWidth, height: displayHeight, display: 'block', userSelect: 'none' }}
-        draggable={false}
-      />
-      <div
-        ref={overlayRef} className="box-overlay"
-        style={{ position: 'absolute', top: 0, left: 0, width: displayWidth, height: displayHeight, cursor: 'crosshair' }}
-        onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}
-      >
+      <img src={`/api/tasks/${pageInfo.taskId}/page-image/${pageInfo.pageNumber}`} alt={`Page ${pageInfo.pageNumber}`} style={{ width: displayWidth, height: displayHeight, display: 'block', userSelect: 'none' }} draggable={false} />
+      <div ref={overlayRef} className="box-overlay" style={{ position: 'absolute', top: 0, left: 0, width: displayWidth, height: displayHeight, cursor: 'crosshair' }} onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}>
         {pageBoxes.map(box => {
           const css = normalizedToCSS(box, displayWidth, displayHeight);
-          const isHovered = hoveredBox === box.id;
-          const isSelected = selectedBox === box.id;
-          const isActive = isHovered || isSelected;
+          const isActive = hoveredBox === box.id || selectedBox === box.id;
           return (
             <div key={box.id} style={{ position: 'absolute', left: css.left, top: css.top, width: css.width, height: css.height }}>
-              <div
-                data-box-id={box.id}
-                style={{
-                  width: '100%', height: '100%',
-                  border: `2px solid ${isActive ? '#3b82f6' : 'rgba(59,130,246,0.6)'}`,
-                  background: isActive ? 'rgba(59,130,246,0.12)' : 'rgba(59,130,246,0.06)',
-                  cursor: 'move', transition: 'border-color 0.12s, background 0.12s',
-                }}
-                onMouseDown={(e) => handleBoxMouseDown(e, box)}
-                onMouseEnter={() => setHoveredBox(box.id)}
-                onMouseLeave={() => setHoveredBox(null)}
-              />
-              {box.source === 'seal' && (
-                <span style={{ position: 'absolute', top: -16, left: 0, fontSize: 10, color: '#3b82f6', whiteSpace: 'nowrap' }}>公章</span>
-              )}
-              {isActive && (
-                <button
-                  style={{
-                    position: 'absolute', top: -12, right: -12,
-                    width: 22, height: 22, borderRadius: '50%',
-                    background: '#ef4444', color: '#fff', border: '2px solid #fff',
-                    cursor: 'pointer', fontSize: 13, lineHeight: '18px',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    zIndex: 20, boxShadow: '0 1px 4px rgba(0,0,0,0.2)',
-                  }}
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={(e) => handleDeleteBox(e, box.id)}
-                  title="删除"
-                >×</button>
-              )}
-              {isActive && ['nw', 'ne', 'sw', 'se'].map(handle => (
-                <div
-                  key={handle} data-handle={handle}
-                  style={{
-                    position: 'absolute', width: 8, height: 8, background: '#3b82f6',
-                    border: '1px solid #fff', borderRadius: 2, zIndex: 10,
-                    ...(handle.includes('n') ? { top: -4 } : { bottom: -4 }),
-                    ...(handle.includes('w') ? { left: -4 } : { right: -4 }),
-                    cursor: handle === 'nw' || handle === 'se' ? 'nwse-resize' : 'nesw-resize',
-                  }}
-                  onMouseDown={(e) => handleResizeStart(e, box.id, handle)}
-                />
-              ))}
+              <div data-box-id={box.id} style={{ width: '100%', height: '100%', border: `2px solid ${isActive ? '#3b82f6' : 'rgba(59,130,246,0.6)'}`, background: isActive ? 'rgba(59,130,246,0.12)' : 'rgba(59,130,246,0.06)', cursor: 'move', transition: 'border-color 0.12s, background 0.12s' }} onMouseDown={(e) => handleBoxMouseDown(e, box)} onMouseEnter={() => setHoveredBox(box.id)} onMouseLeave={() => setHoveredBox(null)} />
+              {box.source === 'seal' && <span style={{ position: 'absolute', top: -16, left: 0, fontSize: 10, color: '#3b82f6', whiteSpace: 'nowrap' }}>公章</span>}
+              {isActive && <button style={{ position: 'absolute', top: -12, right: -12, width: 22, height: 22, borderRadius: '50%', background: '#ef4444', color: '#fff', border: '2px solid #fff', cursor: 'pointer', fontSize: 13, lineHeight: '18px', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 20, boxShadow: '0 1px 4px rgba(0,0,0,0.2)' }} onMouseDown={(e) => e.stopPropagation()} onClick={(e) => handleDeleteBox(e, box.id)} title="删除">×</button>}
+              {isActive && ['nw', 'ne', 'sw', 'se'].map(h => <div key={h} data-handle={h} style={{ position: 'absolute', width: 8, height: 8, background: '#3b82f6', border: '1px solid #fff', borderRadius: 2, zIndex: 10, ...(h.includes('n') ? { top: -4 } : { bottom: -4 }), ...(h.includes('w') ? { left: -4 } : { right: -4 }), cursor: h === 'nw' || h === 'se' ? 'nwse-resize' : 'nesw-resize' }} onMouseDown={(e) => handleResizeStart(e, box.id, h)} />)}
             </div>
           );
         })}
-        {drawing && (
-          <div style={{
-            position: 'absolute',
-            left: Math.min(drawing.startX, drawing.currentX || drawing.startX) * displayWidth,
-            top: Math.min(drawing.startY, drawing.currentY || drawing.startY) * displayHeight,
-            width: Math.abs((drawing.currentX || drawing.startX) - drawing.startX) * displayWidth,
-            height: Math.abs((drawing.currentY || drawing.startY) - drawing.startY) * displayHeight,
-            border: '2px dashed #3b82f6', background: 'rgba(59,130,246,0.1)', pointerEvents: 'none',
-          }} />
-        )}
+        {drawing && <div style={{ position: 'absolute', left: Math.min(drawing.startX, drawing.currentX || drawing.startX) * displayWidth, top: Math.min(drawing.startY, drawing.currentY || drawing.startY) * displayHeight, width: Math.abs((drawing.currentX || drawing.startX) - drawing.startX) * displayWidth, height: Math.abs((drawing.currentY || drawing.startY) - drawing.startY) * displayHeight, border: '2px dashed #3b82f6', background: 'rgba(59,130,246,0.1)', pointerEvents: 'none' }} />}
       </div>
     </div>
   );
@@ -248,38 +195,41 @@ function MaskPreview({ pageInfo, boxes, containerWidth }) {
   const pageBoxes = boxes.filter(b => b.page === pageInfo.pageNumber);
   return (
     <div className="mask-preview" style={{ position: 'relative', width: displayWidth, height: displayHeight, background: '#fff' }}>
-      <img
-        src={`/api/tasks/${pageInfo.taskId}/page-image/${pageInfo.pageNumber}`}
-        alt={`Masked page ${pageInfo.pageNumber}`}
-        style={{ width: displayWidth, height: displayHeight, display: 'block', userSelect: 'none' }}
-        draggable={false}
-      />
+      <img src={`/api/tasks/${pageInfo.taskId}/page-image/${pageInfo.pageNumber}`} alt="" style={{ width: displayWidth, height: displayHeight, display: 'block', userSelect: 'none' }} draggable={false} />
       <svg width={displayWidth} height={displayHeight} style={{ position: 'absolute', top: 0, left: 0 }}>
-        {pageBoxes.map(box => {
-          const css = normalizedToCSS(box, displayWidth, displayHeight);
-          return <rect key={box.id} x={css.left} y={css.top} width={css.width} height={css.height} fill="#000000" stroke="none" />;
-        })}
+        {pageBoxes.map(box => { const css = normalizedToCSS(box, displayWidth, displayHeight); return <rect key={box.id} x={css.left} y={css.top} width={css.width} height={css.height} fill="#000000" stroke="none" />; })}
       </svg>
-      <div style={{ position: 'absolute', bottom: 8, right: 8, color: 'rgba(0,0,0,0.45)', fontSize: 11, background: 'rgba(255,255,255,0.75)', padding: '2px 6px', borderRadius: 4 }}>
-        遮蔽预览 · {pageBoxes.length} 个区域
-      </div>
+      <div style={{ position: 'absolute', bottom: 8, right: 8, color: 'rgba(0,0,0,0.45)', fontSize: 11, background: 'rgba(255,255,255,0.75)', padding: '2px 6px', borderRadius: 4 }}>遮蔽预览 · {pageBoxes.length} 个区域</div>
     </div>
   );
 }
 
-// ─── Text Dual-Column (star/placeholder mode) ────────────────
+// ─── Text Dual-Column ────────────────────────────────────────
 
-function TextDualColumn({ originalText, replacedText, mode }) {
+function TextDualColumn({ ocrText, entities, mode }) {
+  const replaced = useMemo(() => {
+    if (!ocrText) return '';
+    let result = ocrText;
+    // Sort by start position descending to replace from end to start
+    const sorted = [...entities].sort((a, b) => (b.start || 0) - (a.start || 0));
+    for (const ent of sorted) {
+      if (!ent.original) continue;
+      const masked = mode === 'star' ? starMask(ent.original, ent.entity_type) : placeholderMask(ent.entity_type);
+      result = result.substring(0, ent.start) + masked + result.substring(ent.end);
+    }
+    return result;
+  }, [ocrText, entities, mode]);
+
   return (
     <div className="text-dual-column">
       <div className="text-panel">
-        <div className="text-panel-header">抽取原文</div>
-        <div className="text-panel-body"><pre className="text-content">{originalText || '（暂无文本）'}</pre></div>
+        <div className="text-panel-header">OCR 抽取原文（{entities.length} 个敏感实体命中）</div>
+        <div className="text-panel-body"><pre className="text-content">{ocrText || '（暂无文本）'}</pre></div>
       </div>
       <div className="text-panel">
         <div className="text-panel-header">{mode === 'star' ? '星号替换预览' : '占位替换预览'}</div>
         <div className="text-panel-body">
-          <pre className="text-content">{replacedText || '（暂无预览）'}</pre>
+          <pre className="text-content">{replaced || '（暂无预览）'}</pre>
           <div className="text-preview-note">预览仅供参考，以实际导出为准</div>
         </div>
       </div>
@@ -293,27 +243,11 @@ function ExportDropdown({ mode, onExport, exporting, disabled }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   const formats = mode === 'mask' ? MASK_FORMATS : TEXT_FORMATS;
-
-  useEffect(() => {
-    const handleClick = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
-  }, []);
-
+  useEffect(() => { const h = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }; document.addEventListener('mousedown', h); return () => document.removeEventListener('mousedown', h); }, []);
   return (
     <div className="export-dropdown" ref={ref}>
-      <Button variant="default" size="sm" onClick={() => setOpen(!open)} disabled={exporting || disabled}>
-        {exporting ? '导出中…' : '导出 ▾'}
-      </Button>
-      {open && (
-        <div className="export-menu">
-          {formats.map(f => (
-            <button key={f.value} className="export-menu-item" onClick={() => { setOpen(false); onExport(f.value); }}>
-              {f.label}
-            </button>
-          ))}
-        </div>
-      )}
+      <Button variant="default" size="sm" onClick={() => setOpen(!open)} disabled={exporting || disabled}>{exporting ? '导出中…' : '导出 ▾'}</Button>
+      {open && <div className="export-menu">{formats.map(f => <button key={f.value} className="export-menu-item" onClick={() => { setOpen(false); onExport(f.value); }}>{f.label}</button>)}</div>}
     </div>
   );
 }
@@ -327,8 +261,11 @@ export default function VisualMaskPage({ settings: _settings }) {
   const [uploadPercent, setUploadPercent] = useState(0);
   const [error, setError] = useState(null);
 
+  // boxes = redaction candidates for mask mode (entityType + seal + manual)
   const [boxes, setBoxes] = useState([]);
-  const [ocrBoxes, setOcrBoxes] = useState([]);
+  // ocrEntities = all OCR-detected entities for text mode (independent of boxes)
+  const [ocrEntities, setOcrEntities] = useState([]);
+  const [ocrText, setOcrText] = useState('');
   const [pageImages, setPageImages] = useState([]);
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedBox, setSelectedBox] = useState(null);
@@ -343,92 +280,66 @@ export default function VisualMaskPage({ settings: _settings }) {
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 2400); };
 
-  // ─── #3: Scroll → update currentPage ──────────────────────
+  // ─── Scroll → update currentPage (#3) ─────────────────────
 
   useEffect(() => {
     if (mode !== 'mask' || pageImages.length <= 1) return;
     const container = scrollRef.current;
     if (!container) return;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        // Find the most visible page row
-        let bestRatio = 0;
-        let bestPage = currentPage;
-        for (const entry of entries) {
-          if (entry.intersectionRatio > bestRatio) {
-            bestRatio = entry.intersectionRatio;
-            bestPage = parseInt(entry.target.dataset.page, 10) || currentPage;
-          }
-        }
-        if (bestRatio > 0.3 && bestPage !== currentPage) {
-          setCurrentPage(bestPage);
-        }
-      },
-      { root: container, threshold: [0.3, 0.5, 0.7] }
-    );
-
-    // Observe all page rows
+    const observer = new IntersectionObserver((entries) => {
+      let best = 0, bestPage = currentPage;
+      for (const e of entries) { if (e.intersectionRatio > best) { best = e.intersectionRatio; bestPage = parseInt(e.target.dataset.page, 10) || currentPage; } }
+      if (best > 0.3 && bestPage !== currentPage) setCurrentPage(bestPage);
+    }, { root: container, threshold: [0.3, 0.5, 0.7] });
     Object.values(pageRowRefs.current).forEach(el => { if (el) observer.observe(el); });
     return () => observer.disconnect();
   }, [mode, pageImages.length, currentPage]);
 
-  // Arrow click → scroll to page
-  const scrollToPage = useCallback((pageNum) => {
-    const el = pageRowRefs.current[pageNum];
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    setCurrentPage(pageNum);
-  }, []);
-
-  // ─── #2: Text preview (useMemo, not useEffect) ────────────
-
-  const previewText = useMemo(() => {
-    if (mode === 'mask' || !task) return { original: '', replaced: '' };
-    const allText = ocrBoxes.map(b => b.text).join('\n');
-    let replaced = allText;
-    for (const box of boxes) {
-      if (!box.text) continue;
-      const entityType = box.entityType || 'MANUAL';
-      const masked = mode === 'star' ? starMask(box.text, entityType) : `<${entityType}>`;
-      replaced = replaced.split(box.text).join(masked);
-    }
-    return { original: allText, replaced };
-  }, [mode, boxes, ocrBoxes, task]);
+  const scrollToPage = useCallback((n) => { const el = pageRowRefs.current[n]; if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); setCurrentPage(n); }, []);
 
   // ─── Upload + Analyze ────────────────────────────────────────
 
   const handleFile = async (file) => {
     if (!file) return;
-    setLoading(true);
-    setError(null);
-    setBoxes([]);
-    setOcrBoxes([]);
-    setPageImages([]);
-    setUploadPercent(0);
-    setProcessingStep('上传中…');
-
+    setLoading(true); setError(null); setBoxes([]); setOcrEntities([]); setOcrText(''); setPageImages([]); setUploadPercent(0); setProcessingStep('上传中…');
     try {
-      // #6: Upload with real progress + rulesConfig
       const taskData = await uploadWithProgress(file, _settings?.rulesConfig, setUploadPercent);
-      setTask(taskData);
-      setUploadPercent(100);
+      setTask(taskData); setUploadPercent(100);
 
-      setProcessingStep('渲染页面 + OCR 识别…');
+      setProcessingStep('正在 OCR 识别…');
       const analyzeData = await analyzeTask(taskData.taskId);
 
-      setProcessingStep('规则匹配…');
+      setProcessingStep('正在规则匹配…');
+      const allOcr = (analyzeData.ocrBoxes || []);
 
-      // #1: Separate OCR/redaction boxes
-      const allOcr = (analyzeData.ocrBoxes || []).map((b, i) => ({
-        id: `ocr_${i}`, page: b.page,
-        x: b.x, y: b.y, width: b.width, height: b.height,
-        pageWidth: analyzeData.manifest?.pages?.[b.page - 1]?.pageWidth || 595,
-        pageHeight: analyzeData.manifest?.pages?.[b.page - 1]?.pageHeight || 842,
-        source: 'ocr', entityType: b.entityType || b.entity_type || null,
-        text: b.text || '', confidence: b.confidence ?? null,
-      }));
+      // ── #3: OCR entities for text mode (all with entityType) ──
+      const entities = allOcr
+        .filter(b => b.entityType || b.entity_type)
+        .map((b) => ({
+          original: b.text || '',
+          entity_type: b.entityType || b.entity_type || 'MANUAL',
+          start: 0, end: 0, // resolved by engine on export
+          confidence: b.confidence ?? null,
+        }));
+      const fullText = allOcr.map(b => b.text || '').join('\n');
+      setOcrEntities(entities);
+      setOcrText(fullText);
 
-      const candidateBoxes = allOcr.filter(b => b.entityType && b.entityType !== 'MANUAL').map(b => createNormalizedBox(b));
+      // ── #3: Redaction boxes = only sensitive types + seal + manual ──
+      const candidateBoxes = allOcr
+        .filter(b => {
+          const t = b.entityType || b.entity_type;
+          return t && SENSITIVE_TYPES.has(t);
+        })
+        .map((b, i) => createNormalizedBox({
+          id: `cand_${i}`, page: b.page,
+          x: b.x, y: b.y, width: b.width, height: b.height,
+          pageWidth: analyzeData.manifest?.pages?.[b.page - 1]?.pageWidth || 595,
+          pageHeight: analyzeData.manifest?.pages?.[b.page - 1]?.pageHeight || 842,
+          source: 'ocr', entityType: b.entityType || b.entity_type,
+          text: b.text || '', confidence: b.confidence ?? null,
+        }));
+
       const sealBoxes = (analyzeData.sealBoxes || []).map((b, i) => createNormalizedBox({
         id: b.id || `seal_${i}`, page: b.page,
         x: b.x, y: b.y, width: b.width, height: b.height,
@@ -437,19 +348,16 @@ export default function VisualMaskPage({ settings: _settings }) {
         source: 'seal', entityType: 'SEAL',
       }));
 
-      setOcrBoxes(allOcr);
       setBoxes([...candidateBoxes, ...sealBoxes]);
       setPageImages(analyzeData.manifest?.pages || []);
       setCurrentPage(1);
 
       setProcessingStep('生成预览…');
-      showToast(`识别到 ${candidateBoxes.length} 个敏感区域${sealBoxes.length > 0 ? `、${sealBoxes.length} 个公章候选` : ''}`);
+      showToast(`识别到 ${candidateBoxes.length} 个敏感区域、${entities.length} 个文本实体${sealBoxes.length > 0 ? `、${sealBoxes.length} 个公章候选` : ''}`);
     } catch (err) {
       setError(err.message);
     } finally {
-      setLoading(false);
-      setProcessingStep('');
-      setUploadPercent(0);
+      setLoading(false); setProcessingStep(''); setUploadPercent(0);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
@@ -465,7 +373,7 @@ export default function VisualMaskPage({ settings: _settings }) {
   // ─── Export ────────────────────────────────────────────────
 
   const doExport = async (exportFormat) => {
-    if (!task || boxes.length === 0) return;
+    if (!task) return;
     setExporting(true);
     try {
       await updateTaskBoxes(task.taskId, boxes);
@@ -473,31 +381,24 @@ export default function VisualMaskPage({ settings: _settings }) {
       const ext = task.filename ? task.filename.substring(task.filename.lastIndexOf('.')) : '';
 
       if (mode === 'mask' && exportFormat === 'pdf') {
+        // Mask mode → PDF
+        if (boxes.length === 0) { showToast('没有遮蔽框'); return; }
         const response = await maskExportTask(task.taskId, boxes);
         downloadBlob(await response.blob(), `${baseName}_脱敏${ext}`);
       } else {
-        const entities = boxes.filter(b => b.text).map(b => ({
-          original: b.text, entity_type: b.entityType || 'MANUAL', start: 0, end: 0,
-        }));
-        if (entities.length === 0) { showToast('当前框没有文本内容'); return; }
+        // Text mode (star/placeholder) or mask→text: use OCR entities
+        const entities = ocrEntities.length > 0 ? ocrEntities : boxes.filter(b => b.text).map(b => ({ original: b.text, entity_type: b.entityType || 'MANUAL', start: 0, end: 0 }));
+        if (entities.length === 0) { showToast('没有检测到敏感实体'); return; }
         const response = await textExportTask(task.taskId, entities, mode === 'mask' ? 'star' : mode, exportFormat);
         downloadBlob(await response.blob(), `${baseName}_脱敏.${exportFormat}`);
       }
       showToast('导出成功');
     } catch (err) {
       showToast(err.message || '导出失败');
-    } finally {
-      setExporting(false);
-    }
+    } finally { setExporting(false); }
   };
 
-  function downloadBlob(blob, filename) {
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = filename;
-    document.body.appendChild(a); a.click(); a.remove();
-    window.URL.revokeObjectURL(url);
-  }
+  function downloadBlob(blob, filename) { const url = window.URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); window.URL.revokeObjectURL(url); }
 
   const redactionCount = boxes.length;
   const totalPages = pageImages.length;
@@ -516,17 +417,10 @@ export default function VisualMaskPage({ settings: _settings }) {
     );
   }
 
-  // ─── Loading with steps ────────────────────────────────────
+  // ─── Loading with progress bar (#1) ──────────────────────
 
   if (loading) {
-    return (
-      <div className="tool-loading-steps">
-        <div className="loading-step active">{uploadPercent < 100 ? `上传中 ${uploadPercent}%` : '✓ 上传完成'}</div>
-        <div className={`loading-step ${processingStep.includes('渲染') || processingStep.includes('OCR') ? 'active' : ''}`}>渲染页面 + OCR 识别…</div>
-        <div className={`loading-step ${processingStep.includes('规则') ? 'active' : ''}`}>规则匹配…</div>
-        <div className={`loading-step ${processingStep.includes('预览') ? 'active' : ''}`}>生成预览…</div>
-      </div>
-    );
+    return <ProgressBar percent={uploadPercent} step={processingStep} />;
   }
 
   if (error) {
@@ -543,62 +437,66 @@ export default function VisualMaskPage({ settings: _settings }) {
 
   return (
     <div className="visual-mask-page" ref={containerRef}>
-      <div className="mask-toolbar sticky">
-        <div className="mask-toolbar-left">
+      {/* Global top-right: export only */}
+      <div className="mask-topbar">
+        <div className="mask-topbar-left">
           <span className="mask-filename">{task?.filename}</span>
-          <span className="mask-box-count">{redactionCount} 个遮蔽区域</span>
-          {boxes.some(b => b.source === 'seal') && (
-            <span className="mask-seal-notice">已识别公章候选，可手动补充或调整</span>
-          )}
         </div>
-        <div className="mask-toolbar-center">
-          <div className="mode-switch">
-            {MODES.map(m => (
-              <button key={m.key} className={`mode-btn ${mode === m.key ? 'active' : ''}`}
-                onClick={() => setMode(m.key)} title={m.desc}>{m.label}</button>
-            ))}
-          </div>
-          {totalPages > 1 && (
-            <div className="page-nav">
-              <Button variant="ghost" size="sm" disabled={currentPage <= 1} onClick={() => scrollToPage(currentPage - 1)}>←</Button>
-              <span>{currentPage} / {totalPages}</span>
-              <Button variant="ghost" size="sm" disabled={currentPage >= totalPages} onClick={() => scrollToPage(currentPage + 1)}>→</Button>
-            </div>
-          )}
-        </div>
-        <div className="mask-toolbar-right">
-          <Button variant="outline" size="sm" onClick={handleSaveBoxes}>保存框</Button>
-          <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>换文件</Button>
-          <ExportDropdown mode={mode} onExport={doExport} exporting={exporting} disabled={redactionCount === 0} />
+        <div className="mask-topbar-right">
+          <ExportDropdown mode={mode} onExport={doExport} exporting={exporting} disabled={isMaskMode ? redactionCount === 0 : ocrEntities.length === 0} />
         </div>
       </div>
 
       {isMaskMode ? (
+        /* Mask mode: toolbar inside scroll area + image dual-column */
         <div className="mask-scroll-container" ref={scrollRef}>
+          {/* #2: Document-local sticky toolbar */}
+          <div className="mask-doc-toolbar">
+            <div className="mask-doc-toolbar-left">
+              <div className="mode-switch">
+                {MODES.map(m => <button key={m.key} className={`mode-btn ${mode === m.key ? 'active' : ''}`} onClick={() => setMode(m.key)} title={m.desc}>{m.label}</button>)}
+              </div>
+              {totalPages > 1 && (
+                <div className="page-nav">
+                  <Button variant="ghost" size="sm" disabled={currentPage <= 1} onClick={() => scrollToPage(currentPage - 1)}>←</Button>
+                  <span>{currentPage} / {totalPages}</span>
+                  <Button variant="ghost" size="sm" disabled={currentPage >= totalPages} onClick={() => scrollToPage(currentPage + 1)}>→</Button>
+                </div>
+              )}
+            </div>
+            <div className="mask-doc-toolbar-right">
+              <span className="mask-box-count">{redactionCount} 个遮蔽区域</span>
+              {boxes.some(b => b.source === 'seal') && <span className="mask-seal-notice">已识别公章候选，可手动补充或调整</span>}
+              <Button variant="outline" size="sm" onClick={handleSaveBoxes}>保存框</Button>
+              <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>换文件</Button>
+            </div>
+          </div>
           {pageImages.map((pg) => {
             const pgInfo = { ...pg, taskId: task?.taskId };
             return (
-              <div
-                key={pg.pageNumber}
-                className="mask-page-row"
-                data-page={pg.pageNumber}
-                ref={el => { pageRowRefs.current[pg.pageNumber] = el; }}
-              >
-                <div className="mask-page-col">
-                  <PageCanvas
-                    pageInfo={pgInfo} boxes={boxes} onBoxesChange={setBoxes}
-                    containerWidth={560} selectedBox={selectedBox} onSelectBox={setSelectedBox}
-                  />
-                </div>
-                <div className="mask-page-col">
-                  <MaskPreview pageInfo={pgInfo} boxes={boxes} containerWidth={560} />
-                </div>
+              <div key={pg.pageNumber} className="mask-page-row" data-page={pg.pageNumber} ref={el => { pageRowRefs.current[pg.pageNumber] = el; }}>
+                <div className="mask-page-col"><PageCanvas pageInfo={pgInfo} boxes={boxes} onBoxesChange={setBoxes} containerWidth={560} selectedBox={selectedBox} onSelectBox={setSelectedBox} /></div>
+                <div className="mask-page-col"><MaskPreview pageInfo={pgInfo} boxes={boxes} containerWidth={560} /></div>
               </div>
             );
           })}
         </div>
       ) : (
-        <TextDualColumn originalText={previewText.original} replacedText={previewText.replaced} mode={mode} />
+        /* Star/Placeholder mode: text dual-column + mode switch above */
+        <div className="text-mode-container">
+          <div className="mask-doc-toolbar">
+            <div className="mask-doc-toolbar-left">
+              <div className="mode-switch">
+                {MODES.map(m => <button key={m.key} className={`mode-btn ${mode === m.key ? 'active' : ''}`} onClick={() => setMode(m.key)} title={m.desc}>{m.label}</button>)}
+              </div>
+            </div>
+            <div className="mask-doc-toolbar-right">
+              <span className="mask-box-count">{ocrEntities.length} 个敏感实体</span>
+              <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>换文件</Button>
+            </div>
+          </div>
+          <TextDualColumn ocrText={ocrText} entities={ocrEntities} mode={mode} />
+        </div>
       )}
 
       <input ref={fileInputRef} className="visually-hidden" type="file" accept=".pdf" onChange={(e) => handleFile(e.target.files?.[0])} />
