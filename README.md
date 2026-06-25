@@ -11,13 +11,35 @@
 ## 环境要求
 
 - Node.js ≥ 18
-- `legal-desens` CLI 已安装且可运行（NER 模型在 `~/.legal-desens/models/`）；后端启动时会自检。
+- Python ≥ 3.9
+- `legal-desens` CLI 已安装且可运行；后端启动时会自检。
 
 ## 安装
 
 ```bash
 npm install        # 在仓库根目录（npm workspace，一次装好前后端）
 ```
+
+## 安装脱敏引擎与 NER 模型
+
+脱敏引擎 `legal-desens` 需要单独安装。NER 模型用于识别姓名、机构名、地址等非结构化实体（正则引擎开箱即用，NER 为增强能力）。
+
+```bash
+# 1. 克隆脱敏引擎仓库
+git clone https://github.com/Clukay-Fun/lawchers-skills.git
+cd lawchers-skills/legal-desensitizer
+
+# 2. 一键安装引擎 + NER 模型（脚本会自动下载 ONNX 模型到 ~/.legal-desens/models/）
+bash scripts/install_with_model.sh
+
+# 3. 验证 NER 模型是否就绪
+python3 -m legal_desens.cli ner-inspect
+# 应看到 self_test.passed=true；若为 false，模型未正确安装
+```
+
+如需手动安装模型（例如离线环境），可从 [ModelScope](https://modelscope.cn/models/Clukay416/legal-desens-cluener-onnx) 下载模型包并解压到 `~/.legal-desens/models/roberta-crf-ner/`。
+
+> 后端启动时会自动检测 NER 状态；若模型未安装，系统降级为纯正则模式（仍可工作，但不识别人名/机构等）。
 
 ## 运行
 
