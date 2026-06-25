@@ -78,7 +78,7 @@ export default function ReviewPanel({ materialId, materialName, rulesConfig }) {
   const [decisions, setDecisions] = useState([]);
   const [diagInfo, setDiagInfo] = useState({
     processingStatus: '', verificationStatus: '', sourceSha256: '',
-    rulesConfig: null, nerEnabled: null, preparedAt: null, updatedAt: null,
+    rulesConfig: null, nerEnabled: null, preparedAt: null, updatedAt: null, legacyAudit: false,
   });
   const [revealed, setRevealed] = useState(() => new Set());
   const [selection, setSelection] = useState(null);
@@ -98,7 +98,7 @@ export default function ReviewPanel({ materialId, materialName, rulesConfig }) {
       setPreviewMd('');
       setManifest(null);
       setDecisions([]);
-      setDiagInfo({ processingStatus: '', verificationStatus: '', sourceSha256: '', rulesConfig: null, nerEnabled: null, preparedAt: null, updatedAt: null });
+      setDiagInfo({ processingStatus: '', verificationStatus: '', sourceSha256: '', rulesConfig: null, nerEnabled: null, preparedAt: null, updatedAt: null, legacyAudit: false });
       setRevealed(new Set());
       setSelection(null);
       setExporting(false);
@@ -120,6 +120,7 @@ export default function ReviewPanel({ materialId, materialName, rulesConfig }) {
           nerEnabled: data.nerEnabled ?? null,
           preparedAt: data.preparedAt || null,
           updatedAt: data.updatedAt || null,
+          legacyAudit: data.legacyAudit || false,
         });
       } catch (err) {
         if (!cancelled) setError(err.message);
@@ -145,6 +146,7 @@ export default function ReviewPanel({ materialId, materialName, rulesConfig }) {
         nerEnabled: data.nerEnabled ?? null,
         preparedAt: data.preparedAt || null,
         updatedAt: data.updatedAt || null,
+        legacyAudit: data.legacyAudit || false,
       });
     } catch (err) {
       // A2: 不再吞错，surface 给用户
@@ -429,6 +431,9 @@ export default function ReviewPanel({ materialId, materialName, rulesConfig }) {
             )}
             {dateOff && (
               <div className="diag-date-off">DATE/TIME preserved（日期关闭，日期候选被过滤）</div>
+            )}
+            {diagInfo.legacyAudit && (
+              <div className="diag-date-off">⚠ 旧审计记录无法精确匹配此材料，诊断信息可能不准确</div>
             )}
             <div className="diag-row">
               <span className="diag-label">regex-only</span>

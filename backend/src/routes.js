@@ -907,6 +907,7 @@ router.post('/materials/:id/prepare', async (req, res) => {
         action: 'prepare',
         source: 'legal-desens',
         model_config: {
+          materialId: matId,
           documentKind: manifest.documentKind,
           blocks: manifest.blocks?.length || 0,
           candidates: candidates.length,
@@ -983,13 +984,33 @@ router.get('/materials/:id/review', async (req, res) => {
     // 获取决策
     const decisions = getDecisionsByMaterialId(matId);
 
-    // 获取最近的 prepare 审计日志（用于诊断）
+    // 获取当前材料的 prepare 审计日志（用于诊断）
     let prepareAudit = null;
     try {
       const auditLogs = getAuditLogsByCaseId(mat.case_id);
-      prepareAudit = auditLogs.find(a => a.action === 'prepare') || null;
-      if (prepareAudit && typeof prepareAudit.model_config === 'string') {
-        try { prepareAudit.model_config = JSON.parse(prepareAudit.model_config); } catch {}
+      // 优先匹配当前材料的 prepare 审计（model_config.materialId === matId）
+      prepareAudit = auditLogs.find(a => {
+        if (a.action !== 'prepare') return false;
+        let cfg = a.model_config;
+        if (typeof cfg === 'string') { try { cfg = JSON.parse(cfg); } catch { return false; } }
+        return cfg && cfg.materialId === matId;
+      }) || null;
+      // fallback: 旧材料无 materialId 标记，取第一条 prepare（标注为旧审计）
+      if (!prepareAudit) {
+        prepareAudit = auditLogs.find(a => a.action === 'prepare') || null;
+        if (prepareAudit) {
+          if (typeof prepareAudit.model_config === 'string') {
+            try { prepareAudit.model_config = JSON.parse(prepareAudit.model_config); } catch {}
+          }
+          // 标记为旧审计，前端可显示"旧审计无法精确匹配"
+          if (prepareAudit?.model_config && !prepareAudit.model_config.materialId) {
+            prepareAudit._legacyMatch = true;
+          }
+        }
+      } else {
+        if (typeof prepareAudit.model_config === 'string') {
+          try { prepareAudit.model_config = JSON.parse(prepareAudit.model_config); } catch {}
+        }
       }
     } catch {}
 
@@ -1007,6 +1028,7 @@ router.get('/materials/:id/review', async (req, res) => {
         nerEnabled: prepareAudit?.model_config?.nerEnabled ?? null,
         preparedAt: prepareAudit?.created_at || null,
         updatedAt: mat.updated_at || null,
+        legacyAudit: prepareAudit?._legacyMatch || false,
         decisions: decisions.map(d => ({
           id: d.id,
           candidateId: d.candidate_id,
@@ -1694,13 +1716,24 @@ router.get('/diagnostics', async (req, res) => {
     result.nerEnabled = getIsNerEnabled();
   } catch {}
 
-  // modelDir - 尝试从 legal-desens paths --json 获取
+  // modelDir: 优先从 ner-inspect 获取真实模型路径
+  try {
+    const bin = result.binPath !== UNKNOWN ? result.binPath : null;
+    if (bin) {
+      const { stdout: nerOut } = await execFileAsync(bin, ['ner-inspect'], { timeout: 10000, encoding: 'utf-8' });
+      const nerData = JSON.parse(nerOut);
+      result.modelDir = nerData.model_dir || nerData.modelDir || UNKNOWN;
+    }
+  } catch {
+    // ner-inspect 失败（模型未安装），modelDir 保持 unknown
+  }
+
+  // rulesPath
   try {
     const bin = result.binPath !== UNKNOWN ? result.binPath : null;
     if (bin) {
       const { stdout } = await execFileAsync(bin, ['paths', '--json'], { timeout: 10000, encoding: 'utf-8' });
       const parsed = JSON.parse(stdout);
-      result.modelDir = parsed.model_dir || parsed.modelDir || UNKNOWN;
       result.rulesPath = parsed.rules || UNKNOWN;
     }
   } catch {}
