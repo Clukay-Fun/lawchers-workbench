@@ -17,6 +17,7 @@ import { fileURLToPath } from 'url';
 import { execFile as execFileCb } from 'child_process';
 import { createHash } from 'crypto';
 import { promisify } from 'util';
+import { resolveLegalDesensBin } from './services/cliResolver.js';
 
 const execFileAsync = promisify(execFileCb);
 
@@ -816,7 +817,6 @@ router.post('/materials/:id/prepare', async (req, res) => {
     const tempSourceMap = path.join(tempDir, 'source-map.json');
 
     const args = [
-      '-m', 'legal_desens.cli',
       'prepare', sourcePath,
       '--level', 'strict',
       '--preview-md', tempPreview,
@@ -843,11 +843,9 @@ router.post('/materials/:id/prepare', async (req, res) => {
       args.push('--entity-policy', policyPath);
     }
 
-    const PYTHON_BIN = process.env.PYTHON_BIN || 'python3';
-    const DESENSITIZER_DIR = process.env.DESENSITIZER_DIR || '/Users/clukay/Program/lawchers-skills/legal-desensitizer';
+    const legalDesensBin = resolveLegalDesensBin();
 
-    await execFileAsync(PYTHON_BIN, args, {
-      cwd: DESENSITIZER_DIR,
+    await execFileAsync(legalDesensBin, args, {
       timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
     });
 
@@ -1298,12 +1296,10 @@ router.post('/materials/:id/export', async (req, res) => {
     const auditPath = path.join(workDir, 'export-audit.json');
     const mapPath = path.join(workDir, 'export-map.json');
 
-    const PYTHON_BIN = process.env.PYTHON_BIN || 'python3';
-    const DESENSITIZER_DIR = process.env.DESENSITIZER_DIR || '/Users/clukay/Program/lawchers-skills/legal-desensitizer';
+    const legalDesensBin = resolveLegalDesensBin();
 
     // 调用 legal-desens redact --decisions（跳过自动检测，按决策精确导出）
     const args = [
-      '-m', 'legal_desens.cli',
       'redact', sourcePath,
       '--level', 'strict',
       '--decisions', decisionsPath,
@@ -1315,8 +1311,7 @@ router.post('/materials/:id/export', async (req, res) => {
     if (!getIsNerEnabled()) args.push('--regex-only');
 
     try {
-      await execFileAsync(PYTHON_BIN, args, {
-        cwd: DESENSITIZER_DIR,
+      await execFileAsync(legalDesensBin, args, {
         timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
       });
     } catch (cliErr) {
