@@ -74,3 +74,30 @@ CREATE TABLE IF NOT EXISTS "audit" (
     "created_at" DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY("case_id") REFERENCES "case"("id") ON DELETE CASCADE
 );
+
+-- 7. 任务历史表（工具模式，替代 case/material 状态机）
+CREATE TABLE IF NOT EXISTS "task" (
+    "id" INTEGER PRIMARY KEY AUTOINCREMENT,
+    "filename" TEXT NOT NULL,
+    "ext" TEXT NOT NULL DEFAULT '',
+    "document_kind" TEXT NOT NULL DEFAULT '',
+    "entity_stats" TEXT,            -- JSON: {"PERSON": 3, "PHONE": 1, ...}
+    "export_path" TEXT,
+    "map_path" TEXT,
+    "audit_path" TEXT,
+    "residual_passed" INTEGER DEFAULT 0,
+    "created_at" DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 8. 自定义规则表（自定义正则 + 黑名单 + 白名单）
+CREATE TABLE IF NOT EXISTS "rule" (
+    "id" INTEGER PRIMARY KEY AUTOINCREMENT,
+    "name" TEXT NOT NULL,
+    "category" TEXT NOT NULL DEFAULT 'custom',  -- custom / blacklist / whitelist
+    "regex" TEXT,
+    "token_prefix" TEXT,
+    "description" TEXT DEFAULT '',
+    "is_active" INTEGER DEFAULT 1,
+    "sample" TEXT,
+    "created_at" DATETIME DEFAULT CURRENT_TIMESTAMP
+);

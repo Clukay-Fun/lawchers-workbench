@@ -143,6 +143,75 @@ try {
       `);
       console.log('[MIGRATE] 已创建 redaction_decision 表');
     }
+
+    // 8. 创建 tool-mode 新表（task + rule）
+    const taskTableCheck = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='task';"
+    ).get();
+    if (!taskTableCheck) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS "task" (
+          "id" INTEGER PRIMARY KEY AUTOINCREMENT,
+          "filename" TEXT NOT NULL,
+          "ext" TEXT NOT NULL DEFAULT '',
+          "document_kind" TEXT NOT NULL DEFAULT '',
+          "entity_stats" TEXT,
+          "export_path" TEXT,
+          "map_path" TEXT,
+          "audit_path" TEXT,
+          "residual_passed" INTEGER DEFAULT 0,
+          "created_at" DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      console.log('[MIGRATE] 已创建 task 表');
+    }
+
+    const ruleTableCheck = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='rule';"
+    ).get();
+    if (!ruleTableCheck) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS "rule" (
+          "id" INTEGER PRIMARY KEY AUTOINCREMENT,
+          "name" TEXT NOT NULL,
+          "category" TEXT NOT NULL DEFAULT 'custom',
+          "regex" TEXT,
+          "token_prefix" TEXT,
+          "description" TEXT DEFAULT '',
+          "is_active" INTEGER DEFAULT 1,
+          "sample" TEXT,
+          "created_at" DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      console.log('[MIGRATE] 已创建 rule 表');
+    }
+
+    // 9. 为 task 表添加工具模式所需的新列
+    try {
+      const taskCols = db.prepare(`PRAGMA table_info("task")`).all().map(c => c.name);
+      if (!taskCols.includes('source_path')) {
+        db.exec(`ALTER TABLE "task" ADD COLUMN "source_path" TEXT`);
+        console.log('[MIGRATE] task.source_path 已添加');
+      }
+      if (!taskCols.includes('work_dir')) {
+        db.exec(`ALTER TABLE "task" ADD COLUMN "work_dir" TEXT`);
+        console.log('[MIGRATE] task.work_dir 已添加');
+      }
+      if (!taskCols.includes('manifest_path')) {
+        db.exec(`ALTER TABLE "task" ADD COLUMN "manifest_path" TEXT`);
+        console.log('[MIGRATE] task.manifest_path 已添加');
+      }
+      if (!taskCols.includes('source_map_path')) {
+        db.exec(`ALTER TABLE "task" ADD COLUMN "source_map_path" TEXT`);
+        console.log('[MIGRATE] task.source_map_path 已添加');
+      }
+      if (!taskCols.includes('rules_config')) {
+        db.exec(`ALTER TABLE "task" ADD COLUMN "rules_config" TEXT`);
+        console.log('[MIGRATE] task.rules_config 已添加');
+      }
+    } catch (colErr) {
+      console.warn('[WARN] task 列增量迁移异常（可忽略若已存在）:', colErr.message);
+    }
   } catch (migErr) {
     console.warn('[WARN] material 表增量迁移检查异常（可忽略若已存在）:', migErr.message);
   }
