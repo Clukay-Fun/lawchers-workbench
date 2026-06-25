@@ -21,6 +21,25 @@ import { resolveLegalDesensBin, getRulesPath } from './services/cliResolver.js';
 
 const execFileAsync = promisify(execFileCb);
 
+function describeCliFailure(error, fallback = '本地引擎执行失败') {
+  if (error?.killed || error?.signal === 'SIGTERM') {
+    return '本地 OCR 引擎执行超时，请尝试页数更少或体积更小的 PDF';
+  }
+
+  const raw = String(error?.stderr || error?.stdout || error?.message || '').trim();
+  if (!raw) return fallback;
+
+  const line = raw
+    .split('\n')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .find((item) => !item.startsWith('Traceback')) || raw;
+
+  return line
+    .replace(/\/[^\s'"]+/g, '[path]')
+    .slice(0, 240);
+}
+
 // 导入业务服务
 import { parseDocument } from './services/parserService.js';
 import { analyzeCaseElements } from './services/analyzeService.js';
@@ -2215,8 +2234,9 @@ router.post('/tasks/:id/analyze', async (req, res) => {
     }
 
     // Run OCR analyze with rules for entity type tagging
-    const analyzeArgs = ['analyze', sourcePath, '--out', analyzeOut];
+    const analyzeArgs = [];
     if (mergedRulesPath) analyzeArgs.push('--rules', mergedRulesPath);
+    analyzeArgs.push('analyze', sourcePath, '--out', analyzeOut);
 
     await execFileAsync(bin, analyzeArgs, {
       timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
@@ -2345,22 +2365,23 @@ router.post('/tasks/:id/mask-export', async (req, res) => {
     const auditPath = path.join(workDir, 'mask-audit.json');
 
     const docKind = task.document_kind || 'pdf-text';
-    const args = [
-      'mask-export', sourcePath,
-      '--boxes', boxesPath,
-      '--out', exportPath,
-      '--document-kind', docKind,
-      '--audit', auditPath,
-    ];
-
     // Add merged rules file (system + custom + blacklist)
     let mergedRulesPath = null;
+    const args = [];
     try {
       mergedRulesPath = await buildMergedRulesFile(workDir);
       if (mergedRulesPath) args.push('--rules', mergedRulesPath);
     } catch (mergeErr) {
       console.warn('[WARN] 构建合并规则文件失败，使用引擎默认:', mergeErr.message);
     }
+
+    args.push(
+      'mask-export', sourcePath,
+      '--boxes', boxesPath,
+      '--out', exportPath,
+      '--document-kind', docKind,
+      '--audit', auditPath,
+    );
 
     // Add denylist (forced redaction words)
     let denylistPath = null;
@@ -2509,13 +2530,23 @@ router.post('/tasks/:id/text-export', async (req, res) => {
     const ext = `.${format}`;
     const exportPath = path.join(workDir, `replaced${ext}`);
 
-    const args = [
+    const args = [];
+    // Add merged rules file
+    let mergedRulesPath = null;
+    try {
+      mergedRulesPath = await buildMergedRulesFile(workDir);
+      if (mergedRulesPath) args.push('--rules', mergedRulesPath);
+    } catch (mergeErr) {
+      console.warn('[WARN] 构建合并规则文件失败:', mergeErr.message);
+    }
+
+    args.push(
       'text-export', sourcePath,
       '--entities', entitiesPath,
       '--out', exportPath,
       '--mode', mode,
       '--format', format,
-    ];
+    );
 
     // For PDF sources, we need OCR text
     const sourceExt = path.extname(sourcePath).toLowerCase();
@@ -2534,15 +2565,6 @@ router.post('/tasks/:id/text-export', async (req, res) => {
       } catch (analyzeErr) {
         return res.status(500).json({ success: false, message: 'PDF OCR 分析失败', error: analyzeErr.message });
       }
-    }
-
-    // Add merged rules file
-    let mergedRulesPath = null;
-    try {
-      mergedRulesPath = await buildMergedRulesFile(workDir);
-      if (mergedRulesPath) args.push('--rules', mergedRulesPath);
-    } catch (mergeErr) {
-      console.warn('[WARN] 构建合并规则文件失败:', mergeErr.message);
     }
 
     // Add denylist (forced redaction words)
@@ -2707,8 +2729,9 @@ router.post('/batch', upload.array('files', 20), async (req, res) => {
         let ocrText = '';
 
         if (ext === '.pdf') {
-          const analyzeArgs = ['analyze', finalPath, '--out', analyzeOut];
+          const analyzeArgs = [];
           if (workMergedRules) analyzeArgs.push('--rules', workMergedRules);
+          analyzeArgs.push('analyze', finalPath, '--out', analyzeOut);
           await execFileAsync(bin, analyzeArgs, { timeout: 120000 });
           const analyzeData = JSON.parse(await fs.readFile(analyzeOut, 'utf-8'));
           ocrText = (analyzeData.ocrBoxes || []).map(b => b.text).join('\n');
@@ -2731,9 +2754,10 @@ router.post('/batch', upload.array('files', 20), async (req, res) => {
           const boxesPath = path.join(actualWorkDir, 'batch-boxes.json');
           await fs.writeFile(boxesPath, '[]', 'utf-8'); // No user boxes in batch
 
-          const args = ['mask-export', finalPath, '--boxes', boxesPath, '--out', exportPath,
-            '--document-kind', 'pdf-text', '--audit', auditPath];
+          const args = [];
           if (workMergedRules) args.push('--rules', workMergedRules);
+          args.push('mask-export', finalPath, '--boxes', boxesPath, '--out', exportPath,
+            '--document-kind', 'pdf-text', '--audit', auditPath);
           if (denylistPath) args.push('--denylist', denylistPath);
 
           await execFileAsync(bin, args, { timeout: 120000 });
@@ -2744,15 +2768,16 @@ router.post('/batch', upload.array('files', 20), async (req, res) => {
           const entitiesPath = path.join(actualWorkDir, 'entities.json');
           await fs.writeFile(entitiesPath, JSON.stringify(entities, null, 2), 'utf-8');
 
-          const args = ['text-export', finalPath, '--entities', entitiesPath,
+          const args = [];
+          if (workMergedRules) args.push('--rules', workMergedRules);
+          args.push('text-export', finalPath, '--entities', entitiesPath,
             '--out', exportPath, '--mode', mode === 'mask' ? 'star' : mode,
-            '--format', exportFormat];
+            '--format', exportFormat);
           if (ocrText) {
             const ocrPath = path.join(actualWorkDir, 'ocr-text.txt');
             await fs.writeFile(ocrPath, ocrText, 'utf-8');
             args.push('--ocr-text', ocrPath);
           }
-          if (workMergedRules) args.push('--rules', workMergedRules);
           if (denylistPath) args.push('--denylist', denylistPath);
           if (whitelistPath) args.push('--whitelist', whitelistPath);
 
