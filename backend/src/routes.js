@@ -17,7 +17,7 @@ import { fileURLToPath } from 'url';
 import { execFile as execFileCb } from 'child_process';
 import { createHash } from 'crypto';
 import { promisify } from 'util';
-import { resolveLegalDesensBin } from './services/cliResolver.js';
+import { resolveLegalDesensBin, getRulesPath } from './services/cliResolver.js';
 
 const execFileAsync = promisify(execFileCb);
 
@@ -912,6 +912,8 @@ router.post('/materials/:id/prepare', async (req, res) => {
           candidates: candidates.length,
           rulesConfig: rulesConfig || {},
           datePreserved: dateOff,
+          nerEnabled: getIsNerEnabled(),
+          binPath: legalDesensBin,
         },
         human_confirmed: 0,
       });
@@ -981,6 +983,16 @@ router.get('/materials/:id/review', async (req, res) => {
     // 获取决策
     const decisions = getDecisionsByMaterialId(matId);
 
+    // 获取最近的 prepare 审计日志（用于诊断）
+    let prepareAudit = null;
+    try {
+      const auditLogs = getAuditLogsByCaseId(mat.case_id);
+      prepareAudit = auditLogs.find(a => a.action === 'prepare') || null;
+      if (prepareAudit && typeof prepareAudit.model_config === 'string') {
+        try { prepareAudit.model_config = JSON.parse(prepareAudit.model_config); } catch {}
+      }
+    } catch {}
+
     res.json({
       success: true,
       data: {
@@ -988,8 +1000,13 @@ router.get('/materials/:id/review', async (req, res) => {
         processingStatus: mat.processing_status,
         verificationStatus: mat.verification_status,
         documentKind: mat.document_kind,
+        sourceSha256: mat.source_sha256 || '',
         previewMd,
         manifest,
+        rulesConfig: prepareAudit?.model_config?.rulesConfig || null,
+        nerEnabled: prepareAudit?.model_config?.nerEnabled ?? null,
+        preparedAt: prepareAudit?.created_at || null,
+        updatedAt: mat.updated_at || null,
         decisions: decisions.map(d => ({
           id: d.id,
           candidateId: d.candidate_id,
@@ -1620,6 +1637,101 @@ router.post('/export/opinion-docx', async (req, res) => {
     console.error('Export Opinion Docx Error:', error);
     res.status(500).json({ success: false, message: '导出意见书失败', error: error.message });
   }
+});
+
+// #endregion
+
+// #region 诊断 API（只读）
+
+/**
+ * GET /api/diagnostics - 引擎诊断信息（只读，单字段失败返回 unknown，整体仍 200）
+ */
+router.get('/diagnostics', async (req, res) => {
+  const UNKNOWN = 'unknown';
+  const result = {
+    binPath: UNKNOWN,
+    installedVersion: UNKNOWN,
+    pinnedCommit: UNKNOWN,
+    nerEnabled: UNKNOWN,
+    modelDir: UNKNOWN,
+    rulesPath: UNKNOWN,
+    defaultRules: UNKNOWN,
+  };
+
+  // binPath
+  try {
+    result.binPath = resolveLegalDesensBin();
+  } catch {}
+
+  // installedVersion via pip show
+  try {
+    const bin = result.binPath !== UNKNOWN ? result.binPath : null;
+    if (bin) {
+      const { stdout } = await execFileAsync(bin, ['--version'], { timeout: 5000, encoding: 'utf-8' });
+      // legal-desens --version 输出格式可能不同，尝试多种解析
+      const verMatch = stdout.match(/(\d+\.\d+[\.\d]*)/);
+      result.installedVersion = verMatch ? verMatch[1] : stdout.trim() || UNKNOWN;
+    }
+  } catch {
+    // fallback: try pip show
+    try {
+      const { stdout } = await execFileAsync('pip3', ['show', 'legal-desens'], { timeout: 5000, encoding: 'utf-8' });
+      const verMatch = stdout.match(/Version:\s*(.+)/i);
+      result.installedVersion = verMatch ? verMatch[1].trim() : UNKNOWN;
+    } catch {}
+  }
+
+  // pinnedCommit from requirements-engine.txt
+  try {
+    const reqPath = path.join(__dirname, '..', '..', 'requirements-engine.txt');
+    const content = await fs.readFile(reqPath, 'utf-8');
+    const commitMatch = content.match(/@([a-f0-9]{7,40})#/);
+    result.pinnedCommit = commitMatch ? commitMatch[1] : UNKNOWN;
+  } catch {}
+
+  // nerEnabled
+  try {
+    result.nerEnabled = getIsNerEnabled();
+  } catch {}
+
+  // modelDir - 尝试从 legal-desens paths --json 获取
+  try {
+    const bin = result.binPath !== UNKNOWN ? result.binPath : null;
+    if (bin) {
+      const { stdout } = await execFileAsync(bin, ['paths', '--json'], { timeout: 10000, encoding: 'utf-8' });
+      const parsed = JSON.parse(stdout);
+      result.modelDir = parsed.model_dir || parsed.modelDir || UNKNOWN;
+      result.rulesPath = parsed.rules || UNKNOWN;
+    }
+  } catch {}
+
+  // rulesPath fallback
+  if (result.rulesPath === UNKNOWN) {
+    try {
+      result.rulesPath = getRulesPath();
+    } catch {}
+  }
+
+  // defaultRules - 读取 rules.json
+  try {
+    if (result.rulesPath !== UNKNOWN) {
+      const rulesContent = await fs.readFile(result.rulesPath, 'utf-8');
+      const rules = JSON.parse(rulesContent);
+      // 提取关键规则的启用状态（尤其是 DATE/TIME）
+      if (Array.isArray(rules)) {
+        result.defaultRules = {};
+        for (const rule of rules) {
+          if (rule.id && rule.enabled !== undefined) {
+            result.defaultRules[rule.id] = rule.enabled;
+          }
+        }
+      } else if (typeof rules === 'object') {
+        result.defaultRules = rules;
+      }
+    }
+  } catch {}
+
+  res.json({ success: true, data: result });
 });
 
 // #endregion

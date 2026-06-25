@@ -254,61 +254,20 @@ export async function exportRedactedDocx(materialId) {
   window.URL.revokeObjectURL(url);
 }
 
-/**
- * 按原文件格式导出脱敏副本。服务端会从原件重新生成并执行残留复检。
- */
-export async function exportRedactedFile(materialId, filename = 'document') {
-  const response = await fetch(`${API_BASE}/export/redacted`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ materialId }),
-  });
+// #endregion
 
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err.message || '原格式脱敏导出失败');
-  }
-
-  const blob = await response.blob();
-  const disposition = response.headers.get('content-disposition') || '';
-  const encodedName = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
-  const fallbackName = filename.replace(/(\.[^.]+)?$/, '.redacted$1');
-  const downloadName = encodedName ? decodeURIComponent(encodedName) : fallbackName;
-  const url = window.URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = downloadName;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  window.URL.revokeObjectURL(url);
-}
+// #region 诊断 API
 
 /**
- * 导出意见书为 .docx（仅限已确认）
- * @param {number} opinionId 意见书 ID
+ * 获取引擎诊断信息（只读）
+ * @returns {Promise<Object>} 引擎状态信息
  */
-export async function exportOpinionDocx(opinionId) {
-  const response = await fetch(`${API_BASE}/export/opinion-docx`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ opinionId }),
-  });
-
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err.message || '导出意见书失败');
-  }
-
-  const blob = await response.blob();
-  const url = window.URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `opinion-${Date.now()}.docx`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  window.URL.revokeObjectURL(url);
+export async function getDiagnostics() {
+  const response = await fetch(`${API_BASE}/diagnostics`, { method: 'GET' });
+  if (!response.ok) throw new Error('获取诊断信息失败');
+  const result = await response.json();
+  if (!result.success) throw new Error(result.message || '获取诊断信息异常');
+  return result.data;
 }
 
 // #endregion

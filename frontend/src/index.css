@@ -256,6 +256,34 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
 .visually-hidden { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
 
+/* 引擎状态面板 */
+.engine-status-loading { padding: 12px 0; color: var(--base01); font-size: 13px; }
+.engine-alert { margin-bottom: 12px; padding: 10px 14px; font-size: 12px; color: var(--red); background: rgba(220, 50, 47, .08); border: 1px solid rgba(220, 50, 47, .2); border-radius: var(--radius-control); line-height: 1.6; }
+.engine-alert strong { font-weight: 700; }
+.engine-status-grid { display: flex; flex-direction: column; gap: 0; }
+.engine-status-row { display: grid; grid-template-columns: 160px 1fr; align-items: baseline; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.engine-status-row:last-child { border-bottom: 0; }
+.engine-status-row.alert .engine-status-value { color: var(--red); font-weight: 600; }
+.engine-status-label { color: var(--base01); }
+.engine-status-value { color: var(--base02); word-break: break-all; font-family: var(--font-mono); font-size: 12px; }
+
+/* 材料诊断折叠区 */
+.review-diagnostics { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 8px; }
+.review-diagnostics-toggle { display: flex; align-items: center; gap: 6px; padding: 6px 0; border: 0; background: transparent; color: var(--base01); font-size: 12px; cursor: pointer; }
+.review-diagnostics-toggle:hover { color: var(--base02); }
+.review-diagnostics-toggle .chevron { font-size: 10px; transition: transform 150ms ease; }
+.review-diagnostics-toggle .chevron.open { transform: rotate(90deg); }
+.review-diagnostics-body { padding: 8px 0; font-size: 12px; }
+.diag-row { display: grid; grid-template-columns: 130px 1fr; padding: 3px 0; gap: 8px; }
+.diag-label { color: var(--base01); }
+.diag-value { color: var(--base02); font-family: var(--font-mono); font-size: 11px; word-break: break-all; }
+.diag-value.alert { color: var(--red); font-weight: 600; }
+.diag-section-title { margin: 8px 0 4px; font-weight: 600; color: var(--base02); font-size: 12px; }
+.diag-alert { margin-top: 8px; padding: 8px 10px; font-size: 11px; color: var(--red); background: rgba(220, 50, 47, .06); border: 1px solid rgba(220, 50, 47, .15); border-radius: var(--radius-control); line-height: 1.5; }
+.diag-date-off { margin-top: 6px; padding: 6px 10px; font-size: 11px; color: #8a5a00; background: rgba(181,137,0,.08); border: 1px solid rgba(181,137,0,.15); border-radius: var(--radius-control); }
+.diag-entity-stats { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.diag-entity-tag { padding: 2px 8px; font-size: 11px; background: rgba(38, 139, 210, .1); border: 1px solid rgba(38, 139, 210, .2); border-radius: 999px; color: #0c5a94; }
+
 @media (max-width: 1000px) {
   .workspace-grid { grid-template-columns: 210px minmax(0, 1fr); }
   .case-register-labels, .case-register-row { grid-template-columns: minmax(240px, 1.4fr) minmax(180px, 1fr) 84px 42px; }

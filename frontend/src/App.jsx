@@ -7,6 +7,7 @@ import {
   deleteCase as apiDeleteCase,
   getCaseDetail,
   getCases,
+  getDiagnostics,
 } from './api';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
@@ -38,6 +39,68 @@ function parseJson(value, fallback) {
   } catch {
     return fallback;
   }
+}
+
+function EngineStatus({ diagnostics, loading }) {
+  if (loading) {
+    return (
+      <section className="settings-section">
+        <h2>引擎状态</h2>
+        <div className="engine-status-loading">正在加载诊断信息…</div>
+      </section>
+    );
+  }
+
+  if (!diagnostics) {
+    return (
+      <section className="settings-section">
+        <h2>引擎状态</h2>
+        <div className="engine-status-loading">诊断信息不可用</div>
+      </section>
+    );
+  }
+
+  const isNerOff = diagnostics.nerEnabled === false || diagnostics.nerEnabled === 'unknown';
+  const dateRules = diagnostics.defaultRules || {};
+  const dateEnabled = dateRules.DATE !== false; // 默认启用
+
+  const rows = [
+    { label: 'legal-desens 路径', value: diagnostics.binPath },
+    { label: '安装版本', value: diagnostics.installedVersion },
+    { label: 'requirements pin commit', value: diagnostics.pinnedCommit },
+    {
+      label: 'NER 状态',
+      value: diagnostics.nerEnabled === true ? '已启用' : diagnostics.nerEnabled === false ? '未启用' : String(diagnostics.nerEnabled),
+      alert: diagnostics.nerEnabled === false,
+    },
+    { label: 'NER model_dir', value: diagnostics.modelDir },
+    { label: '规则路径', value: diagnostics.rulesPath },
+    {
+      label: '默认规则',
+      value: Object.entries(dateRules).filter(([, v]) => v === false).map(([k]) => `${k} 关闭`).join('、') || '全部启用',
+    },
+  ];
+
+  return (
+    <section className="settings-section">
+      <h2>引擎状态</h2>
+      {isNerOff && (
+        <div className="engine-alert">
+          <strong>NER 未启用：</strong>当前将以 regex-only 运行，姓名/机构/地址识别能力会下降。
+        </div>
+      )}
+      <div className="engine-status-grid">
+        {rows.map((row) => (
+          <div key={row.label} className={`engine-status-row${row.alert ? ' alert' : ''}`}>
+            <span className="engine-status-label">{row.label}</span>
+            <span className="engine-status-value" title={String(row.value)}>
+              {String(row.value || 'unknown')}
+            </span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
 }
 
 function buildTextChunks(redactedText, entities, occurrences) {
@@ -78,6 +141,8 @@ export default function App() {
   const [activeCaseDetail, setActiveCaseDetail] = useState(null);
   const [loadingCaseDetail, setLoadingCaseDetail] = useState(false);
   const [advancedRulesOpen, setAdvancedRulesOpen] = useState(false);
+  const [diagnostics, setDiagnostics] = useState(null);
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
   const [settings, setSettings] = useState({
     maskChar: '*',
     defaultView: 'redacted',
@@ -101,6 +166,18 @@ export default function App() {
       .catch((error) => console.error('[ERROR] 加载案件列表失败:', error));
     return () => { cancelled = true; };
   }, []);
+
+  // 加载诊断数据（设置页展示）
+  useEffect(() => {
+    if (currentView !== 'settings' || diagnostics) return;
+    let cancelled = false;
+    setDiagnosticsLoading(true);
+    getDiagnostics()
+      .then((data) => { if (!cancelled) setDiagnostics(data); })
+      .catch((err) => { console.error('[WARN] 加载诊断信息失败:', err.message); })
+      .finally(() => { if (!cancelled) setDiagnosticsLoading(false); });
+    return () => { cancelled = true; };
+  }, [currentView, diagnostics]);
 
   const mapCaseForWorkspace = (detail) => {
     if (!detail) return null;
@@ -313,6 +390,9 @@ export default function App() {
                   </div>
                 )}
               </section>
+
+              {/* 引擎状态 */}
+              <EngineStatus diagnostics={diagnostics} loading={diagnosticsLoading} />
             </div>
           </section>
         </div>
