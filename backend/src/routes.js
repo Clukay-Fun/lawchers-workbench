@@ -2189,8 +2189,19 @@ router.post('/tasks/:id/analyze', async (req, res) => {
     const analyzeOut = path.join(workDir, 'analyze.json');
     const sealOut = path.join(workDir, 'seals.json');
 
-    // Run OCR analyze
-    await execFileAsync(bin, ['analyze', sourcePath, '--out', analyzeOut], {
+    // Build merged rules for entity type tagging
+    let mergedRulesPath = null;
+    try {
+      mergedRulesPath = await buildMergedRulesFile(workDir);
+    } catch (mergeErr) {
+      console.warn('[WARN] 构建合并规则文件失败:', mergeErr.message);
+    }
+
+    // Run OCR analyze with rules for entity type tagging
+    const analyzeArgs = ['analyze', sourcePath, '--out', analyzeOut];
+    if (mergedRulesPath) analyzeArgs.push('--rules', mergedRulesPath);
+
+    await execFileAsync(bin, analyzeArgs, {
       timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
     });
 
@@ -2568,7 +2579,14 @@ router.post('/tasks/:id/text-export', async (req, res) => {
 });
 
 /**
- * POST /api/batch - 批量上传文件并创建任务
+ * POST /api/batch - 批量上传 + 分析 + 导出（真正批处理）
+ *
+ * Body: { files, mode, format }
+ * - files: uploaded files
+ * - mode: 'mask' | 'star' | 'placeholder'
+ * - format: 'pdf' | 'txt' | 'md' | 'docx'
+ *
+ * For each file: upload → analyze → apply rules → export → audit
  */
 router.post('/batch', upload.array('files', 20), async (req, res) => {
   try {
@@ -2577,40 +2595,168 @@ router.post('/batch', upload.array('files', 20), async (req, res) => {
       return res.status(400).json({ success: false, message: '请上传文件' });
     }
 
+    const mode = req.body?.mode || 'mask';
+    const format = req.body?.format || 'pdf';
+    const { resolveLegalDesensBin } = await import('./services/cliResolver.js');
+    const bin = resolveLegalDesensBin();
+
     const results = [];
+
     for (const file of files) {
       const originalName = Buffer.from(file.originalname, 'latin1').toString('utf8');
       const ext = path.extname(originalName).toLowerCase();
+      const result = { filename: originalName, success: false };
 
-      if (!['.docx', '.pdf', '.txt', '.md'].includes(ext)) {
-        await fs.unlink(file.path).catch(() => {});
-        results.push({ filename: originalName, success: false, error: '不支持的文件格式' });
-        continue;
+      try {
+        if (!['.docx', '.pdf', '.txt', '.md'].includes(ext)) {
+          await fs.unlink(file.path).catch(() => {});
+          result.error = '不支持的文件格式';
+          results.push(result);
+          continue;
+        }
+
+        // Move to tasks dir
+        const tasksDir = path.join(uploadsDir, 'tasks');
+        if (!existsSync(tasksDir)) mkdirSync(tasksDir, { recursive: true });
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+        const newFilename = `${uniqueSuffix}-${originalName}`;
+        const finalPath = path.join(tasksDir, newFilename);
+        await fs.rename(file.path, finalPath);
+
+        // Create task
+        const task = createTask({
+          filename: originalName,
+          ext,
+          document_kind: ext === '.pdf' ? 'pdf-text' : ext.replace('.', ''),
+          source_path: finalPath,
+        });
+        const taskId = task.id;
+
+        // Build work dir
+        const workDir = path.join(tasksDir, `.work_${taskId}`);
+        if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
+
+        // Build merged rules + denylist + whitelist
+        let mergedRulesPath = null;
+        try { mergedRulesPath = await buildMergedRulesFile(workDir); } catch {}
+
+        let denylistPath = null;
+        try {
+          const blRules = getRulesByCategory('blacklist').filter(r => r.is_active && r.regex);
+          if (blRules.length) {
+            denylistPath = path.join(workDir, 'denylist.txt');
+            await fs.writeFile(denylistPath, blRules.map(r => r.regex).join('\n'), 'utf-8');
+          }
+        } catch {}
+
+        let whitelistPath = null;
+        try {
+          const wlRules = getRulesByCategory('whitelist').filter(r => r.is_active && r.regex);
+          if (wlRules.length) {
+            whitelistPath = path.join(workDir, 'whitelist.txt');
+            await fs.writeFile(whitelistPath, wlRules.map(r => r.regex).join('\n'), 'utf-8');
+          }
+        } catch {}
+
+        // Analyze (OCR for PDF, text extraction for others)
+        const analyzeOut = path.join(workDir, 'analyze.json');
+        let entities = [];
+        let ocrText = '';
+
+        if (ext === '.pdf') {
+          await execFileAsync(bin, ['analyze', finalPath, '--out', analyzeOut], { timeout: 120000 });
+          const analyzeData = JSON.parse(await fs.readFile(analyzeOut, 'utf-8'));
+          ocrText = (analyzeData.ocrBoxes || []).map(b => b.text).join('\n');
+          entities = (analyzeData.ocrBoxes || []).map((b, i) => ({
+            original: b.text,
+            entity_type: 'MANUAL',
+            start: 0, end: 0,
+          }));
+        } else if (ext === '.txt' || ext === '.md') {
+          ocrText = await fs.readFile(finalPath, 'utf-8');
+        } else if (ext === '.docx') {
+          // DOCX text extraction done by engine
+        }
+
+        // Export based on mode
+        let exportPath = '';
+        let auditPath = path.join(workDir, 'batch-audit.json');
+
+        if (mode === 'mask' && ext === '.pdf') {
+          // Mask export: find denylist terms → create boxes → mask
+          exportPath = path.join(workDir, 'masked.pdf');
+          const boxesPath = path.join(workDir, 'batch-boxes.json');
+          await fs.writeFile(boxesPath, '[]', 'utf-8'); // No user boxes in batch
+
+          const args = ['mask-export', finalPath, '--boxes', boxesPath, '--out', exportPath,
+            '--document-kind', 'pdf-text', '--audit', auditPath];
+          if (mergedRulesPath) args.push('--rules', mergedRulesPath);
+          if (denylistPath) args.push('--denylist', denylistPath);
+
+          await execFileAsync(bin, args, { timeout: 120000 });
+        } else {
+          // Text export (star/placeholder) or non-PDF
+          const exportFormat = format === 'pdf' ? 'txt' : format;
+          exportPath = path.join(workDir, `replaced.${exportFormat}`);
+          const entitiesPath = path.join(workDir, 'entities.json');
+          await fs.writeFile(entitiesPath, JSON.stringify(entities, null, 2), 'utf-8');
+
+          const args = ['text-export', finalPath, '--entities', entitiesPath,
+            '--out', exportPath, '--mode', mode === 'mask' ? 'star' : mode,
+            '--format', exportFormat];
+          if (ocrText) {
+            const ocrPath = path.join(workDir, 'ocr-text.txt');
+            await fs.writeFile(ocrPath, ocrText, 'utf-8');
+            args.push('--ocr-text', ocrPath);
+          }
+          if (mergedRulesPath) args.push('--rules', mergedRulesPath);
+          if (denylistPath) args.push('--denylist', denylistPath);
+          if (whitelistPath) args.push('--whitelist', whitelistPath);
+
+          await execFileAsync(bin, args, { timeout: 120000 });
+        }
+
+        // Verify output exists
+        if (!existsSync(exportPath)) {
+          result.error = '导出文件未生成';
+          results.push(result);
+          continue;
+        }
+
+        // Read audit if exists
+        let auditData = null;
+        try { auditData = JSON.parse(await fs.readFile(auditPath, 'utf-8')); } catch {}
+
+        // Update task
+        updateTask(taskId, {
+          export_path: path.relative(path.join(__dirname, '..'), exportPath),
+          residual_passed: auditData?.verification?.passed !== false,
+        });
+
+        result.success = true;
+        result.taskId = taskId;
+        result.exportPath = path.relative(path.join(__dirname, '..'), exportPath);
+        result.audit = auditData?.verification || null;
+      } catch (fileErr) {
+        result.error = fileErr.message;
       }
 
-      // Move to tasks dir
-      const tasksDir = path.join(uploadsDir, 'tasks');
-      if (!existsSync(tasksDir)) mkdirSync(tasksDir, { recursive: true });
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-      const newFilename = `${uniqueSuffix}-${originalName}`;
-      const finalPath = path.join(tasksDir, newFilename);
-      await fs.rename(file.path, finalPath);
-
-      // Create task
-      const task = createTask({
-        filename: originalName,
-        ext,
-        document_kind: ext === '.pdf' ? 'pdf-text' : ext.replace('.', ''),
-        source_path: finalPath,
-      });
-
-      results.push({ taskId: task.id, filename: originalName, success: true });
+      results.push(result);
     }
 
-    res.json({ success: true, data: results });
+    const successCount = results.filter(r => r.success).length;
+    res.json({
+      success: true,
+      data: {
+        total: files.length,
+        succeeded: successCount,
+        failed: files.length - successCount,
+        results,
+      },
+    });
   } catch (error) {
-    console.error('Batch Upload Error:', error);
-    res.status(500).json({ success: false, message: '批量上传失败', error: error.message });
+    console.error('Batch Process Error:', error);
+    res.status(500).json({ success: false, message: '批量处理失败', error: error.message });
   }
 });
 
