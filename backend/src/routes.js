@@ -2162,6 +2162,231 @@ router.post('/tasks/:id/export', async (req, res) => {
   }
 });
 
+// #endregion
+
+// #region 视觉遮蔽模式 API（P1 遮蔽主干）
+
+/**
+ * POST /api/tasks/:id/analyze - OCR 分析 PDF，返回归一化文字框
+ */
+router.post('/tasks/:id/analyze', async (req, res) => {
+  try {
+    const taskId = parseInt(req.params.id, 10);
+    const task = getTaskById(taskId);
+    if (!task) return res.status(404).json({ success: false, message: '任务不存在' });
+
+    const sourcePath = task.source_path;
+    if (!sourcePath || !existsSync(sourcePath)) {
+      return res.status(409).json({ success: false, message: '源文件已丢失' });
+    }
+
+    const { resolveLegalDesensBin } = await import('./services/cliResolver.js');
+    const bin = resolveLegalDesensBin();
+
+    const workDir = task.work_dir || path.join(uploadsDir, 'tasks', `.work_${Date.now()}`);
+    if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
+
+    const analyzeOut = path.join(workDir, 'analyze.json');
+
+    const args = ['analyze', sourcePath, '--out', analyzeOut];
+    const { getIsNerEnabled } = await import('./services/redactService.js');
+    // analyze always uses OCR, no --regex-only
+
+    await execFileAsync(bin, args, {
+      timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
+    });
+
+    const analyzeData = JSON.parse(await fs.readFile(analyzeOut, 'utf-8'));
+
+    res.json({
+      success: true,
+      data: {
+        ocrBoxes: analyzeData.ocrBoxes || [],
+        manifest: analyzeData.manifest || {},
+      },
+    });
+  } catch (error) {
+    console.error('Analyze Error:', error);
+    res.status(500).json({ success: false, message: 'OCR 分析失败', error: error.message });
+  }
+});
+
+/**
+ * PATCH /api/tasks/:id/boxes - 更新任务的遮蔽框列表
+ */
+router.patch('/tasks/:id/boxes', async (req, res) => {
+  try {
+    const taskId = parseInt(req.params.id, 10);
+    const task = getTaskById(taskId);
+    if (!task) return res.status(404).json({ success: false, message: '任务不存在' });
+
+    const { boxes } = req.body;
+    if (!Array.isArray(boxes)) {
+      return res.status(400).json({ success: false, message: 'boxes 必须是数组' });
+    }
+
+    // Validate boxes
+    for (const box of boxes) {
+      if (typeof box.x !== 'number' || typeof box.y !== 'number' ||
+          typeof box.width !== 'number' || typeof box.height !== 'number' ||
+          typeof box.page !== 'number') {
+        return res.status(400).json({ success: false, message: '框缺少必要字段 (page, x, y, width, height)' });
+      }
+      if (box.x < 0 || box.x > 1 || box.y < 0 || box.y > 1 ||
+          box.width < 0 || box.width > 1 || box.height < 0 || box.height > 1) {
+        return res.status(400).json({ success: false, message: '坐标必须在 [0,1] 范围内' });
+      }
+    }
+
+    // Save boxes to work_dir
+    const workDir = task.work_dir || path.join(uploadsDir, 'tasks', `.work_${taskId}`);
+    if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
+    const boxesPath = path.join(workDir, 'boxes.json');
+    await fs.writeFile(boxesPath, JSON.stringify(boxes, null, 2), 'utf-8');
+
+    res.json({ success: true, data: { count: boxes.length, boxesPath } });
+  } catch (error) {
+    console.error('Boxes Update Error:', error);
+    res.status(500).json({ success: false, message: '更新框失败', error: error.message });
+  }
+});
+
+/**
+ * POST /api/tasks/:id/mask-export - 导出遮蔽 PDF
+ */
+router.post('/tasks/:id/mask-export', async (req, res) => {
+  try {
+    const taskId = parseInt(req.params.id, 10);
+    const task = getTaskById(taskId);
+    if (!task) return res.status(404).json({ success: false, message: '任务不存在' });
+
+    const sourcePath = task.source_path;
+    if (!sourcePath || !existsSync(sourcePath)) {
+      return res.status(409).json({ success: false, message: '源文件已丢失，请重新上传' });
+    }
+
+    const { boxes } = req.body;
+    if (!Array.isArray(boxes) || boxes.length === 0) {
+      return res.status(400).json({ success: false, message: '缺少遮蔽框' });
+    }
+
+    const { resolveLegalDesensBin } = await import('./services/cliResolver.js');
+    const bin = resolveLegalDesensBin();
+
+    const workDir = task.work_dir || path.join(uploadsDir, 'tasks', `.work_${taskId}`);
+    if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
+
+    // Write boxes to temp file
+    const boxesPath = path.join(workDir, 'mask-boxes.json');
+    await fs.writeFile(boxesPath, JSON.stringify(boxes, null, 2), 'utf-8');
+
+    const exportPath = path.join(workDir, 'masked.pdf');
+    const auditPath = path.join(workDir, 'mask-audit.json');
+
+    const docKind = task.document_kind || 'pdf-text';
+    const args = [
+      'mask-export', sourcePath,
+      '--boxes', boxesPath,
+      '--out', exportPath,
+      '--document-kind', docKind,
+      '--audit', auditPath,
+    ];
+
+    try {
+      await execFileAsync(bin, args, {
+        timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
+      });
+    } catch (cliErr) {
+      await fs.unlink(exportPath).catch(() => {});
+      return res.status(500).json({ success: false, message: '遮蔽导出失败', error: cliErr.message });
+    }
+
+    // Verify audit passed
+    let auditData = {};
+    try {
+      auditData = JSON.parse(await fs.readFile(auditPath, 'utf-8'));
+    } catch { /* ignore */ }
+
+    const passed = auditData?.verification?.passed !== false;
+    if (!passed) {
+      await fs.unlink(exportPath).catch(() => {});
+      return res.status(409).json({ success: false, message: '遮蔽验证未通过' });
+    }
+
+    // Update task record
+    const entityStats = {};
+    for (const box of boxes) {
+      const src = box.source || 'manual';
+      entityStats[src] = (entityStats[src] || 0) + 1;
+    }
+    updateTask(taskId, {
+      entity_stats: entityStats,
+      export_path: path.relative(path.join(__dirname, '..'), exportPath),
+      residual_passed: true,
+    });
+
+    const downloadName = (task.filename || 'document').replace(/(\.[^.]+)?$/, '.masked$1');
+    res.download(exportPath, downloadName);
+  } catch (error) {
+    console.error('Mask Export Error:', error);
+    res.status(500).json({ success: false, message: '遮蔽导出失败', error: error.message });
+  }
+});
+
+/**
+ * GET /api/tasks/:id/page-image/:pageNum - 获取任务的页面图像
+ */
+router.get('/tasks/:id/page-image/:pageNum', async (req, res) => {
+  try {
+    const taskId = parseInt(req.params.id, 10);
+    const pageNum = parseInt(req.params.pageNum, 10);
+    const task = getTaskById(taskId);
+    if (!task) return res.status(404).json({ success: false, message: '任务不存在' });
+
+    const sourcePath = task.source_path;
+    if (!sourcePath || !existsSync(sourcePath)) {
+      return res.status(409).json({ success: false, message: '源文件已丢失' });
+    }
+
+    // Render the specific page on-demand
+    const { resolveLegalDesensBin } = await import('./services/cliResolver.js');
+    const bin = resolveLegalDesensBin();
+
+    const workDir = task.work_dir || path.join(uploadsDir, 'tasks', `.work_${taskId}`);
+    const pagesDir = path.join(workDir, 'pages');
+    if (!existsSync(pagesDir)) mkdirSync(pagesDir, { recursive: true });
+
+    const manifestPath = path.join(workDir, 'render-manifest.json');
+
+    // Check if we already have a render manifest
+    let manifest = null;
+    try {
+      manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
+    } catch {
+      // Need to render
+      await execFileAsync(bin, ['render-pages', sourcePath, '--dpi', '200', '--out-dir', pagesDir, '--out', manifestPath], {
+        timeout: 60000,
+      });
+      manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
+    }
+
+    const pageMeta = manifest.pages?.[pageNum - 1];
+    if (!pageMeta) return res.status(404).json({ success: false, message: `页面 ${pageNum} 不存在` });
+
+    const imagePath = pageMeta.imagePath;
+    if (!imagePath || !existsSync(imagePath)) {
+      return res.status(404).json({ success: false, message: '页面图像未生成' });
+    }
+
+    res.sendFile(imagePath);
+  } catch (error) {
+    console.error('Page Image Error:', error);
+    res.status(500).json({ success: false, message: '获取页面图像失败', error: error.message });
+  }
+});
+
+// #endregion
+
 /**
  * GET /api/history - 任务历史列表
  */

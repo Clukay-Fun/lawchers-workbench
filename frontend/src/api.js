@@ -128,6 +128,50 @@ export async function testRegex(regex, sample) {
 
 // #endregion
 
+// #region 视觉遮蔽模式 API (P1)
+
+/** OCR 分析 PDF，返回归一化文字框 */
+export async function analyzeTask(taskId) {
+  const response = await fetch(`${API_BASE}/tasks/${taskId}/analyze`, { method: 'POST' });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.message || 'OCR 分析失败');
+  }
+  const result = await response.json();
+  if (!result.success) throw new Error(result.message || '分析异常');
+  return result.data;
+}
+
+/** 更新任务的遮蔽框列表 */
+export async function updateTaskBoxes(taskId, boxes) {
+  const response = await fetch(`${API_BASE}/tasks/${taskId}/boxes`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ boxes }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.message || '更新框失败');
+  }
+  return response.json();
+}
+
+/** 导出遮蔽 PDF */
+export async function maskExportTask(taskId, boxes) {
+  const response = await fetch(`${API_BASE}/tasks/${taskId}/mask-export`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ boxes }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.message || '遮蔽导出失败');
+  }
+  return response;
+}
+
+// #endregion
+
 // #region 诊断 API
 
 export async function getDiagnostics() {
