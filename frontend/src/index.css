@@ -446,8 +446,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .mask-preview { border-radius: 2px; box-shadow: var(--shadow-sm); border: 1px solid var(--line); overflow: hidden; }
 
 /* #4: Text dual-column (star/placeholder) */
-.text-mode-container { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
-.text-dual-column { flex: 1; display: flex; gap: 16px; padding: 16px 0; overflow: hidden; min-height: 0; }
+.text-mode-container { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; padding: 0 16px 16px; }
+.text-dual-column { flex: 1; display: flex; gap: 16px; padding-top: 16px; overflow: hidden; min-height: 0; width: 100%; max-width: 1136px; margin: 0 auto; align-self: center; }
 .text-panel { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius-card); overflow: hidden; }
 .text-panel-header { flex: 0 0 auto; padding: 10px 16px; font-weight: 600; font-size: 13px; color: var(--base02); border-bottom: 1px solid var(--line); background: rgba(247,244,238,.5); }
 .text-panel-body { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; }
