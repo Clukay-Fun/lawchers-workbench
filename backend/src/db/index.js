@@ -143,6 +143,48 @@ try {
       `);
       console.log('[MIGRATE] 已创建 redaction_decision 表');
     }
+
+    // 8. 创建 tool-mode 新表（task + rule）
+    const taskTableCheck = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='task';"
+    ).get();
+    if (!taskTableCheck) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS "task" (
+          "id" INTEGER PRIMARY KEY AUTOINCREMENT,
+          "filename" TEXT NOT NULL,
+          "ext" TEXT NOT NULL DEFAULT '',
+          "document_kind" TEXT NOT NULL DEFAULT '',
+          "entity_stats" TEXT,
+          "export_path" TEXT,
+          "map_path" TEXT,
+          "audit_path" TEXT,
+          "residual_passed" INTEGER DEFAULT 0,
+          "created_at" DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      console.log('[MIGRATE] 已创建 task 表');
+    }
+
+    const ruleTableCheck = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='rule';"
+    ).get();
+    if (!ruleTableCheck) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS "rule" (
+          "id" INTEGER PRIMARY KEY AUTOINCREMENT,
+          "name" TEXT NOT NULL,
+          "category" TEXT NOT NULL DEFAULT 'custom',
+          "regex" TEXT,
+          "token_prefix" TEXT,
+          "description" TEXT DEFAULT '',
+          "is_active" INTEGER DEFAULT 1,
+          "sample" TEXT,
+          "created_at" DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      console.log('[MIGRATE] 已创建 rule 表');
+    }
   } catch (migErr) {
     console.warn('[WARN] material 表增量迁移检查异常（可忽略若已存在）:', migErr.message);
   }

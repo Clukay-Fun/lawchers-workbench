@@ -1769,4 +1769,405 @@ router.get('/diagnostics', async (req, res) => {
 
 // #endregion
 
+// #region 工具模式 API（脱敏/还原/历史/规则）
+
+import { createTask, getTaskList, getTaskById, deleteTask } from './db/taskRepo.js';
+import { getAllRules, getRulesByCategory, createRule, updateRule, deleteRule } from './db/ruleRepo.js';
+
+/**
+ * POST /api/tasks - 上传文件 + 自动 prepare + 返回 candidates/preview
+ */
+router.post('/tasks', upload.single('file'), async (req, res) => {
+  let tempDir = null;
+  try {
+    if (!req.file) return res.status(400).json({ success: false, message: '请上传文件' });
+
+    const originalName = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
+    const ext = path.extname(originalName).toLowerCase();
+    const tmpPath = req.file.path;
+
+    if (!['.docx', '.pdf', '.txt', '.md'].includes(ext)) {
+      await fs.unlink(tmpPath).catch(() => {});
+      return res.status(400).json({ success: false, message: '仅支持 DOCX、PDF、TXT、MD 文件' });
+    }
+
+    // 验证文件签名
+    const handle = await fs.open(tmpPath, 'r');
+    const signature = Buffer.alloc(4);
+    try { await handle.read(signature, 0, 4, 0); } finally { await handle.close(); }
+    const validSig = ext === '.pdf'
+      ? signature.toString('ascii') === '%PDF'
+      : ['.txt', '.md'].includes(ext) || (signature[0] === 0x50 && signature[1] === 0x4b);
+    if (!validSig) {
+      await fs.unlink(tmpPath).catch(() => {});
+      return res.status(400).json({ success: false, message: '文件内容与扩展名不匹配' });
+    }
+
+    // 移动到 uploads/tasks/ 目录
+    const tasksDir = path.join(uploadsDir, 'tasks');
+    if (!existsSync(tasksDir)) mkdirSync(tasksDir, { recursive: true });
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+    const newFilename = `${uniqueSuffix}-${originalName}`;
+    const finalPath = path.join(tasksDir, newFilename);
+    await fs.rename(tmpPath, finalPath);
+
+    // 调用 legal-desens prepare
+    const { rulesConfig } = req.body || {};
+    const { resolveLegalDesensBin } = await import('./services/cliResolver.js');
+    const legalDesensBin = resolveLegalDesensBin();
+
+    tempDir = path.join(tasksDir, `.tmp_${Date.now()}`);
+    if (!existsSync(tempDir)) mkdirSync(tempDir, { recursive: true });
+
+    const tempPreview = path.join(tempDir, 'preview.md');
+    const tempManifest = path.join(tempDir, 'manifest.json');
+    const tempSourceMap = path.join(tempDir, 'source-map.json');
+
+    const args = [
+      'prepare', finalPath,
+      '--level', 'strict',
+      '--preview-md', tempPreview,
+      '--manifest', tempManifest,
+      '--map', tempSourceMap,
+    ];
+
+    const { getIsNerEnabled } = await import('./services/redactService.js');
+    if (!getIsNerEnabled()) args.push('--regex-only');
+
+    // entity-policy for date/time preservation
+    const preserveTypes = [];
+    const typeAliases = { LOC: ['ADDRESS'], DATE: ['DATE', 'TIME'] };
+    for (const [type, enabled] of Object.entries(rulesConfig || {})) {
+      if (enabled === false) preserveTypes.push(...(typeAliases[type] || [type]));
+    }
+    if (preserveTypes.length) {
+      const policyPath = path.join(tempDir, 'entity-policy.json');
+      await fs.writeFile(policyPath, JSON.stringify({ preserve_types: [...new Set(preserveTypes)] }), 'utf-8');
+      args.push('--entity-policy', policyPath);
+    }
+
+    await execFileAsync(legalDesensBin, args, {
+      timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
+    });
+
+    const manifest = JSON.parse(await fs.readFile(tempManifest, 'utf-8'));
+    const sourceMap = JSON.parse(await fs.readFile(tempSourceMap, 'utf-8'));
+    const previewMd = await fs.readFile(tempPreview, 'utf-8');
+
+    // 将 prepare 产物移到最终位置
+    const workDir = path.join(tasksDir, `.work_${Date.now()}`);
+    await fs.rename(tempDir, workDir);
+    tempDir = null;
+
+    res.json({
+      success: true,
+      data: {
+        taskId: Date.now(), // 临时 ID，后续可改为 DB 写入
+        filename: originalName,
+        ext,
+        documentKind: manifest.documentKind || '',
+        blockCount: manifest.blocks?.length || 0,
+        candidateCount: (manifest.candidates || []).length,
+        previewMd,
+        manifest,
+        sourceMap,
+        filePath: finalPath,
+        workDir,
+      },
+    });
+  } catch (error) {
+    console.error('Task Error:', error);
+    if (tempDir) await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    res.status(500).json({ success: false, message: '文档处理失败', error: error.message });
+  }
+});
+
+/**
+ * POST /api/tasks/:id/export - 按决策导出脱敏副本 + 残留审计 + 写历史
+ */
+router.post('/tasks/:id/export', async (req, res) => {
+  try {
+    const { decisions, manifest, sourceMap, filePath, documentKind, filename } = req.body;
+    if (!decisions || !manifest || !filePath) {
+      return res.status(400).json({ success: false, message: '缺少导出必需数据' });
+    }
+
+    // PDF 暂不支持（需逐页混合管线）
+    if (documentKind && documentKind.includes('pdf')) {
+      return res.status(501).json({ success: false, message: 'PDF 按决策导出尚未支持' });
+    }
+
+    const { resolveLegalDesensBin } = await import('./services/cliResolver.js');
+    const legalDesensBin = resolveLegalDesensBin();
+
+    // 临时 decisions.json
+    const workDir = path.join(uploadsDir, 'tasks', `.export_${Date.now()}`);
+    if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
+
+    const decisionsPath = path.join(workDir, 'decisions.json');
+    const sourceMapPath = path.join(workDir, 'source-map.json');
+    const exportPath = path.join(workDir, `redacted${path.extname(filePath)}`);
+    const auditPath = path.join(workDir, 'export-audit.json');
+    const mapPath = path.join(workDir, 'export-map.json');
+
+    // 写 decisions + source-map
+    await fs.writeFile(decisionsPath, JSON.stringify(decisions, null, 2), 'utf-8');
+    await fs.writeFile(sourceMapPath, JSON.stringify(sourceMap, null, 2), 'utf-8');
+
+    // 调用 legal-desens redact --decisions
+    const args = [
+      'redact', filePath,
+      '--level', 'strict',
+      '--decisions', decisionsPath,
+      '--source-map', sourceMapPath,
+      '--out', exportPath,
+      '--map', mapPath,
+      '--audit', auditPath,
+    ];
+    const { getIsNerEnabled } = await import('./services/redactService.js');
+    if (!getIsNerEnabled()) args.push('--regex-only');
+
+    try {
+      await execFileAsync(legalDesensBin, args, {
+        timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
+      });
+    } catch (cliErr) {
+      await fs.unlink(exportPath).catch(() => {});
+      return res.status(500).json({ success: false, message: '决策导出 CLI 执行失败', error: cliErr.message });
+    }
+
+    // 残留复检
+    let auditData = null;
+    try {
+      auditData = JSON.parse(await fs.readFile(auditPath, 'utf-8'));
+    } catch {
+      await fs.unlink(exportPath).catch(() => {});
+      return res.status(500).json({ success: false, message: '无法读取审计文件，导出阻断' });
+    }
+
+    const residualPassed = auditData?.residual_scan?.passed === true;
+    if (!residualPassed) {
+      await fs.unlink(exportPath).catch(() => {});
+      return res.status(409).json({ success: false, message: '残留扫描未通过，导出已阻断' });
+    }
+
+    // 写历史
+    const entityStats = {};
+    for (const d of decisions) {
+      if (d.action === 'redact') {
+        const t = d.entityType || 'UNKNOWN';
+        entityStats[t] = (entityStats[t] || 0) + 1;
+      }
+    }
+    const task = createTask({
+      filename: filename || 'unknown',
+      ext: path.extname(filename || ''),
+      document_kind: documentKind || '',
+      entity_stats: entityStats,
+      export_path: path.relative(path.join(__dirname, '..'), exportPath),
+      map_path: path.relative(path.join(__dirname, '..'), mapPath),
+      audit_path: path.relative(path.join(__dirname, '..'), auditPath),
+      residual_passed: true,
+    });
+
+    // 返回文件下载
+    const downloadName = (filename || 'document').replace(/(\.[^.]+)?$/, '.redacted$1');
+    res.download(exportPath, downloadName);
+  } catch (error) {
+    console.error('Task Export Error:', error);
+    res.status(500).json({ success: false, message: '导出失败', error: error.message });
+  }
+});
+
+/**
+ * GET /api/history - 任务历史列表
+ */
+router.get('/history', (req, res) => {
+  try {
+    const tasks = getTaskList();
+    res.json({ success: true, data: tasks });
+  } catch (error) {
+    console.error('History Error:', error);
+    res.status(500).json({ success: false, message: '获取历史失败', error: error.message });
+  }
+});
+
+/**
+ * GET /api/history/:id - 任务详情
+ */
+router.get('/history/:id', (req, res) => {
+  try {
+    const task = getTaskById(parseInt(req.params.id, 10));
+    if (!task) return res.status(404).json({ success: false, message: '任务不存在' });
+    res.json({ success: true, data: task });
+  } catch (error) {
+    console.error('History Detail Error:', error);
+    res.status(500).json({ success: false, message: '获取详情失败', error: error.message });
+  }
+});
+
+/**
+ * DELETE /api/history/:id - 删除历史记录
+ */
+router.delete('/history/:id', (req, res) => {
+  try {
+    deleteTask(parseInt(req.params.id, 10));
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete History Error:', error);
+    res.status(500).json({ success: false, message: '删除失败', error: error.message });
+  }
+});
+
+/**
+ * POST /api/restore - 还原脱敏文件（仅可逆格式）
+ */
+router.post('/restore', upload.fields([
+  { name: 'redactedFile', maxCount: 1 },
+  { name: 'mapFile', maxCount: 1 },
+]), async (req, res) => {
+  try {
+    const redactedFile = req.files?.redactedFile?.[0];
+    const mapFile = req.files?.mapFile?.[0];
+    if (!redactedFile || !mapFile) {
+      return res.status(400).json({ success: false, message: '请上传脱敏文件和 map.json' });
+    }
+
+    const ext = path.extname(redactedFile.originalname).toLowerCase();
+    if (!['.txt', '.md', '.csv', '.docx', '.xlsx'].includes(ext)) {
+      await fs.unlink(redactedFile.path).catch(() => {});
+      await fs.unlink(mapFile.path).catch(() => {});
+      return res.status(400).json({ success: false, message: '仅支持 txt/md/csv/docx/xlsx 还原' });
+    }
+
+    const { resolveLegalDesensBin } = await import('./services/cliResolver.js');
+    const bin = resolveLegalDesensBin();
+
+    const restoreDir = path.join(uploadsDir, 'restore');
+    if (!existsSync(restoreDir)) mkdirSync(restoreDir, { recursive: true });
+    const outPath = path.join(restoreDir, `restored-${Date.now()}${ext}`);
+
+    const args = [
+      'restore', redactedFile.path,
+      '--map', mapFile.path,
+      '--out', outPath,
+    ];
+
+    try {
+      await execFileAsync(bin, args, { timeout: 60000 });
+    } catch (cliErr) {
+      await fs.unlink(redactedFile.path).catch(() => {});
+      await fs.unlink(mapFile.path).catch(() => {});
+      return res.status(409).json({ success: false, message: '还原失败（文件不匹配或格式错误）', error: cliErr.message });
+    }
+
+    // 清理上传临时文件
+    await fs.unlink(redactedFile.path).catch(() => {});
+    await fs.unlink(mapFile.path).catch(() => {});
+
+    const downloadName = redactedFile.originalname.replace(/(\.[^.]+)?$/, '.restored$1');
+    res.download(outPath, downloadName);
+  } catch (error) {
+    console.error('Restore Error:', error);
+    res.status(500).json({ success: false, message: '还原失败', error: error.message });
+  }
+});
+
+/**
+ * GET /api/rules - 获取所有规则
+ */
+router.get('/rules', async (req, res) => {
+  try {
+    // 系统规则来自 legal-desens paths --json → rules.json（只读）
+    let systemRules = [];
+    try {
+      const rulesPath = getRulesPath();
+      const rulesRaw = await fs.readFile(rulesPath, 'utf-8');
+      const parsed = JSON.parse(rulesRaw);
+      systemRules = (Array.isArray(parsed) ? parsed : []).map(r => ({
+        id: r.id, name: r.name, category: 'system',
+        regex: r.pattern, token_prefix: r.label_prefix,
+        description: r.name, is_active: r.enabled !== false, sample: '',
+      }));
+    } catch {}
+
+    const customRules = getAllRules();
+    res.json({ success: true, data: { system: systemRules, custom: customRules } });
+  } catch (error) {
+    console.error('Rules Error:', error);
+    res.status(500).json({ success: false, message: '获取规则失败', error: error.message });
+  }
+});
+
+/**
+ * POST /api/rules - 新增自定义规则
+ */
+router.post('/rules', (req, res) => {
+  try {
+    const { name, category, regex, token_prefix, description, sample } = req.body;
+    if (!name) return res.status(400).json({ success: false, message: '规则名称不能为空' });
+
+    // 正则合法性校验
+    if (regex) {
+      try { new RegExp(regex); } catch { return res.status(400).json({ success: false, message: '正则表达式不合法' }); }
+    }
+
+    const rule = createRule({ name, category, regex, token_prefix, description, sample });
+    res.json({ success: true, data: rule });
+  } catch (error) {
+    console.error('Create Rule Error:', error);
+    res.status(500).json({ success: false, message: '创建规则失败', error: error.message });
+  }
+});
+
+/**
+ * PATCH /api/rules/:id - 更新规则（启停等）
+ */
+router.patch('/rules/:id', (req, res) => {
+  try {
+    updateRule(parseInt(req.params.id, 10), req.body);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Update Rule Error:', error);
+    res.status(500).json({ success: false, message: '更新规则失败', error: error.message });
+  }
+});
+
+/**
+ * DELETE /api/rules/:id - 删除规则
+ */
+router.delete('/rules/:id', (req, res) => {
+  try {
+    deleteRule(parseInt(req.params.id, 10));
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete Rule Error:', error);
+    res.status(500).json({ success: false, message: '删除规则失败', error: error.message });
+  }
+});
+
+/**
+ * POST /api/rules/test - 测试正则样例匹配
+ */
+router.post('/rules/test', (req, res) => {
+  try {
+    const { regex, sample } = req.body;
+    if (!regex) return res.status(400).json({ success: false, message: '缺少正则' });
+    if (!sample) return res.json({ success: true, data: { matches: [] } });
+
+    const re = new RegExp(regex, 'g');
+    const matches = [];
+    let m;
+    while ((m = re.exec(sample)) !== null) {
+      matches.push({ text: m[0], index: m.index });
+      if (!m[0]) break; // 防止零宽匹配死循环
+    }
+    res.json({ success: true, data: { matches } });
+  } catch (error) {
+    res.status(400).json({ success: false, message: '正则不合法或匹配出错', error: error.message });
+  }
+});
+
+// #endregion
+
 export default router;
