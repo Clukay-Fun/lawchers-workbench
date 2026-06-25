@@ -32,6 +32,11 @@ fi
 # 设置 NODE_ENV=production（禁用 CORS 开发模式）
 export NODE_ENV=production
 
+# P1: 项目内模型缓存优先 — 若 assets/models/ 有模型，让引擎实际使用它
+if [ -d "$REPO_ROOT/assets/models/roberta-crf-ner" ] && [ -f "$REPO_ROOT/assets/models/roberta-crf-ner/config.json" ]; then
+  export LEGAL_DESENS_MODEL_DIR="$REPO_ROOT/assets/models/roberta-crf-ner"
+fi
+
 echo "端口: $PORT"
 echo "地址: http://localhost:$PORT"
 echo ""

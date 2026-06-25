@@ -8,6 +8,12 @@ $port = if ($env:APP_PORT) { $env:APP_PORT } else { 3000 }
 $env:PORT = $port
 $env:NODE_ENV = "production"
 
+# P1: 项目内模型缓存优先
+$ModelDir = Join-Path $RepoRoot "assets" "models" "roberta-crf-ner"
+if ((Test-Path $ModelDir) -and (Test-Path (Join-Path $ModelDir "config.json"))) {
+    $env:LEGAL_DESENS_MODEL_DIR = $ModelDir
+}
+
 Write-Host "=========================================="
 Write-Host "  LAWCHERS 启动中... (Windows best-effort)"
 Write-Host "=========================================="
