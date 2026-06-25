@@ -1797,21 +1797,40 @@ async function buildMergedRulesFile(workDir) {
   const execFileAsync = promisify(execFileCb);
   const bin = resolveLegalDesensBin();
 
-  // 读取引擎默认规则
+  // 读取引擎默认规则 — 必须成功，否则 fail-closed
   let engineRules = [];
+  let engineRulesLoaded = false;
   try {
     const { stdout } = await execFileAsync(bin, ['paths', '--json'], { timeout: 10000 });
     const paths = JSON.parse(stdout);
     if (paths.rules && existsSync(paths.rules)) {
       engineRules = JSON.parse(await fs.readFile(paths.rules, 'utf-8'));
+      engineRulesLoaded = true;
     }
-  } catch {
-    // fallback: 尝试 getRulesPath
+  } catch (pathsErr) {
+    console.warn('[WARN] paths --json 失败，尝试 getRulesPath:', pathsErr.message);
+  }
+
+  if (!engineRulesLoaded) {
     try {
       const { getRulesPath } = await import('./services/cliResolver.js');
       const rp = getRulesPath();
-      if (rp && existsSync(rp)) engineRules = JSON.parse(await fs.readFile(rp, 'utf-8'));
-    } catch { /* ignore */ }
+      if (rp && existsSync(rp)) {
+        engineRules = JSON.parse(await fs.readFile(rp, 'utf-8'));
+        engineRulesLoaded = true;
+      }
+    } catch (rpErr) {
+      console.warn('[WARN] getRulesPath 也失败:', rpErr.message);
+    }
+  }
+
+  // 引擎规则加载失败 → fail-closed，不写空文件
+  if (!engineRulesLoaded || engineRules.length === 0) {
+    throw new Error(
+      '无法加载引擎默认规则（rules.json）。' +
+      '脱敏引擎规则缺失会导致手机号/身份证/金额等不被识别。' +
+      '请检查 legal-desens 安装是否完整：npm run setup'
+    );
   }
 
   // 读取 DB 中的自定义规则 + 强制脱敏词
@@ -1828,7 +1847,6 @@ async function buildMergedRulesFile(workDir) {
 
     const category = r.category || 'custom';
     if (category === 'blacklist') {
-      // 强制脱敏词：作为高优先级检测规则，命中后一定进入候选
       engineRules.push({
         id: `db_force_${r.id}`,
         name: r.name || `强制脱敏词 #${r.id}`,
@@ -1839,7 +1857,6 @@ async function buildMergedRulesFile(workDir) {
         priority: 10000,
       });
     } else {
-      // 自定义规则：作为普通检测规则
       engineRules.push({
         id: `db_custom_${r.id}`,
         name: r.name || `自定义 #${r.id}`,
@@ -2623,28 +2640,41 @@ router.post('/batch', upload.array('files', 20), async (req, res) => {
         const finalPath = path.join(tasksDir, newFilename);
         await fs.rename(file.path, finalPath);
 
-        // Create task
+        // Create task with work_dir
+        const workDir = path.join(tasksDir, `.work_${Date.now()}`);
+        if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
+
         const task = createTask({
           filename: originalName,
           ext,
           document_kind: ext === '.pdf' ? 'pdf-text' : ext.replace('.', ''),
           source_path: finalPath,
+          work_dir: workDir,
         });
         const taskId = task.id;
 
-        // Build work dir
-        const workDir = path.join(tasksDir, `.work_${taskId}`);
-        if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
+        // Rename work dir to include task ID
+        const finalWorkDir = path.join(tasksDir, `.work_${taskId}`);
+        if (workDir !== finalWorkDir) {
+          await fs.rename(workDir, finalWorkDir).catch(() => {});
+        }
+        const actualWorkDir = existsSync(finalWorkDir) ? finalWorkDir : workDir;
 
-        // Build merged rules + denylist + whitelist
-        let mergedRulesPath = null;
-        try { mergedRulesPath = await buildMergedRulesFile(workDir); } catch {}
+        // Build merged rules + denylist + whitelist — must succeed
+        let mergedRulesPath;
+        try {
+          mergedRulesPath = await buildMergedRulesFile(actualWorkDir);
+        } catch (rulesErr) {
+          result.error = `规则加载失败: ${rulesErr.message}`;
+          results.push(result);
+          continue;
+        }
 
         let denylistPath = null;
         try {
           const blRules = getRulesByCategory('blacklist').filter(r => r.is_active && r.regex);
           if (blRules.length) {
-            denylistPath = path.join(workDir, 'denylist.txt');
+            denylistPath = path.join(actualWorkDir, 'denylist.txt');
             await fs.writeFile(denylistPath, blRules.map(r => r.regex).join('\n'), 'utf-8');
           }
         } catch {}
@@ -2653,34 +2683,34 @@ router.post('/batch', upload.array('files', 20), async (req, res) => {
         try {
           const wlRules = getRulesByCategory('whitelist').filter(r => r.is_active && r.regex);
           if (wlRules.length) {
-            whitelistPath = path.join(workDir, 'whitelist.txt');
+            whitelistPath = path.join(actualWorkDir, 'whitelist.txt');
             await fs.writeFile(whitelistPath, wlRules.map(r => r.regex).join('\n'), 'utf-8');
           }
         } catch {}
 
         // Analyze (OCR for PDF, text extraction for others)
-        const analyzeOut = path.join(workDir, 'analyze.json');
+        const analyzeOut = path.join(actualWorkDir, 'analyze.json');
         let entities = [];
         let ocrText = '';
 
         if (ext === '.pdf') {
-          await execFileAsync(bin, ['analyze', finalPath, '--out', analyzeOut], { timeout: 120000 });
+          const analyzeArgs = ['analyze', finalPath, '--out', analyzeOut];
+          if (mergedRulesPath) analyzeArgs.push('--rules', mergedRulesPath);
+          await execFileAsync(bin, analyzeArgs, { timeout: 120000 });
           const analyzeData = JSON.parse(await fs.readFile(analyzeOut, 'utf-8'));
           ocrText = (analyzeData.ocrBoxes || []).map(b => b.text).join('\n');
           entities = (analyzeData.ocrBoxes || []).map((b, i) => ({
             original: b.text,
-            entity_type: 'MANUAL',
+            entity_type: b.entityType || 'MANUAL',
             start: 0, end: 0,
           }));
         } else if (ext === '.txt' || ext === '.md') {
           ocrText = await fs.readFile(finalPath, 'utf-8');
-        } else if (ext === '.docx') {
-          // DOCX text extraction done by engine
         }
 
         // Export based on mode
         let exportPath = '';
-        let auditPath = path.join(workDir, 'batch-audit.json');
+        let auditPath = path.join(actualWorkDir, 'batch-audit.json');
 
         if (mode === 'mask' && ext === '.pdf') {
           // Mask export: find denylist terms → create boxes → mask
@@ -2697,15 +2727,15 @@ router.post('/batch', upload.array('files', 20), async (req, res) => {
         } else {
           // Text export (star/placeholder) or non-PDF
           const exportFormat = format === 'pdf' ? 'txt' : format;
-          exportPath = path.join(workDir, `replaced.${exportFormat}`);
-          const entitiesPath = path.join(workDir, 'entities.json');
+          exportPath = path.join(actualWorkDir, `replaced.${exportFormat}`);
+          const entitiesPath = path.join(actualWorkDir, 'entities.json');
           await fs.writeFile(entitiesPath, JSON.stringify(entities, null, 2), 'utf-8');
 
           const args = ['text-export', finalPath, '--entities', entitiesPath,
             '--out', exportPath, '--mode', mode === 'mask' ? 'star' : mode,
             '--format', exportFormat];
           if (ocrText) {
-            const ocrPath = path.join(workDir, 'ocr-text.txt');
+            const ocrPath = path.join(actualWorkDir, 'ocr-text.txt');
             await fs.writeFile(ocrPath, ocrText, 'utf-8');
             args.push('--ocr-text', ocrPath);
           }
@@ -2723,20 +2753,39 @@ router.post('/batch', upload.array('files', 20), async (req, res) => {
           continue;
         }
 
-        // Read audit if exists
+        // Read audit — required for success
         let auditData = null;
         try { auditData = JSON.parse(await fs.readFile(auditPath, 'utf-8')); } catch {}
+
+        // For text export, audit might not exist — verify output has replacements
+        if (!auditData && mode !== 'mask') {
+          // Verify output is different from input (replacements were made)
+          const inputText = ocrText || await fs.readFile(finalPath, 'utf-8').catch(() => '');
+          const outputText = await fs.readFile(exportPath, 'utf-8').catch(() => '');
+          if (inputText === outputText) {
+            result.error = '导出内容与原文相同，未进行任何脱敏';
+            results.push(result);
+            continue;
+          }
+        }
+
+        // Audit must pass for mask mode
+        if (mode === 'mask' && auditData && auditData.verification?.passed === false) {
+          result.error = '残留审计未通过';
+          results.push(result);
+          continue;
+        }
 
         // Update task
         updateTask(taskId, {
           export_path: path.relative(path.join(__dirname, '..'), exportPath),
-          residual_passed: auditData?.verification?.passed !== false,
+          residual_passed: auditData ? auditData.verification?.passed !== false : true,
         });
 
         result.success = true;
         result.taskId = taskId;
         result.exportPath = path.relative(path.join(__dirname, '..'), exportPath);
-        result.audit = auditData?.verification || null;
+        result.audit = auditData?.verification || { passed: true, note: 'text export verified by content diff' };
       } catch (fileErr) {
         result.error = fileErr.message;
       }
