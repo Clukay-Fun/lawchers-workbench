@@ -330,7 +330,9 @@ export default function VisualMaskPage({ settings }) {
         pageWidth: analyzeData.manifest?.pages?.[b.page - 1]?.pageWidth || 595,
         pageHeight: analyzeData.manifest?.pages?.[b.page - 1]?.pageHeight || 842,
         source: 'ocr',
-        entityType: null,
+        entityType: b.entityType || b.entity_type || null,
+        text: b.text || '',
+        confidence: b.confidence ?? null,
       }));
 
       // Convert seal boxes to normalized boxes
@@ -408,6 +410,11 @@ export default function VisualMaskPage({ settings }) {
         entity_type: b.entityType || 'MANUAL',
         start: 0, end: 0, // Will be resolved by engine from OCR text
       })).filter(e => e.original);
+
+      if (entities.length === 0) {
+        showToast('当前遮蔽框没有可替换文本，请先使用 OCR 识别框或切换遮蔽模式导出 PDF');
+        return;
+      }
 
       const response = await textExportTask(task.taskId, entities, mode, exportFormat);
       const blob = await response.blob();
