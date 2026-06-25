@@ -413,7 +413,9 @@ export default function ReviewPanel({ materialId, materialName, rulesConfig }) {
             </div>
 
             <div className="diag-section-title">预处理参数</div>
-            {diagInfo.rulesConfig ? (
+            {diagInfo.legacyAudit ? (
+              <div className="diag-date-off">⚠ 旧审计记录无法精确匹配此材料，预处理参数不展示（可能属于其他材料）</div>
+            ) : diagInfo.rulesConfig ? (
               <div className="diag-row">
                 <span className="diag-label">rulesConfig</span>
                 <span className="diag-value">
@@ -426,14 +428,11 @@ export default function ReviewPanel({ materialId, materialName, rulesConfig }) {
             ) : (
               <div className="diag-row">
                 <span className="diag-label">rulesConfig</span>
-                <span className="diag-value">未知（旧材料）</span>
+                <span className="diag-value">未知</span>
               </div>
             )}
-            {dateOff && (
+            {!diagInfo.legacyAudit && dateOff && (
               <div className="diag-date-off">DATE/TIME preserved（日期关闭，日期候选被过滤）</div>
-            )}
-            {diagInfo.legacyAudit && (
-              <div className="diag-date-off">⚠ 旧审计记录无法精确匹配此材料，诊断信息可能不准确</div>
             )}
             <div className="diag-row">
               <span className="diag-label">regex-only</span>
