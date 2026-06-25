@@ -2325,6 +2325,28 @@ router.post('/tasks/:id/mask-export', async (req, res) => {
       '--audit', auditPath,
     ];
 
+    // Add merged rules file (system + custom + blacklist)
+    let mergedRulesPath = null;
+    try {
+      mergedRulesPath = await buildMergedRulesFile(workDir);
+      if (mergedRulesPath) args.push('--rules', mergedRulesPath);
+    } catch (mergeErr) {
+      console.warn('[WARN] 构建合并规则文件失败，使用引擎默认:', mergeErr.message);
+    }
+
+    // Add denylist (forced redaction words)
+    let denylistPath = null;
+    try {
+      const blacklistRules = getRulesByCategory('blacklist').filter(r => r.is_active && r.regex);
+      if (blacklistRules.length > 0) {
+        denylistPath = path.join(workDir, 'denylist.txt');
+        await fs.writeFile(denylistPath, blacklistRules.map(r => r.regex).join('\n'), 'utf-8');
+        args.push('--denylist', denylistPath);
+      }
+    } catch (denyErr) {
+      console.warn('[WARN] 构建 denylist 失败:', denyErr.message);
+    }
+
     try {
       await execFileAsync(bin, args, {
         timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
@@ -2486,6 +2508,39 @@ router.post('/tasks/:id/text-export', async (req, res) => {
       }
     }
 
+    // Add merged rules file
+    let mergedRulesPath = null;
+    try {
+      mergedRulesPath = await buildMergedRulesFile(workDir);
+      if (mergedRulesPath) args.push('--rules', mergedRulesPath);
+    } catch (mergeErr) {
+      console.warn('[WARN] 构建合并规则文件失败:', mergeErr.message);
+    }
+
+    // Add denylist (forced redaction words)
+    try {
+      const blacklistRules = getRulesByCategory('blacklist').filter(r => r.is_active && r.regex);
+      if (blacklistRules.length > 0) {
+        const denylistPath = path.join(workDir, 'denylist.txt');
+        await fs.writeFile(denylistPath, blacklistRules.map(r => r.regex).join('\n'), 'utf-8');
+        args.push('--denylist', denylistPath);
+      }
+    } catch (denyErr) {
+      console.warn('[WARN] 构建 denylist 失败:', denyErr.message);
+    }
+
+    // Add whitelist (never-redact words)
+    try {
+      const whitelistRules = getRulesByCategory('whitelist').filter(r => r.is_active && r.regex);
+      if (whitelistRules.length > 0) {
+        const whitelistPath = path.join(workDir, 'whitelist.txt');
+        await fs.writeFile(whitelistPath, whitelistRules.map(r => r.regex).join('\n'), 'utf-8');
+        args.push('--whitelist', whitelistPath);
+      }
+    } catch (wlErr) {
+      console.warn('[WARN] 构建 whitelist 失败:', wlErr.message);
+    }
+
     try {
       await execFileAsync(bin, args, {
         timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
@@ -2509,6 +2564,53 @@ router.post('/tasks/:id/text-export', async (req, res) => {
   } catch (error) {
     console.error('Text Export Error:', error);
     res.status(500).json({ success: false, message: '文本替换导出失败', error: error.message });
+  }
+});
+
+/**
+ * POST /api/batch - 批量上传文件并创建任务
+ */
+router.post('/batch', upload.array('files', 20), async (req, res) => {
+  try {
+    const files = req.files;
+    if (!files || files.length === 0) {
+      return res.status(400).json({ success: false, message: '请上传文件' });
+    }
+
+    const results = [];
+    for (const file of files) {
+      const originalName = Buffer.from(file.originalname, 'latin1').toString('utf8');
+      const ext = path.extname(originalName).toLowerCase();
+
+      if (!['.docx', '.pdf', '.txt', '.md'].includes(ext)) {
+        await fs.unlink(file.path).catch(() => {});
+        results.push({ filename: originalName, success: false, error: '不支持的文件格式' });
+        continue;
+      }
+
+      // Move to tasks dir
+      const tasksDir = path.join(uploadsDir, 'tasks');
+      if (!existsSync(tasksDir)) mkdirSync(tasksDir, { recursive: true });
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+      const newFilename = `${uniqueSuffix}-${originalName}`;
+      const finalPath = path.join(tasksDir, newFilename);
+      await fs.rename(file.path, finalPath);
+
+      // Create task
+      const task = createTask({
+        filename: originalName,
+        ext,
+        document_kind: ext === '.pdf' ? 'pdf-text' : ext.replace('.', ''),
+        source_path: finalPath,
+      });
+
+      results.push({ taskId: task.id, filename: originalName, success: true });
+    }
+
+    res.json({ success: true, data: results });
+  } catch (error) {
+    console.error('Batch Upload Error:', error);
+    res.status(500).json({ success: false, message: '批量上传失败', error: error.message });
   }
 });
 

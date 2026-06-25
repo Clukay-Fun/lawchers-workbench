@@ -184,6 +184,22 @@ export async function textExportTask(taskId, entities, mode, format) {
   return response;
 }
 
+/** 批量上传文件 */
+export async function batchUpload(files) {
+  const formData = new FormData();
+  for (const file of files) {
+    formData.append('files', file);
+  }
+  const response = await fetch(`${API_BASE}/batch`, { method: 'POST', body: formData });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.message || '批量上传失败');
+  }
+  const result = await response.json();
+  if (!result.success) throw new Error(result.message || '批量上传异常');
+  return result.data;
+}
+
 // #endregion
 
 // #region 诊断 API
