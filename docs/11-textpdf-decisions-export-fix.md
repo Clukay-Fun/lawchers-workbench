@@ -1,5 +1,7 @@
 # 开发计划 11 · 文本层 PDF 决策导出修正与收口
 
+> ⏸️ **暂停（2026-06-25）**：PDF 脱敏 PDF 输出由 **docs/12 遮蔽模式**接管（文本 PDF 用 PyMuPDF redaction 真删+黑块，更统一覆盖扫描/盖章/签字页）。本计划"文本 PDF 按决策替换导出 PDF"不再单独做；星号/占位对 PDF 先只导出 TXT/MD/DOCX。保留此文件作历史记录。
+
 > 核心定位：修正 text-layer PDF decisions export —— **精确删除、完整掩码写回、强审计、工作台开放 pdf-text**。
 > 接续/修正 **docs/03 切片 2**（曾完成"原文移除 + 残留通过"初步验证，但**漏验 replacement 完整写回**，不视为完整完成）。
 > **前置依赖：docs/10（工具模式改造）已落地**——本计划针对**新工具流** `/api/tasks`、`/api/tasks/:id/export`、`DesensitizePage`，**不再给旧 `/materials/:id/export` 复核状态机续命**。
