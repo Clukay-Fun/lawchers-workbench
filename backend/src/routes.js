@@ -1964,14 +1964,15 @@ router.post('/tasks', upload.single('file'), async (req, res) => {
       console.warn('[WARN] 构建合并规则文件失败，使用引擎默认:', mergeErr.message);
     }
 
-    const args = [
+    const args = [];
+    if (mergedRulesPath) args.push('--rules', mergedRulesPath);
+    args.push(
       'prepare', finalPath,
       '--level', 'strict',
       '--preview-md', tempPreview,
       '--manifest', tempManifest,
       '--map', tempSourceMap,
-    ];
-    if (mergedRulesPath) args.push('--rules', mergedRulesPath);
+    );
 
     const { getIsNerEnabled } = await import('./services/redactService.js');
     if (!getIsNerEnabled()) args.push('--regex-only');
@@ -2091,7 +2092,9 @@ router.post('/tasks/:id/export', async (req, res) => {
     }
 
     // 调用 legal-desens redact --decisions
-    const args = [
+    const args = [];
+    if (mergedRulesPath) args.push('--rules', mergedRulesPath);
+    args.push(
       'redact', filePath,
       '--level', 'strict',
       '--decisions', decisionsPath,
@@ -2099,8 +2102,7 @@ router.post('/tasks/:id/export', async (req, res) => {
       '--out', exportPath,
       '--map', mapPath,
       '--audit', auditPath,
-    ];
-    if (mergedRulesPath) args.push('--rules', mergedRulesPath);
+    );
 
     const { getIsNerEnabled } = await import('./services/redactService.js');
     if (!getIsNerEnabled()) args.push('--regex-only');

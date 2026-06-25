@@ -49,6 +49,7 @@ export default function DownloadPage() {
     }
   };
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps, react-hooks/set-state-in-effect
   useEffect(() => { load(); }, []);
 
   const handleDownload = async (task) => {
