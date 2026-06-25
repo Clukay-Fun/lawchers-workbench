@@ -5,8 +5,8 @@ import { Button } from '@/components/ui/button';
 const TABS = [
   { key: 'system', label: '系统规则' },
   { key: 'custom', label: '自定义正则' },
-  { key: 'blacklist', label: '黑名单（一定脱）' },
-  { key: 'whitelist', label: '白名单（一定不脱）' },
+  { key: 'blacklist', label: '强制脱敏词' },
+  { key: 'whitelist', label: '保留词库' },
 ];
 
 export default function RulesPage() {
@@ -105,10 +105,10 @@ export default function RulesPage() {
               </>
             )}
             {tab === 'blacklist' && (
-              <label><span>关键词（必脱）</span><input value={form.regex} onChange={(e) => setForm({ ...form, regex: e.target.value })} placeholder="例: 某公司名称" /></label>
+              <label><span>强制脱敏词</span><input value={form.regex} onChange={(e) => setForm({ ...form, regex: e.target.value })} placeholder="例: 某公司名称" /></label>
             )}
             {tab === 'whitelist' && (
-              <label><span>关键词（一定不脱）</span><input value={form.regex} onChange={(e) => setForm({ ...form, regex: e.target.value })} placeholder="例: 泛指名称" /></label>
+              <label><span>保留词</span><input value={form.regex} onChange={(e) => setForm({ ...form, regex: e.target.value })} placeholder="例: 泛指名称" /></label>
             )}
             <label><span>说明</span><input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
             {tab === 'custom' && (
