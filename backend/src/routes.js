@@ -2238,9 +2238,25 @@ router.post('/tasks/:id/analyze', async (req, res) => {
     if (mergedRulesPath) analyzeArgs.push('--rules', mergedRulesPath);
     analyzeArgs.push('analyze', sourcePath, '--out', analyzeOut);
 
-    await execFileAsync(bin, analyzeArgs, {
-      timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
-    });
+    try {
+      await execFileAsync(bin, analyzeArgs, {
+        timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
+      });
+    } catch (cliErr) {
+      return res.status(500).json({
+        success: false,
+        message: 'OCR 分析失败',
+        error: describeCliFailure(cliErr, 'OCR 引擎执行失败'),
+      });
+    }
+
+    if (!existsSync(analyzeOut)) {
+      return res.status(500).json({
+        success: false,
+        message: 'OCR 分析失败',
+        error: 'OCR 引擎没有生成分析结果',
+      });
+    }
 
     const analyzeData = JSON.parse(await fs.readFile(analyzeOut, 'utf-8'));
 

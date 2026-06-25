@@ -4,6 +4,12 @@
 
 const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 
+async function readApiError(response, fallback) {
+  const err = await response.json().catch(() => ({}));
+  const detail = err.error || err.detail;
+  return detail ? `${err.message || fallback}：${detail}` : (err.message || fallback);
+}
+
 // #region 工具模式 API
 
 /** 上传文件 + 自动 prepare */
@@ -12,7 +18,7 @@ export async function createTask(file, rulesConfig = {}) {
   formData.append('file', file);
   formData.append('rulesConfig', JSON.stringify(rulesConfig));
   const response = await fetch(`${API_BASE}/tasks`, { method: 'POST', body: formData });
-  if (!response.ok) throw new Error('文档处理失败');
+  if (!response.ok) throw new Error(await readApiError(response, '文档处理失败'));
   const result = await response.json();
   if (!result.success) throw new Error(result.message || '处理异常');
   return result.data;
@@ -26,8 +32,7 @@ export async function exportTask(taskId, payload) {
     body: JSON.stringify(payload),
   });
   if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err.message || '导出失败');
+    throw new Error(await readApiError(response, '导出失败'));
   }
   return response;
 }
@@ -134,8 +139,7 @@ export async function testRegex(regex, sample) {
 export async function analyzeTask(taskId) {
   const response = await fetch(`${API_BASE}/tasks/${taskId}/analyze`, { method: 'POST' });
   if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err.message || 'OCR 分析失败');
+    throw new Error(await readApiError(response, 'OCR 分析失败'));
   }
   const result = await response.json();
   if (!result.success) throw new Error(result.message || '分析异常');
