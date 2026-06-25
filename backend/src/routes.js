@@ -2260,6 +2260,48 @@ router.post('/tasks/:id/analyze', async (req, res) => {
 
     const analyzeData = JSON.parse(await fs.readFile(analyzeOut, 'utf-8'));
 
+    // ── Run rule-based text entity detection on OCR text ──
+    // This produces precise start/end entities for text mode (star/placeholder)
+    let textEntities = [];
+    try {
+      const ocrText = (analyzeData.ocrBoxes || []).map(b => b.text || '').join('\n');
+      if (ocrText && mergedRulesPath) {
+        const rulesRaw = JSON.parse(await fs.readFile(mergedRulesPath, 'utf-8'));
+        for (const rule of rulesRaw) {
+          if (!rule.enabled || !rule.pattern) continue;
+          try {
+            const re = new RegExp(rule.pattern, 'g');
+            let match;
+            while ((match = re.exec(ocrText)) !== null) {
+              if (match[0].length >= 2) {
+                textEntities.push({
+                  original: match[0],
+                  entity_type: rule.entity_type || 'CUSTOM',
+                  start: match.index,
+                  end: match.index + match[0].length,
+                  rule_id: rule.id,
+                });
+              }
+              if (!match[0]) break; // prevent infinite loop on zero-width match
+            }
+          } catch { /* skip invalid regex */ }
+        }
+        // Deduplicate overlapping entities (keep longer match)
+        textEntities.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
+        const deduped = [];
+        let lastEnd = -1;
+        for (const ent of textEntities) {
+          if (ent.start >= lastEnd) {
+            deduped.push(ent);
+            lastEnd = ent.end;
+          }
+        }
+        textEntities = deduped;
+      }
+    } catch (detectErr) {
+      console.warn('[WARN] Text entity detection failed (non-fatal):', detectErr.message);
+    }
+
     // Run seal detection (best-effort, don't fail if it errors)
     let sealBoxes = [];
     try {
@@ -2283,6 +2325,7 @@ router.post('/tasks/:id/analyze', async (req, res) => {
       success: true,
       data: {
         ocrBoxes: analyzeData.ocrBoxes || [],
+        textEntities,
         sealBoxes,
         manifest: analyzeData.manifest || {},
       },
@@ -2547,13 +2590,13 @@ router.post('/tasks/:id/text-export', async (req, res) => {
     const exportPath = path.join(workDir, `replaced${ext}`);
 
     const args = [];
-    // Add merged rules file
+    // Add merged rules file — must succeed (fail-closed)
     let mergedRulesPath = null;
     try {
       mergedRulesPath = await buildMergedRulesFile(workDir);
       if (mergedRulesPath) args.push('--rules', mergedRulesPath);
     } catch (mergeErr) {
-      console.warn('[WARN] 构建合并规则文件失败:', mergeErr.message);
+      return res.status(500).json({ success: false, message: `规则加载失败，导出阻断: ${mergeErr.message}` });
     }
 
     args.push(

@@ -263,8 +263,8 @@ export default function VisualMaskPage({ settings: _settings }) {
 
   // boxes = redaction candidates for mask mode (entityType + seal + manual)
   const [boxes, setBoxes] = useState([]);
-  // ocrEntities = all OCR-detected entities for text mode (independent of boxes)
-  const [ocrEntities, setOcrEntities] = useState([]);
+  // textEntities = precise rule-based entities for text mode (from backend analyze)
+  const [textEntities, setTextEntities] = useState([]);
   const [ocrText, setOcrText] = useState('');
   const [pageImages, setPageImages] = useState([]);
   const [currentPage, setCurrentPage] = useState(1);
@@ -301,7 +301,7 @@ export default function VisualMaskPage({ settings: _settings }) {
 
   const handleFile = async (file) => {
     if (!file) return;
-    setLoading(true); setError(null); setBoxes([]); setOcrEntities([]); setOcrText(''); setPageImages([]); setUploadPercent(0); setProcessingStep('上传中…');
+    setLoading(true); setError(null); setBoxes([]); setTextEntities([]); setOcrText(''); setPageImages([]); setUploadPercent(0); setProcessingStep('上传中…');
     try {
       const taskData = await uploadWithProgress(file, _settings?.rulesConfig, setUploadPercent);
       setTask(taskData); setUploadPercent(100);
@@ -312,25 +312,15 @@ export default function VisualMaskPage({ settings: _settings }) {
       setProcessingStep('正在规则匹配…');
       const allOcr = (analyzeData.ocrBoxes || []);
 
-      // ── #3: OCR entities for text mode (all with entityType) ──
-      // Compute real start/end positions in the concatenated OCR text
-      let offset = 0;
-      const entities = [];
-      for (const b of allOcr) {
-        const t = b.entityType || b.entity_type;
-        if (t) {
-          entities.push({
-            original: b.text || '',
-            entity_type: t,
-            start: offset,
-            end: offset + (b.text || '').length,
-            confidence: b.confidence ?? null,
-          });
-        }
-        offset += (b.text || '').length + 1; // +1 for \n join
-      }
+      // ── Text entities from backend (precise rule-based, not line-level OCR) ──
+      const backendTextEntities = (analyzeData.textEntities || []).map(e => ({
+        original: e.original || '',
+        entity_type: e.entity_type || 'CUSTOM',
+        start: e.start ?? 0,
+        end: e.end ?? 0,
+      }));
       const fullText = allOcr.map(b => b.text || '').join('\n');
-      setOcrEntities(entities);
+      setTextEntities(backendTextEntities);
       setOcrText(fullText);
 
       // ── #3: Redaction boxes = only sensitive types + seal + manual ──
@@ -361,7 +351,7 @@ export default function VisualMaskPage({ settings: _settings }) {
       setCurrentPage(1);
 
       setProcessingStep('生成预览…');
-      showToast(`识别到 ${candidateBoxes.length} 个敏感区域、${entities.length} 个文本实体${sealBoxes.length > 0 ? `、${sealBoxes.length} 个公章候选` : ''}`);
+      showToast(`识别到 ${candidateBoxes.length} 个敏感区域、${backendTextEntities.length} 个文本实体${sealBoxes.length > 0 ? `、${sealBoxes.length} 个公章候选` : ''}`);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -394,8 +384,8 @@ export default function VisualMaskPage({ settings: _settings }) {
         const response = await maskExportTask(task.taskId, boxes);
         downloadBlob(await response.blob(), `${baseName}_脱敏${ext}`);
       } else {
-        // Text mode (star/placeholder) or mask→text: use OCR entities
-        const entities = ocrEntities.length > 0 ? ocrEntities : boxes.filter(b => b.text).map(b => ({ original: b.text, entity_type: b.entityType || 'MANUAL', start: 0, end: 0 }));
+        // Text mode (star/placeholder) or mask→text: use textEntities from backend
+        const entities = textEntities.length > 0 ? textEntities : boxes.filter(b => b.text).map(b => ({ original: b.text, entity_type: b.entityType || 'MANUAL', start: 0, end: 0 }));
         if (entities.length === 0) { showToast('没有检测到敏感实体'); return; }
         const response = await textExportTask(task.taskId, entities, mode === 'mask' ? 'star' : mode, exportFormat);
         downloadBlob(await response.blob(), `${baseName}_脱敏.${exportFormat}`);
@@ -451,7 +441,7 @@ export default function VisualMaskPage({ settings: _settings }) {
           <span className="mask-filename">{task?.filename}</span>
         </div>
         <div className="mask-topbar-right">
-          <ExportDropdown mode={mode} onExport={doExport} exporting={exporting} disabled={isMaskMode ? redactionCount === 0 : ocrEntities.length === 0} />
+          <ExportDropdown mode={mode} onExport={doExport} exporting={exporting} disabled={isMaskMode ? redactionCount === 0 : textEntities.length === 0} />
         </div>
       </div>
 
@@ -499,11 +489,11 @@ export default function VisualMaskPage({ settings: _settings }) {
               </div>
             </div>
             <div className="mask-doc-toolbar-right">
-              <span className="mask-box-count">{ocrEntities.length} 个敏感实体</span>
+              <span className="mask-box-count">{textEntities.length} 个敏感实体</span>
               <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>换文件</Button>
             </div>
           </div>
-          <TextDualColumn ocrText={ocrText} entities={ocrEntities} mode={mode} />
+          <TextDualColumn ocrText={ocrText} entities={textEntities} mode={mode} />
         </div>
       )}
 
