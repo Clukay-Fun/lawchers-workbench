@@ -104,7 +104,7 @@ export default function App() {
 
   const mapCaseForWorkspace = (detail) => {
     if (!detail) return null;
-    const backendOrigin = import.meta.env.VITE_BACKEND_ORIGIN || `${window.location.protocol}//${window.location.hostname}:3001`;
+    const backendOrigin = import.meta.env.VITE_BACKEND_ORIGIN || '';
     const materials = (detail.materials || []).map((material) => {
       const mapData = parseJson(material.map_json, {});
       const entities = (mapData.entities || material.entities || []).map((entity) => ({

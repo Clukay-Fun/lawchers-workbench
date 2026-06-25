@@ -8,30 +8,26 @@
 
 ---
 
-## 快速开始
+## 快速开始（macOS）
+
+### 方式一：双击安装（推荐）
+
+1. `git clone https://github.com/Clukay-Fun/lawchers-workbench.git`
+2. 双击 **安装 LAWCHERS.command**
+3. 安装完成后，双击 **启动 LAWCHERS.command**
+4. 浏览器自动打开 `http://localhost:3000`
+
+> 首次安装需下载引擎 + NER 模型，约需几分钟。
+> 若被 Gatekeeper 拦截：右键 → 打开（应用未签名）。
+
+### 方式二：命令行
 
 ```bash
 git clone https://github.com/Clukay-Fun/lawchers-workbench.git
 cd lawchers-workbench
 npm run setup     # 首次安装：引擎 + PDF/OCR + NER 模型，需几分钟
-npm run dev       # 启动前后端
+npm run dev       # 启动开发模式（前端 :5173 + 后端 :3001）
 ```
-
-首次 `npm run setup` 会：
-1. 安装 Node.js 依赖
-2. 创建 Python 虚拟环境（`.venv/`）
-3. 安装 `legal-desens` 引擎（含 PDF、OCR 支持）
-4. 下载本地 NER 模型（用于识别姓名、机构等）
-5. 初始化 SQLite 数据库
-6. 运行自检
-
-启动后在浏览器打开 `http://localhost:5173`。
-
-## 环境要求
-
-- Node.js ≥ 18
-- Python ≥ 3.9
-- macOS 或 Linux（Windows 未测试）
 
 ## 使用
 
@@ -43,11 +39,17 @@ npm run dev       # 启动前后端
    - 框选文字：手动新增脱敏。
 4. **导出**：确认后按原格式导出脱敏副本（导出前自动做残留复检，原件不被改动）。
 
-## 开发
+## 环境要求
+
+- Node.js ≥ 18
+- Python ≥ 3.9
+- macOS 或 Linux（主要支持平台）
+
+## 开发模式
 
 ```bash
-npm run dev:frontend   # 前端 Vite 开发服务器
-npm run dev:backend    # 后端 Express（http://localhost:3001）
+npm run dev:frontend   # 前端 Vite 开发服务器 (http://localhost:5173)
+npm run dev:backend    # 后端 Express (http://localhost:3001)
 ```
 
 ## 技术栈
@@ -56,3 +58,7 @@ npm run dev:backend    # 后端 Express（http://localhost:3001）
 - **后端**：Node.js + Express + better-sqlite3
 - **脱敏引擎**：legal-desens（Python，regex + NER ONNX）
 - **PDF/OCR**：PyMuPDF + RapidOCR（可选）
+
+## Windows
+
+Windows 支持为 best-effort（未经实测）。运行 `安装 LAWCHERS.bat` / `启动 LAWCHERS.bat`。

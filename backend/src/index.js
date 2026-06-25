@@ -40,6 +40,23 @@ app.use('/api', routes);
 // 静态文件服务 (若需要预览生成的文档)
 app.use('/uploads', express.static(uploadDir));
 
+// 生产模式：托管前端 dist + SPA 回退
+const distDir = path.join(__dirname, '../../frontend/dist');
+if (fs.existsSync(distDir)) {
+  // 静态资源（JS/CSS/图片等）
+  app.use(express.static(distDir));
+
+  // SPA 回退：非 /api、非 /uploads 的普通 GET 请求 → index.html
+  // 必须排在 /api 和 /uploads 之后
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api') || req.path.startsWith('/uploads') || req.path.startsWith('/health')) {
+      return next();
+    }
+    if (req.method !== 'GET') return next();
+    res.sendFile(path.join(distDir, 'index.html'));
+  });
+}
+
 // 基础健康检查
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date() });

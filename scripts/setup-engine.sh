@@ -42,7 +42,7 @@ mkdir -p "$REPO_ROOT/backend/data"
 echo ""
 echo "=== [6/7] legal-desens self-check ==="
 echo "--- Version ---"
-"$VENV_DIR/bin/legal-desens" --version
+"$VENV_DIR/bin/legal-desens" --help 2>&1 | head -3
 echo "--- Smoke test (prepare) ---"
 SMOKE_INPUT=$(mktemp /tmp/smoke_XXXXXX.txt)
 echo "张三于2024年1月1日入职，月薪15000元。" > "$SMOKE_INPUT"

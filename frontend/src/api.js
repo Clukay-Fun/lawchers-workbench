@@ -8,7 +8,7 @@
  *     - 导出 API (Stage 7)
  */
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:3001/api';
+const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 
 // #region Stage 4: 案件 CRUD API
 
