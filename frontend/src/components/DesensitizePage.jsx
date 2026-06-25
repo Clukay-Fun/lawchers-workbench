@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo, useCallback, useEffect } from 'react';
+import { useState, useRef, useMemo, useCallback } from 'react';
 import { createTask, exportTask } from '../api';
 import { Button } from '@/components/ui/button';
 
@@ -66,7 +66,7 @@ function EntityList({ decisions, onToggle }) {
   );
 }
 
-function PreviewPane({ previewMd, manifest, decisions, revealed, onToggleReveal, onAddManual }) {
+function PreviewPane({ manifest, decisions, revealed, onToggleReveal, onToggle, onAddManual }) {
   const previewRef = useRef(null);
 
   const blockDecisions = useMemo(() => {

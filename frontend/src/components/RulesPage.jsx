@@ -26,7 +26,7 @@ export default function RulesPage({ settings, onSettingsChange }) {
   const [form, setForm] = useState({ name: '', regex: '', token_prefix: '', description: '', sample: '' });
   const [testResult, setTestResult] = useState(null);
   const [toast, setToast] = useState('');
-  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 2000); };
+  const showToast = useCallback((msg) => { setToast(msg); setTimeout(() => setToast(''), 2000); }, []);
 
   const load = async () => {
     try {
@@ -38,6 +38,7 @@ export default function RulesPage({ settings, onSettingsChange }) {
     }
   };
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps, react-hooks/set-state-in-effect
   useEffect(() => { load(); }, []);
 
   const currentRules = tab === 'system' ? rules.system : rules.custom.filter((r) => r.category === tab);
