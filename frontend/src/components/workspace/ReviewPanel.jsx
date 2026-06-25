@@ -76,10 +76,15 @@ export default function ReviewPanel({ materialId, materialName, rulesConfig }) {
   const [previewMd, setPreviewMd] = useState('');
   const [manifest, setManifest] = useState(null);
   const [decisions, setDecisions] = useState([]);
+  const [diagInfo, setDiagInfo] = useState({
+    processingStatus: '', verificationStatus: '', sourceSha256: '',
+    rulesConfig: null, nerEnabled: null, preparedAt: null, updatedAt: null, legacyAudit: false,
+  });
   const [revealed, setRevealed] = useState(() => new Set());
   const [selection, setSelection] = useState(null);
   const [exporting, setExporting] = useState(false);
   const [showExportConfirm, setShowExportConfirm] = useState(false);
+  const [diagOpen, setDiagOpen] = useState(false);
   const [toast, setToast] = useState('');
   const previewRef = useRef(null);
 
@@ -93,10 +98,12 @@ export default function ReviewPanel({ materialId, materialName, rulesConfig }) {
       setPreviewMd('');
       setManifest(null);
       setDecisions([]);
+      setDiagInfo({ processingStatus: '', verificationStatus: '', sourceSha256: '', rulesConfig: null, nerEnabled: null, preparedAt: null, updatedAt: null, legacyAudit: false });
       setRevealed(new Set());
       setSelection(null);
       setExporting(false);
       setShowExportConfirm(false);
+      setDiagOpen(false);
 
       try {
         const data = await getReviewData(materialId);
@@ -105,6 +112,16 @@ export default function ReviewPanel({ materialId, materialName, rulesConfig }) {
         setPreviewMd(data.previewMd);
         setManifest(data.manifest);
         setDecisions(data.decisions);
+        setDiagInfo({
+          processingStatus: data.processingStatus || '',
+          verificationStatus: data.verificationStatus || '',
+          sourceSha256: data.sourceSha256 || '',
+          rulesConfig: data.rulesConfig || null,
+          nerEnabled: data.nerEnabled ?? null,
+          preparedAt: data.preparedAt || null,
+          updatedAt: data.updatedAt || null,
+          legacyAudit: data.legacyAudit || false,
+        });
       } catch (err) {
         if (!cancelled) setError(err.message);
       } finally {
@@ -121,6 +138,16 @@ export default function ReviewPanel({ materialId, materialName, rulesConfig }) {
       setPreviewMd(data.previewMd);
       setManifest(data.manifest);
       setDecisions(data.decisions);
+      setDiagInfo({
+        processingStatus: data.processingStatus || '',
+        verificationStatus: data.verificationStatus || '',
+        sourceSha256: data.sourceSha256 || '',
+        rulesConfig: data.rulesConfig || null,
+        nerEnabled: data.nerEnabled ?? null,
+        preparedAt: data.preparedAt || null,
+        updatedAt: data.updatedAt || null,
+        legacyAudit: data.legacyAudit || false,
+      });
     } catch (err) {
       // A2: 不再吞错，surface 给用户
       showToast(err.message || '刷新复核数据失败');
@@ -250,6 +277,15 @@ export default function ReviewPanel({ materialId, materialName, rulesConfig }) {
 
   const redactCount = decisions.filter((d) => d.action === 'redact').length;
 
+  // 诊断信息计算
+  const entityTypeStats = {};
+  for (const d of decisions) {
+    const t = d.entityType || 'UNKNOWN';
+    entityTypeStats[t] = (entityTypeStats[t] || 0) + 1;
+  }
+  const dateOff = diagInfo.rulesConfig && diagInfo.rulesConfig.DATE === false;
+  const isRegexOnly = diagInfo.nerEnabled === false;
+
   const renderPreview = () => {
     if (!previewMd && !(manifest?.blocks || []).length) {
       return <div className="review-empty">暂无预览内容</div>;
@@ -339,6 +375,107 @@ export default function ReviewPanel({ materialId, materialName, rulesConfig }) {
 
       <div className="review-body" ref={previewRef} onMouseUp={captureSelection}>
         {renderPreview()}
+      </div>
+
+      {/* 诊断信息折叠区 */}
+      <div className="review-diagnostics">
+        <button
+          className="review-diagnostics-toggle"
+          onClick={() => setDiagOpen(!diagOpen)}
+          aria-expanded={diagOpen}
+        >
+          <span className={`chevron ${diagOpen ? 'open' : ''}`}>▶</span>
+          <span>诊断信息</span>
+        </button>
+        {diagOpen && (
+          <div className="review-diagnostics-body">
+            <div className="diag-row">
+              <span className="diag-label">documentKind</span>
+              <span className="diag-value">{documentKind || '未知'}</span>
+            </div>
+            <div className="diag-row">
+              <span className="diag-label">processing_status</span>
+              <span className="diag-value">{diagInfo.processingStatus || '未知'}</span>
+            </div>
+            <div className="diag-row">
+              <span className="diag-label">source_sha256</span>
+              <span className="diag-value" title={diagInfo.sourceSha256}>
+                {diagInfo.sourceSha256 ? `${diagInfo.sourceSha256.slice(0, 16)}…` : '未知'}
+              </span>
+            </div>
+            <div className="diag-row">
+              <span className="diag-label">prepared_at</span>
+              <span className="diag-value">{diagInfo.preparedAt || '未知'}</span>
+            </div>
+            <div className="diag-row">
+              <span className="diag-label">updated_at</span>
+              <span className="diag-value">{diagInfo.updatedAt || '未知'}</span>
+            </div>
+
+            <div className="diag-section-title">预处理参数</div>
+            {diagInfo.legacyAudit ? (
+              <div className="diag-date-off">⚠ 旧审计记录无法精确匹配此材料，预处理参数不展示（可能属于其他材料）</div>
+            ) : diagInfo.rulesConfig ? (
+              <div className="diag-row">
+                <span className="diag-label">rulesConfig</span>
+                <span className="diag-value">
+                  {Object.entries(diagInfo.rulesConfig)
+                    .filter(([, v]) => v === false)
+                    .map(([k]) => `${k}:off`)
+                    .join(', ') || '全部启用'}
+                </span>
+              </div>
+            ) : (
+              <div className="diag-row">
+                <span className="diag-label">rulesConfig</span>
+                <span className="diag-value">未知</span>
+              </div>
+            )}
+            {!diagInfo.legacyAudit && dateOff && (
+              <div className="diag-date-off">DATE/TIME preserved（日期关闭，日期候选被过滤）</div>
+            )}
+            <div className="diag-row">
+              <span className="diag-label">regex-only</span>
+              <span className={`diag-value ${isRegexOnly ? 'alert' : ''}`}>
+                {diagInfo.nerEnabled === null ? '未知' : isRegexOnly ? '是' : '否'}
+              </span>
+            </div>
+            {isRegexOnly && (
+              <div className="diag-alert">
+                该材料预处理时使用 regex-only；如需 NER，请安装/修复模型后重新预处理。
+              </div>
+            )}
+
+            <div className="diag-section-title">候选统计</div>
+            <div className="diag-entity-stats">
+              {Object.entries(entityTypeStats).map(([type, count]) => (
+                <span key={type} className="diag-entity-tag">{type} ×{count}</span>
+              ))}
+            </div>
+
+            <div className="diag-section-title">决策计数</div>
+            <div className="diag-row">
+              <span className="diag-label">redact</span>
+              <span className="diag-value">{redactCount}</span>
+            </div>
+            <div className="diag-row">
+              <span className="diag-label">keep</span>
+              <span className="diag-value">{keepCount}</span>
+            </div>
+            <div className="diag-row">
+              <span className="diag-label">manual</span>
+              <span className="diag-value">{manualCount}</span>
+            </div>
+            <div className="diag-row">
+              <span className="diag-label">confirmed</span>
+              <span className="diag-value">{decisions.filter((d) => d.confirmed).length}</span>
+            </div>
+            <div className="diag-row">
+              <span className="diag-label">unconfirmed</span>
+              <span className="diag-value">{unconfirmedCount}</span>
+            </div>
+          </div>
+        )}
       </div>
 
       {selection && (

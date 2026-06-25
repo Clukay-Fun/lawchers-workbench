@@ -18,4 +18,15 @@ export default defineConfig({
       '@': resolve(__dirname, './src'),
     },
   },
+  server: {
+    proxy: {
+      '/api': 'http://localhost:3001',
+      '/uploads': 'http://localhost:3001',
+    },
+  },
+  define: {
+    // 开发模式下 API 指向后端 3001；生产模式下由 index.js 同端口托管
+    'import.meta.env.VITE_API_BASE': JSON.stringify(process.env.VITE_API_BASE || '/api'),
+    'import.meta.env.VITE_BACKEND_ORIGIN': JSON.stringify(process.env.VITE_BACKEND_ORIGIN || ''),
+  },
 })
