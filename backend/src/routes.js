@@ -2225,12 +2225,12 @@ router.post('/tasks/:id/analyze', async (req, res) => {
     const analyzeOut = path.join(workDir, 'analyze.json');
     const sealOut = path.join(workDir, 'seals.json');
 
-    // Build merged rules for entity type tagging
+    // Build merged rules for entity type tagging — must succeed
     let mergedRulesPath = null;
     try {
       mergedRulesPath = await buildMergedRulesFile(workDir);
     } catch (mergeErr) {
-      console.warn('[WARN] 构建合并规则文件失败:', mergeErr.message);
+      return res.status(500).json({ success: false, message: `规则加载失败: ${mergeErr.message}` });
     }
 
     // Run OCR analyze with rules for entity type tagging

@@ -384,10 +384,9 @@ export default function VisualMaskPage({ settings: _settings }) {
         const response = await maskExportTask(task.taskId, boxes);
         downloadBlob(await response.blob(), `${baseName}_脱敏${ext}`);
       } else {
-        // Text mode (star/placeholder) or mask→text: use textEntities from backend
-        const entities = textEntities.length > 0 ? textEntities : boxes.filter(b => b.text).map(b => ({ original: b.text, entity_type: b.entityType || 'MANUAL', start: 0, end: 0 }));
-        if (entities.length === 0) { showToast('没有检测到敏感实体'); return; }
-        const response = await textExportTask(task.taskId, entities, mode === 'mask' ? 'star' : mode, exportFormat);
+        // Text mode (star/placeholder): only use textEntities from backend
+        if (textEntities.length === 0) { showToast('没有检测到可替换的文本实体'); return; }
+        const response = await textExportTask(task.taskId, textEntities, mode === 'mask' ? 'star' : mode, exportFormat);
         downloadBlob(await response.blob(), `${baseName}_脱敏.${exportFormat}`);
       }
       showToast('导出成功');
