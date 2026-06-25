@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { analyzeTask, updateTaskBoxes, maskExportTask, textExportTask } from '../api';
 import { Button } from '@/components/ui/button';
 import { normalizedToCSS, computeDisplaySize, createNormalizedBox } from '../services/coords';
@@ -14,9 +14,9 @@ const MODES = [
 
 const MASK_FORMATS = [
   { value: 'pdf', label: '导出 PDF（遮蔽版）' },
-  { value: 'docx', label: '导出 DOCX' },
-  { value: 'txt', label: '导出 TXT' },
-  { value: 'md', label: '导出 MD' },
+  { value: 'docx', label: '导出 DOCX（星号）' },
+  { value: 'txt', label: '导出 TXT（星号）' },
+  { value: 'md', label: '导出 MD（星号）' },
 ];
 const TEXT_FORMATS = [
   { value: 'docx', label: '导出 DOCX' },
@@ -24,42 +24,46 @@ const TEXT_FORMATS = [
   { value: 'md', label: '导出 MD' },
 ];
 
+// ─── Star mask (module level, before any component) ──────────
+
+function starMask(text, entityType) {
+  if (!text) return '';
+  const chars = [...text];
+  const len = chars.length;
+  if (entityType === 'PHONE') return len >= 11 ? chars.slice(0, 3).join('') + '****' + chars.slice(-4).join('') : chars[0] + '***';
+  if (entityType === 'ID_CARD') return len >= 15 ? chars.slice(0, 4).join('') + '*'.repeat(len - 8) + chars.slice(-4).join('') : chars.slice(0, 3).join('') + '*'.repeat(Math.max(1, len - 6)) + chars.slice(-3).join('');
+  if (entityType === 'PERSON') return chars[0] + '*'.repeat(Math.max(1, len - 1));
+  if (entityType === 'ORG') return len > 4 ? chars.slice(0, 2).join('') + '*'.repeat(Math.max(2, len - 4)) + chars.slice(-2).join('') : chars[0] + '*'.repeat(Math.max(1, len - 1));
+  if (entityType === 'MONEY') return '****' + (chars[len - 1] || '');
+  return chars[0] + '***';
+}
+
 // ─── Upload with real progress ────────────────────────────────
 
-function uploadWithProgress(file, onProgress) {
+function uploadWithProgress(file, rulesConfig, onProgress) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('rulesConfig', JSON.stringify(rulesConfig || {}));
 
     xhr.upload.addEventListener('progress', (e) => {
-      if (e.lengthComputable) {
-        onProgress(Math.round((e.loaded / e.total) * 100));
-      }
+      if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
     });
-
     xhr.addEventListener('load', () => {
       if (xhr.status >= 200 && xhr.status < 300) {
         try {
           const result = JSON.parse(xhr.responseText);
           if (result.success) resolve(result.data);
           else reject(new Error(result.message || '上传失败'));
-        } catch {
-          reject(new Error('解析响应失败'));
-        }
+        } catch { reject(new Error('解析响应失败')); }
       } else {
-        try {
-          const err = JSON.parse(xhr.responseText);
-          reject(new Error(err.message || `HTTP ${xhr.status}`));
-        } catch {
-          reject(new Error(`HTTP ${xhr.status}`));
-        }
+        try { const err = JSON.parse(xhr.responseText); reject(new Error(err.message || `HTTP ${xhr.status}`)); }
+        catch { reject(new Error(`HTTP ${xhr.status}`)); }
       }
     });
-
     xhr.addEventListener('error', () => reject(new Error('网络错误')));
     xhr.addEventListener('abort', () => reject(new Error('上传已取消')));
-
     xhr.open('POST', '/api/tasks');
     xhr.send(formData);
   });
@@ -79,10 +83,7 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
   const toNormalized = useCallback((e) => {
     const rect = overlayRef.current?.getBoundingClientRect();
     if (!rect) return { x: 0, y: 0 };
-    return {
-      x: (e.clientX - rect.left) / displayWidth,
-      y: (e.clientY - rect.top) / displayHeight,
-    };
+    return { x: (e.clientX - rect.left) / displayWidth, y: (e.clientY - rect.top) / displayHeight };
   }, [displayWidth, displayHeight]);
 
   const handleMouseDown = useCallback((e) => {
@@ -103,9 +104,7 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
       const pos = toNormalized(e);
       const newX = Math.max(0, Math.min(1 - dragging.boxW, pos.x - dragging.offsetX));
       const newY = Math.max(0, Math.min(1 - dragging.boxH, pos.y - dragging.offsetY));
-      onBoxesChange(prev => prev.map(b =>
-        b.id === dragging.boxId ? { ...b, x: newX, y: newY } : b
-      ));
+      onBoxesChange(prev => prev.map(b => b.id === dragging.boxId ? { ...b, x: newX, y: newY } : b));
     }
     if (resizing) {
       const pos = toNormalized(e);
@@ -115,16 +114,8 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
         let { x, y, width, height } = b;
         if (handle.includes('e')) width = Math.max(BOX_MIN_SIZE, pos.x - x);
         if (handle.includes('s')) height = Math.max(BOX_MIN_SIZE, pos.y - y);
-        if (handle.includes('w')) {
-          const newX = Math.min(pos.x, x + width - BOX_MIN_SIZE);
-          width = width + (x - newX);
-          x = newX;
-        }
-        if (handle.includes('n')) {
-          const newY = Math.min(pos.y, y + height - BOX_MIN_SIZE);
-          height = height + (y - newY);
-          y = newY;
-        }
+        if (handle.includes('w')) { const newX = Math.min(pos.x, x + width - BOX_MIN_SIZE); width = width + (x - newX); x = newX; }
+        if (handle.includes('n')) { const newY = Math.min(pos.y, y + height - BOX_MIN_SIZE); height = height + (y - newY); y = newY; }
         return { ...b, x: Math.max(0, x), y: Math.max(0, y), width: Math.min(1 - x, width), height: Math.min(1 - y, height) };
       }));
     }
@@ -138,15 +129,10 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
       const width = Math.abs(pos.x - drawing.startX);
       const height = Math.abs(pos.y - drawing.startY);
       if (width > BOX_MIN_SIZE && height > BOX_MIN_SIZE) {
-        const newBox = createNormalizedBox({
-          id: `manual_${Date.now()}`,
-          page: pageInfo.pageNumber,
-          x, y, width, height,
-          pageWidth: pageInfo.pageWidth,
-          pageHeight: pageInfo.pageHeight,
-          source: 'manual',
-        });
-        onBoxesChange(prev => [...prev, newBox]);
+        onBoxesChange(prev => [...prev, createNormalizedBox({
+          id: `manual_${Date.now()}`, page: pageInfo.pageNumber,
+          x, y, width, height, pageWidth: pageInfo.pageWidth, pageHeight: pageInfo.pageHeight, source: 'manual',
+        })]);
       }
       setDrawing(null);
     }
@@ -159,13 +145,7 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
     if (e.button !== 0) return;
     onSelectBox?.(box.id);
     const pos = toNormalized(e);
-    setDragging({
-      boxId: box.id,
-      offsetX: pos.x - box.x,
-      offsetY: pos.y - box.y,
-      boxW: box.width,
-      boxH: box.height,
-    });
+    setDragging({ boxId: box.id, offsetX: pos.x - box.x, offsetY: pos.y - box.y, boxW: box.width, boxH: box.height });
   }, [toNormalized, onSelectBox]);
 
   const handleDeleteBox = useCallback((e, boxId) => {
@@ -189,17 +169,9 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
         draggable={false}
       />
       <div
-        ref={overlayRef}
-        className="box-overlay"
-        style={{
-          position: 'absolute', top: 0, left: 0,
-          width: displayWidth, height: displayHeight,
-          cursor: 'crosshair',
-        }}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
+        ref={overlayRef} className="box-overlay"
+        style={{ position: 'absolute', top: 0, left: 0, width: displayWidth, height: displayHeight, cursor: 'crosshair' }}
+        onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}
       >
         {pageBoxes.map(box => {
           const css = normalizedToCSS(box, displayWidth, displayHeight);
@@ -208,28 +180,21 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
           const isActive = isHovered || isSelected;
           return (
             <div key={box.id} style={{ position: 'absolute', left: css.left, top: css.top, width: css.width, height: css.height }}>
-              {/* Box rectangle */}
               <div
                 data-box-id={box.id}
                 style={{
                   width: '100%', height: '100%',
                   border: `2px solid ${isActive ? '#3b82f6' : 'rgba(59,130,246,0.6)'}`,
                   background: isActive ? 'rgba(59,130,246,0.12)' : 'rgba(59,130,246,0.06)',
-                  cursor: 'move',
-                  transition: 'border-color 0.12s, background 0.12s',
+                  cursor: 'move', transition: 'border-color 0.12s, background 0.12s',
                 }}
                 onMouseDown={(e) => handleBoxMouseDown(e, box)}
                 onMouseEnter={() => setHoveredBox(box.id)}
                 onMouseLeave={() => setHoveredBox(null)}
               />
-              {/* Source label */}
               {box.source === 'seal' && (
-                <span style={{
-                  position: 'absolute', top: -16, left: 0,
-                  fontSize: 10, color: '#3b82f6', whiteSpace: 'nowrap',
-                }}>公章</span>
+                <span style={{ position: 'absolute', top: -16, left: 0, fontSize: 10, color: '#3b82f6', whiteSpace: 'nowrap' }}>公章</span>
               )}
-              {/* Delete button — outside top-right corner */}
               {isActive && (
                 <button
                   style={{
@@ -240,23 +205,20 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                     zIndex: 20, boxShadow: '0 1px 4px rgba(0,0,0,0.2)',
                   }}
-                  onMouseDown={(e) => { e.stopPropagation(); }}
+                  onMouseDown={(e) => e.stopPropagation()}
                   onClick={(e) => handleDeleteBox(e, box.id)}
                   title="删除"
                 >×</button>
               )}
-              {/* Resize handles */}
               {isActive && ['nw', 'ne', 'sw', 'se'].map(handle => (
                 <div
-                  key={handle}
-                  data-handle={handle}
+                  key={handle} data-handle={handle}
                   style={{
-                    position: 'absolute',
-                    width: 8, height: 8, background: '#3b82f6', border: '1px solid #fff', borderRadius: 2,
+                    position: 'absolute', width: 8, height: 8, background: '#3b82f6',
+                    border: '1px solid #fff', borderRadius: 2, zIndex: 10,
                     ...(handle.includes('n') ? { top: -4 } : { bottom: -4 }),
                     ...(handle.includes('w') ? { left: -4 } : { right: -4 }),
                     cursor: handle === 'nw' || handle === 'se' ? 'nwse-resize' : 'nesw-resize',
-                    zIndex: 10,
                   }}
                   onMouseDown={(e) => handleResizeStart(e, box.id, handle)}
                 />
@@ -271,9 +233,7 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
             top: Math.min(drawing.startY, drawing.currentY || drawing.startY) * displayHeight,
             width: Math.abs((drawing.currentX || drawing.startX) - drawing.startX) * displayWidth,
             height: Math.abs((drawing.currentY || drawing.startY) - drawing.startY) * displayHeight,
-            border: '2px dashed #3b82f6',
-            background: 'rgba(59,130,246,0.1)',
-            pointerEvents: 'none',
+            border: '2px dashed #3b82f6', background: 'rgba(59,130,246,0.1)', pointerEvents: 'none',
           }} />
         )}
       </div>
@@ -286,7 +246,6 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
 function MaskPreview({ pageInfo, boxes, containerWidth }) {
   const { displayWidth, displayHeight } = computeDisplaySize(pageInfo, containerWidth, 900);
   const pageBoxes = boxes.filter(b => b.page === pageInfo.pageNumber);
-
   return (
     <div className="mask-preview" style={{ position: 'relative', width: displayWidth, height: displayHeight, background: '#fff' }}>
       <img
@@ -298,16 +257,10 @@ function MaskPreview({ pageInfo, boxes, containerWidth }) {
       <svg width={displayWidth} height={displayHeight} style={{ position: 'absolute', top: 0, left: 0 }}>
         {pageBoxes.map(box => {
           const css = normalizedToCSS(box, displayWidth, displayHeight);
-          return (
-            <rect key={box.id} x={css.left} y={css.top} width={css.width} height={css.height} fill="#000000" stroke="none" />
-          );
+          return <rect key={box.id} x={css.left} y={css.top} width={css.width} height={css.height} fill="#000000" stroke="none" />;
         })}
       </svg>
-      <div style={{
-        position: 'absolute', bottom: 8, right: 8,
-        color: 'rgba(0,0,0,0.45)', fontSize: 11,
-        background: 'rgba(255,255,255,0.75)', padding: '2px 6px', borderRadius: 4,
-      }}>
+      <div style={{ position: 'absolute', bottom: 8, right: 8, color: 'rgba(0,0,0,0.45)', fontSize: 11, background: 'rgba(255,255,255,0.75)', padding: '2px 6px', borderRadius: 4 }}>
         遮蔽预览 · {pageBoxes.length} 个区域
       </div>
     </div>
@@ -321,14 +274,13 @@ function TextDualColumn({ originalText, replacedText, mode }) {
     <div className="text-dual-column">
       <div className="text-panel">
         <div className="text-panel-header">抽取原文</div>
-        <div className="text-panel-body">
-          <pre className="text-content">{originalText || '（暂无文本）'}</pre>
-        </div>
+        <div className="text-panel-body"><pre className="text-content">{originalText || '（暂无文本）'}</pre></div>
       </div>
       <div className="text-panel">
         <div className="text-panel-header">{mode === 'star' ? '星号替换预览' : '占位替换预览'}</div>
         <div className="text-panel-body">
           <pre className="text-content">{replacedText || '（暂无预览）'}</pre>
+          <div className="text-preview-note">预览仅供参考，以实际导出为准</div>
         </div>
       </div>
     </div>
@@ -343,31 +295,20 @@ function ExportDropdown({ mode, onExport, exporting, disabled }) {
   const formats = mode === 'mask' ? MASK_FORMATS : TEXT_FORMATS;
 
   useEffect(() => {
-    const handleClick = (e) => {
-      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
-    };
+    const handleClick = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
   }, []);
 
   return (
     <div className="export-dropdown" ref={ref}>
-      <Button
-        variant="default"
-        size="sm"
-        onClick={() => setOpen(!open)}
-        disabled={exporting || disabled}
-      >
+      <Button variant="default" size="sm" onClick={() => setOpen(!open)} disabled={exporting || disabled}>
         {exporting ? '导出中…' : '导出 ▾'}
       </Button>
       {open && (
         <div className="export-menu">
           {formats.map(f => (
-            <button
-              key={f.value}
-              className="export-menu-item"
-              onClick={() => { setOpen(false); onExport(f.value); }}
-            >
+            <button key={f.value} className="export-menu-item" onClick={() => { setOpen(false); onExport(f.value); }}>
               {f.label}
             </button>
           ))}
@@ -379,29 +320,80 @@ function ExportDropdown({ mode, onExport, exporting, disabled }) {
 
 // ─── Main VisualMaskPage ─────────────────────────────────────
 
-export default function VisualMaskPage({ settings }) {
+export default function VisualMaskPage({ settings: _settings }) {
   const [task, setTask] = useState(null);
   const [loading, setLoading] = useState(false);
   const [processingStep, setProcessingStep] = useState('');
   const [uploadPercent, setUploadPercent] = useState(0);
   const [error, setError] = useState(null);
 
-  // boxes: only redaction candidates (entityType + seal + manual), NOT raw OCR
   const [boxes, setBoxes] = useState([]);
-  const [ocrBoxes, setOcrBoxes] = useState([]); // raw OCR for text mode reference
+  const [ocrBoxes, setOcrBoxes] = useState([]);
   const [pageImages, setPageImages] = useState([]);
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedBox, setSelectedBox] = useState(null);
   const [toast, setToast] = useState('');
   const [exporting, setExporting] = useState(false);
   const [mode, setMode] = useState('mask');
-  const [previewText, setPreviewText] = useState({ original: '', replaced: '' });
 
   const containerRef = useRef(null);
   const fileInputRef = useRef(null);
   const scrollRef = useRef(null);
+  const pageRowRefs = useRef({});
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 2400); };
+
+  // ─── #3: Scroll → update currentPage ──────────────────────
+
+  useEffect(() => {
+    if (mode !== 'mask' || pageImages.length <= 1) return;
+    const container = scrollRef.current;
+    if (!container) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        // Find the most visible page row
+        let bestRatio = 0;
+        let bestPage = currentPage;
+        for (const entry of entries) {
+          if (entry.intersectionRatio > bestRatio) {
+            bestRatio = entry.intersectionRatio;
+            bestPage = parseInt(entry.target.dataset.page, 10) || currentPage;
+          }
+        }
+        if (bestRatio > 0.3 && bestPage !== currentPage) {
+          setCurrentPage(bestPage);
+        }
+      },
+      { root: container, threshold: [0.3, 0.5, 0.7] }
+    );
+
+    // Observe all page rows
+    Object.values(pageRowRefs.current).forEach(el => { if (el) observer.observe(el); });
+    return () => observer.disconnect();
+  }, [mode, pageImages.length, currentPage]);
+
+  // Arrow click → scroll to page
+  const scrollToPage = useCallback((pageNum) => {
+    const el = pageRowRefs.current[pageNum];
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setCurrentPage(pageNum);
+  }, []);
+
+  // ─── #2: Text preview (useMemo, not useEffect) ────────────
+
+  const previewText = useMemo(() => {
+    if (mode === 'mask' || !task) return { original: '', replaced: '' };
+    const allText = ocrBoxes.map(b => b.text).join('\n');
+    let replaced = allText;
+    for (const box of boxes) {
+      if (!box.text) continue;
+      const entityType = box.entityType || 'MANUAL';
+      const masked = mode === 'star' ? starMask(box.text, entityType) : `<${entityType}>`;
+      replaced = replaced.split(box.text).join(masked);
+    }
+    return { original: allText, replaced };
+  }, [mode, boxes, ocrBoxes, task]);
 
   // ─── Upload + Analyze ────────────────────────────────────────
 
@@ -416,45 +408,33 @@ export default function VisualMaskPage({ settings }) {
     setProcessingStep('上传中…');
 
     try {
-      // Upload with real progress
-      setProcessingStep('上传中…');
-      const taskData = await uploadWithProgress(file, setUploadPercent);
+      // #6: Upload with real progress + rulesConfig
+      const taskData = await uploadWithProgress(file, _settings?.rulesConfig, setUploadPercent);
       setTask(taskData);
       setUploadPercent(100);
 
-      // Analyze
       setProcessingStep('渲染页面 + OCR 识别…');
       const analyzeData = await analyzeTask(taskData.taskId);
 
       setProcessingStep('规则匹配…');
 
-      // ── #1: Separate OCR boxes from redaction boxes ──
+      // #1: Separate OCR/redaction boxes
       const allOcr = (analyzeData.ocrBoxes || []).map((b, i) => ({
-        id: `ocr_${i}`,
-        page: b.page,
+        id: `ocr_${i}`, page: b.page,
         x: b.x, y: b.y, width: b.width, height: b.height,
         pageWidth: analyzeData.manifest?.pages?.[b.page - 1]?.pageWidth || 595,
         pageHeight: analyzeData.manifest?.pages?.[b.page - 1]?.pageHeight || 842,
-        source: 'ocr',
-        entityType: b.entityType || b.entity_type || null,
-        text: b.text || '',
-        confidence: b.confidence ?? null,
+        source: 'ocr', entityType: b.entityType || b.entity_type || null,
+        text: b.text || '', confidence: b.confidence ?? null,
       }));
 
-      // Redaction boxes = only those with entityType OR from seal/denylist
-      const candidateBoxes = allOcr
-        .filter(b => b.entityType && b.entityType !== 'MANUAL')
-        .map(b => createNormalizedBox(b));
-
-      // Seal boxes
+      const candidateBoxes = allOcr.filter(b => b.entityType && b.entityType !== 'MANUAL').map(b => createNormalizedBox(b));
       const sealBoxes = (analyzeData.sealBoxes || []).map((b, i) => createNormalizedBox({
-        id: b.id || `seal_${i}`,
-        page: b.page,
+        id: b.id || `seal_${i}`, page: b.page,
         x: b.x, y: b.y, width: b.width, height: b.height,
         pageWidth: analyzeData.manifest?.pages?.[b.page - 1]?.pageWidth || 595,
         pageHeight: analyzeData.manifest?.pages?.[b.page - 1]?.pageHeight || 842,
-        source: 'seal',
-        entityType: 'SEAL',
+        source: 'seal', entityType: 'SEAL',
       }));
 
       setOcrBoxes(allOcr);
@@ -463,9 +443,7 @@ export default function VisualMaskPage({ settings }) {
       setCurrentPage(1);
 
       setProcessingStep('生成预览…');
-      const sensitiveCount = candidateBoxes.length;
-      const sealCount = sealBoxes.length;
-      showToast(`识别到 ${sensitiveCount} 个敏感区域${sealCount > 0 ? `、${sealCount} 个公章候选` : ''}`);
+      showToast(`识别到 ${candidateBoxes.length} 个敏感区域${sealBoxes.length > 0 ? `、${sealBoxes.length} 个公章候选` : ''}`);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -476,32 +454,12 @@ export default function VisualMaskPage({ settings }) {
     }
   };
 
-  // ─── Text preview for star/placeholder mode ─────────────────
-
-  useEffect(() => {
-    if (mode === 'mask' || !task) return;
-    // Build text preview from OCR boxes + boxes
-    const allText = ocrBoxes.map(b => b.text).join('\n');
-    let replaced = allText;
-    for (const box of boxes) {
-      if (!box.text) continue;
-      const entityType = box.entityType || 'MANUAL';
-      const masked = mode === 'star' ? starMask(box.text, entityType) : `<${entityType}>`;
-      replaced = replaced.split(box.text).join(masked);
-    }
-    setPreviewText({ original: allText, replaced });
-  }, [mode, boxes, ocrBoxes, task]);
-
   // ─── Save ─────────────────────────────────────────────────
 
   const handleSaveBoxes = async () => {
     if (!task) return;
-    try {
-      await updateTaskBoxes(task.taskId, boxes);
-      showToast('已保存');
-    } catch (err) {
-      showToast(err.message || '保存失败');
-    }
+    try { await updateTaskBoxes(task.taskId, boxes); showToast('已保存'); }
+    catch (err) { showToast(err.message || '保存失败'); }
   };
 
   // ─── Export ────────────────────────────────────────────────
@@ -511,45 +469,19 @@ export default function VisualMaskPage({ settings }) {
     setExporting(true);
     try {
       await updateTaskBoxes(task.taskId, boxes);
-
-      // #7: Filename = 原文件名_脱敏.ext
       const baseName = task.filename ? task.filename.substring(0, task.filename.lastIndexOf('.')) : 'document';
       const ext = task.filename ? task.filename.substring(task.filename.lastIndexOf('.')) : '';
 
-      if (mode === 'mask') {
-        if (exportFormat === 'pdf') {
-          const response = await maskExportTask(task.taskId, boxes);
-          const blob = await response.blob();
-          downloadBlob(blob, `${baseName}_脱敏${ext}`);
-        } else {
-          // Text format from mask mode
-          const entities = boxes.filter(b => b.text).map(b => ({
-            original: b.text,
-            entity_type: b.entityType || 'MANUAL',
-            start: 0, end: 0,
-          }));
-          if (entities.length === 0) {
-            showToast('当前框没有文本内容，请先用 OCR 识别');
-            return;
-          }
-          const response = await textExportTask(task.taskId, entities, 'star', exportFormat);
-          const blob = await response.blob();
-          downloadBlob(blob, `${baseName}_脱敏.${exportFormat}`);
-        }
+      if (mode === 'mask' && exportFormat === 'pdf') {
+        const response = await maskExportTask(task.taskId, boxes);
+        downloadBlob(await response.blob(), `${baseName}_脱敏${ext}`);
       } else {
-        // star / placeholder mode
         const entities = boxes.filter(b => b.text).map(b => ({
-          original: b.text,
-          entity_type: b.entityType || 'MANUAL',
-          start: 0, end: 0,
+          original: b.text, entity_type: b.entityType || 'MANUAL', start: 0, end: 0,
         }));
-        if (entities.length === 0) {
-          showToast('当前框没有文本内容');
-          return;
-        }
-        const response = await textExportTask(task.taskId, entities, mode, exportFormat);
-        const blob = await response.blob();
-        downloadBlob(blob, `${baseName}_脱敏.${exportFormat}`);
+        if (entities.length === 0) { showToast('当前框没有文本内容'); return; }
+        const response = await textExportTask(task.taskId, entities, mode === 'mask' ? 'star' : mode, exportFormat);
+        downloadBlob(await response.blob(), `${baseName}_脱敏.${exportFormat}`);
       }
       showToast('导出成功');
     } catch (err) {
@@ -562,29 +494,14 @@ export default function VisualMaskPage({ settings }) {
   function downloadBlob(blob, filename) {
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
     window.URL.revokeObjectURL(url);
   }
 
-  function starMask(text, entityType) {
-    if (!text) return '';
-    const chars = [...text];
-    const len = chars.length;
-    if (entityType === 'PHONE') return len >= 11 ? chars.slice(0, 3).join('') + '****' + chars.slice(-4).join('') : chars[0] + '***';
-    if (entityType === 'ID_CARD') return len >= 15 ? chars.slice(0, 4).join('') + '*'.repeat(len - 8) + chars.slice(-4).join('') : chars.slice(0, 3).join('') + '*'.repeat(Math.max(1, len - 6)) + chars.slice(-3).join('');
-    if (entityType === 'PERSON') return chars[0] + '*'.repeat(Math.max(1, len - 1));
-    if (entityType === 'ORG') return len > 4 ? chars.slice(0, 2).join('') + '*'.repeat(Math.max(2, len - 4)) + chars.slice(-2).join('') : chars[0] + '*'.repeat(Math.max(1, len - 1));
-    if (entityType === 'MONEY') return '****' + (chars[len - 1] || '');
-    return chars[0] + '***';
-  }
-
-  const pageInfo = pageImages[currentPage - 1];
-  const totalPages = pageImages.length;
   const redactionCount = boxes.length;
+  const totalPages = pageImages.length;
+  const isMaskMode = mode === 'mask';
 
   // ─── Empty state ───────────────────────────────────────────
 
@@ -599,7 +516,7 @@ export default function VisualMaskPage({ settings }) {
     );
   }
 
-  // ─── Loading state with steps ──────────────────────────────
+  // ─── Loading with steps ────────────────────────────────────
 
   if (loading) {
     return (
@@ -624,11 +541,8 @@ export default function VisualMaskPage({ settings }) {
 
   // ─── Main render ──────────────────────────────────────────
 
-  const isMaskMode = mode === 'mask';
-
   return (
     <div className="visual-mask-page" ref={containerRef}>
-      {/* #4: Sticky toolbar */}
       <div className="mask-toolbar sticky">
         <div className="mask-toolbar-left">
           <span className="mask-filename">{task?.filename}</span>
@@ -640,70 +554,51 @@ export default function VisualMaskPage({ settings }) {
         <div className="mask-toolbar-center">
           <div className="mode-switch">
             {MODES.map(m => (
-              <button
-                key={m.key}
-                className={`mode-btn ${mode === m.key ? 'active' : ''}`}
-                onClick={() => setMode(m.key)}
-                title={m.desc}
-              >{m.label}</button>
+              <button key={m.key} className={`mode-btn ${mode === m.key ? 'active' : ''}`}
+                onClick={() => setMode(m.key)} title={m.desc}>{m.label}</button>
             ))}
           </div>
           {totalPages > 1 && (
             <div className="page-nav">
-              <Button variant="ghost" size="sm" disabled={currentPage <= 1} onClick={() => setCurrentPage(p => p - 1)}>←</Button>
+              <Button variant="ghost" size="sm" disabled={currentPage <= 1} onClick={() => scrollToPage(currentPage - 1)}>←</Button>
               <span>{currentPage} / {totalPages}</span>
-              <Button variant="ghost" size="sm" disabled={currentPage >= totalPages} onClick={() => setCurrentPage(p => p + 1)}>→</Button>
+              <Button variant="ghost" size="sm" disabled={currentPage >= totalPages} onClick={() => scrollToPage(currentPage + 1)}>→</Button>
             </div>
           )}
         </div>
         <div className="mask-toolbar-right">
           <Button variant="outline" size="sm" onClick={handleSaveBoxes}>保存框</Button>
           <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>换文件</Button>
-          <ExportDropdown
-            mode={mode}
-            onExport={doExport}
-            exporting={exporting}
-            disabled={redactionCount === 0}
-          />
+          <ExportDropdown mode={mode} onExport={doExport} exporting={exporting} disabled={redactionCount === 0} />
         </div>
       </div>
 
-      {/* #2 + #3: Layout depends on mode */}
       {isMaskMode ? (
-        /* Mask mode: image dual-column with continuous vertical scroll */
         <div className="mask-scroll-container" ref={scrollRef}>
-          {pageImages.map((pg, idx) => {
+          {pageImages.map((pg) => {
             const pgInfo = { ...pg, taskId: task?.taskId };
             return (
-              <div key={pg.pageNumber} className="mask-page-row" data-page={pg.pageNumber}>
+              <div
+                key={pg.pageNumber}
+                className="mask-page-row"
+                data-page={pg.pageNumber}
+                ref={el => { pageRowRefs.current[pg.pageNumber] = el; }}
+              >
                 <div className="mask-page-col">
                   <PageCanvas
-                    pageInfo={pgInfo}
-                    boxes={boxes}
-                    onBoxesChange={setBoxes}
-                    containerWidth={560}
-                    selectedBox={selectedBox}
-                    onSelectBox={setSelectedBox}
+                    pageInfo={pgInfo} boxes={boxes} onBoxesChange={setBoxes}
+                    containerWidth={560} selectedBox={selectedBox} onSelectBox={setSelectedBox}
                   />
                 </div>
                 <div className="mask-page-col">
-                  <MaskPreview
-                    pageInfo={pgInfo}
-                    boxes={boxes}
-                    containerWidth={560}
-                  />
+                  <MaskPreview pageInfo={pgInfo} boxes={boxes} containerWidth={560} />
                 </div>
               </div>
             );
           })}
         </div>
       ) : (
-        /* Star/Placeholder mode: text dual-column */
-        <TextDualColumn
-          originalText={previewText.original}
-          replacedText={previewText.replaced}
-          mode={mode}
-        />
+        <TextDualColumn originalText={previewText.original} replacedText={previewText.replaced} mode={mode} />
       )}
 
       <input ref={fileInputRef} className="visually-hidden" type="file" accept=".pdf" onChange={(e) => handleFile(e.target.files?.[0])} />
