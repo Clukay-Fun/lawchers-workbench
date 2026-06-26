@@ -340,6 +340,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const fileInputRef = useRef(null);
   const scrollRef = useRef(null);
   const pageRowRefs = useRef({});
+  const hasLoadedRef = useRef(false);
 
   const showToast = useCallback((msg) => { setToast(msg); setTimeout(() => setToast(''), 2400); }, []);
 
@@ -360,6 +361,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
         setOcrText(session.ocrText || '');
         setPageImages(session.manifest?.pages || []);
         setCurrentPage(1);
+        hasLoadedRef.current = true;
       } catch {
         // Session gone or invalid — clear stored id
         localStorage.removeItem('activeTaskId');
@@ -385,6 +387,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
         setOcrText(session.ocrText || '');
         setPageImages(session.manifest?.pages || []);
         setCurrentPage(1);
+        hasLoadedRef.current = true;
         localStorage.setItem('activeTaskId', String(resumeTaskId));
         showToast('已恢复上次编辑');
       } catch (err) {
@@ -433,22 +436,17 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   }, [showToast]);
 
   // Persist boxes on change (debounced) — allow empty array to clear
-  const [hasLoadedTask, setHasLoadedTask] = useState(false);
+  useEffect(() => {
+    if (!task) { hasLoadedRef.current = false; return; }
+  }, [task?.taskId]);
 
   useEffect(() => {
-    if (!task) return;
-    // Mark that we've loaded a task so subsequent changes are intentional
-    const timer = setTimeout(() => setHasLoadedTask(true), 500);
-    return () => clearTimeout(timer);
-  }, [task]);
-
-  useEffect(() => {
-    if (!task || !hasLoadedTask) return;
+    if (!task || !hasLoadedRef.current) return;
     const timer = setTimeout(() => {
       updateTaskBoxes(task.taskId, boxes).catch(() => {});
     }, 1000);
     return () => clearTimeout(timer);
-  }, [task, boxes, hasLoadedTask]);
+  }, [task, boxes]);
 
   // ─── Upload + Analyze ────────────────────────────────────────
 
@@ -483,19 +481,14 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
       setOcrText(fullText);
 
       const refined = (analyzeData.refinedBoxes || []).map((b, i) => {
-        // Try to match this box to a text entity by overlap
-        const boxEntityType = b.entityType || 'CUSTOM';
-        const matchedEntity = backendTextEntities.find(e =>
-          e.entity_type === boxEntityType && Math.abs(e.start - (b.charStart ?? -1)) < 5
-        );
         return createNormalizedBox({
           id: `cand_${i}`, page: b.page,
           x: b.x, y: b.y, width: b.width, height: b.height,
           pageWidth: analyzeData.manifest?.pages?.[b.page - 1]?.pageWidth || 595,
           pageHeight: analyzeData.manifest?.pages?.[b.page - 1]?.pageHeight || 842,
-          source: 'ocr', entityType: boxEntityType,
+          source: 'ocr', entityType: b.entityType || 'CUSTOM',
           text: b.text || '', confidence: b.confidence ?? null,
-          entityId: matchedEntity?.id || null,
+          entityId: b.entityId || null,
         });
       });
 
@@ -510,6 +503,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
       setBoxes([...refined, ...sealBoxes]);
       setPageImages(analyzeData.manifest?.pages || []);
       setCurrentPage(1);
+      hasLoadedRef.current = true;
 
       setProcessingStep('生成预览…');
       showToast('文档分析完成');

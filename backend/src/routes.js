@@ -1936,6 +1936,9 @@ function refineToEntityBoxes(ocrBoxes, textEntities) {
 
       refined.push({
         text: entity.original,
+        entityId: entity.id || `${entity.entity_type}:${entity.start}:${entity.end}`,
+        entityStart: entStart,
+        entityEnd: entEnd,
         page: box.page,
         x: Math.round(subX * 1e6) / 1e6,
         y: box.y,
@@ -2410,6 +2413,8 @@ router.post('/tasks/:id/analyze', async (req, res) => {
     let lastEnd = -1;
     for (const ent of allEntities) {
       if (ent.start >= lastEnd) {
+        // Add stable id for cross-mode linking
+        ent.id = `${ent.entity_type || 'CUSTOM'}:${ent.start}:${ent.end}`;
         textEntities.push(ent);
         lastEnd = ent.end;
       }
