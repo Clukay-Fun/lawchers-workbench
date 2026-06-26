@@ -12,7 +12,7 @@ import express from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs/promises';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, createWriteStream } from 'fs';
 import { fileURLToPath } from 'url';
 import { execFile as execFileCb } from 'child_process';
 import { createHash } from 'crypto';
@@ -2925,9 +2925,35 @@ router.post('/tasks/:id/text-export', async (req, res) => {
       return res.status(500).json({ success: false, message: '导出文件未生成' });
     }
 
+    // P9-2: Generate map.json for placeholder mode (reversible)
+    let mapPath = null;
+    if (mode === 'placeholder') {
+      try {
+        const ocrTextContent = (await fs.readFile(path.join(workDir, 'ocr-text.txt'), 'utf-8').catch(() => '')) || '';
+        const mapData = {
+          version: '1.0',
+          mode: 'placeholder',
+          source_file: task.filename,
+          entities: entities.map(e => ({
+            original: e.original,
+            entity_type: e.entity_type,
+            start: e.start,
+            end: e.end,
+          })),
+          ocr_text_hash: ocrTextContent ? createHash('sha256').update(ocrTextContent).digest('hex') : null,
+          created_at: new Date().toISOString(),
+        };
+        mapPath = path.join(workDir, `${baseName}_脱敏.map.json`);
+        await fs.writeFile(mapPath, JSON.stringify(mapData, null, 2), 'utf-8');
+      } catch (mapErr) {
+        console.warn('[WARN] Failed to generate map.json:', mapErr.message);
+      }
+    }
+
     // Update task
     updateTask(taskId, {
       export_path: path.relative(path.join(__dirname, '..'), exportPath),
+      map_path: mapPath ? path.relative(path.join(__dirname, '..'), mapPath) : null,
       residual_passed: true,
     });
 
@@ -3240,6 +3266,37 @@ router.get('/history/:id/download', (req, res) => {
     res.download(exportPath, downloadName);
   } catch (error) {
     console.error('History Download Error:', error);
+    res.status(500).json({ success: false, message: '下载失败', error: error.message });
+  }
+});
+
+/**
+ * GET /api/history/:id/download-map - 下载占位导出的 map.json
+ */
+router.get('/history/:id/download-map', (req, res) => {
+  try {
+    const task = getTaskById(parseInt(req.params.id, 10));
+    if (!task) return res.status(404).json({ success: false, message: '任务不存在' });
+    if (!task.map_path) {
+      return res.status(404).json({ success: false, message: '此任务没有 map.json（仅占位模式导出生成）' });
+    }
+
+    const backendRoot = path.resolve(__dirname, '..');
+    const mapPath = path.isAbsolute(task.map_path)
+      ? path.resolve(task.map_path)
+      : path.resolve(backendRoot, task.map_path);
+
+    if (!mapPath.startsWith(`${backendRoot}${path.sep}`)) {
+      return res.status(403).json({ success: false, message: '文件路径非法' });
+    }
+    if (!existsSync(mapPath)) {
+      return res.status(404).json({ success: false, message: 'map.json 不存在，可能已被清理' });
+    }
+
+    const downloadName = (task.filename || 'document').replace(/\.[^.]+$/, '') + '_脱敏.map.json';
+    res.download(mapPath, downloadName);
+  } catch (error) {
+    console.error('Map Download Error:', error);
     res.status(500).json({ success: false, message: '下载失败', error: error.message });
   }
 });

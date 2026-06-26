@@ -63,6 +63,16 @@ export async function downloadHistoryFile(id) {
   return response;
 }
 
+/** 下载占位导出的 map.json */
+export async function downloadHistoryMap(id) {
+  const response = await fetch(`${API_BASE}/history/${id}/download-map`, { method: 'GET' });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.message || '下载 map.json 失败');
+  }
+  return response;
+}
+
 /** 还原脱敏文件 */
 export async function restoreFile(redactedFile, mapFile) {
   const formData = new FormData();

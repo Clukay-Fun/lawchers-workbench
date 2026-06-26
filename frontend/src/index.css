@@ -468,3 +468,24 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .progress-bar-fill.indeterminate { width: 30%; background: var(--blue); animation: indeterminate 1.4s ease-in-out infinite; }
 @keyframes indeterminate { 0% { transform: translateX(-100%); } 100% { transform: translateX(400%); } }
 .progress-step-text { font-size: 13px; color: var(--base01); }
+
+/* P9-3: Text entity highlight */
+.text-entity-highlight { background: rgba(250, 204, 21, .25); border-radius: 2px; cursor: pointer; transition: background 120ms; }
+.text-entity-highlight:hover, .text-entity-highlight.active { background: rgba(250, 204, 21, .5); }
+.text-entity-highlight.replaced { background: rgba(59, 130, 246, .15); }
+.text-entity-highlight.replaced:hover, .text-entity-highlight.replaced.active { background: rgba(59, 130, 246, .35); }
+
+/* P9-5: Diagnostic panel */
+.diag-panel { margin: 8px 0; font-size: 12px; }
+.diag-toggle { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 0; border: 0; background: transparent; cursor: pointer; color: var(--base01); font-size: 12px; }
+.diag-toggle:hover { color: var(--base02); }
+.diag-summary { font: 10px var(--font-mono); color: var(--base01); }
+.diag-detail { padding: 8px 0 12px; border-top: 1px solid var(--line); }
+.diag-grid { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12px; }
+.diag-grid span { color: var(--base01); }
+.diag-grid strong { font-weight: 500; }
+.diag-types { margin-top: 8px; }
+.diag-types-title { font-size: 11px; color: var(--base01); margin-bottom: 4px; }
+.diag-types-list { display: flex; flex-wrap: wrap; gap: 4px; }
+.diag-type-tag { font: 10px var(--font-mono); padding: 2px 6px; background: rgba(0,0,0,.04); border-radius: 3px; color: var(--base01); }
+.diag-warn { margin-top: 8px; padding: 6px 8px; font-size: 11px; color: #b45309; background: rgba(180,83,9,.08); border-radius: 4px; }

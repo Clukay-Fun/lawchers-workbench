@@ -43,11 +43,17 @@ export default function RestorePage() {
   return (
     <div className="tool-page">
       <div className="tool-card">
-        <p className="tool-desc">上传脱敏文件和对应的 map.json，还原为原始内容。仅支持可逆格式（txt / md / csv / docx / xlsx）。</p>
+        <p className="tool-desc">
+          上传<strong>占位模式</strong>导出的脱敏文件和对应的 map.json，还原为原始内容。
+        </p>
+        <p className="tool-desc" style={{ marginTop: -8, fontSize: 12, color: 'var(--base01)' }}>
+          遮蔽 PDF 不可还原；星号文本不可还原；占位文本可凭 map.json 还原。
+          扫描件占位导出仅还原文本内容，不还原原 PDF 版式。
+        </p>
 
         <div className="upload-zone">
           <label>
-            <span>脱敏文件</span>
+            <span>脱敏文件（占位导出）</span>
             <input ref={redactedRef} type="file" accept=".txt,.md,.csv,.docx,.xlsx" onChange={(e) => setRedactedFile(e.target.files?.[0])} />
           </label>
           {redactedFile && <span className="upload-name">{redactedFile.name}</span>}
@@ -62,7 +68,7 @@ export default function RestorePage() {
         </div>
 
         <div className="tool-note">
-          <strong>注意：</strong>PDF 和扫描件不可还原。还原基于 map.json 中的 SHA-256 校验，文件不匹配时会失败。
+          <strong>注意：</strong>仅占位模式导出的文件可还原。遮蔽 PDF 和星号文本不可还原。还原基于 map.json 中的 SHA-256 校验，文件不匹配时会失败。
         </div>
 
         <Button variant="default" onClick={handleRestore} disabled={restoring || !redactedFile || !mapFile}>
