@@ -99,6 +99,8 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
   const [drawing, setDrawing] = useState(null);
   const [dragging, setDragging] = useState(null);
   const [resizing, setResizing] = useState(null);
+  const [imgLoaded, setImgLoaded] = useState(false);
+  const [imgError, setImgError] = useState(false);
   const { displayWidth, displayHeight } = computeDisplaySize(pageInfo, containerWidth, 900);
 
   const toNormalized = useCallback((e) => {
@@ -159,7 +161,9 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
 
   return (
     <div className="page-canvas" style={{ position: 'relative', width: displayWidth, height: displayHeight }}>
-      <img src={`/api/tasks/${pageInfo.taskId}/page-image/${pageInfo.pageNumber}`} alt={`Page ${pageInfo.pageNumber}`} style={{ width: displayWidth, height: displayHeight, display: 'block', userSelect: 'none' }} draggable={false} />
+      {!imgLoaded && !imgError && <div className="page-img-loading" style={{ position: 'absolute', inset: 0 }}>页面恢复中…</div>}
+      {imgError && <div className="page-img-loading" style={{ position: 'absolute', inset: 0 }}>页面加载失败</div>}
+      <img src={`/api/tasks/${pageInfo.taskId}/page-image/${pageInfo.pageNumber}`} alt={`Page ${pageInfo.pageNumber}`} style={{ width: displayWidth, height: displayHeight, display: imgLoaded ? 'block' : 'none', userSelect: 'none' }} draggable={false} onLoad={() => setImgLoaded(true)} onError={() => setImgError(true)} />
       <div ref={overlayRef} className="box-overlay" style={{ position: 'absolute', top: 0, left: 0, width: displayWidth, height: displayHeight, cursor: 'crosshair' }} onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}>
         {pageBoxes.map(box => {
           const css = normalizedToCSS(box, displayWidth, displayHeight);
@@ -183,9 +187,13 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
 function MaskPreview({ pageInfo, boxes, containerWidth, selectedBox, hoveredBox, onRightClickBox }) {
   const { displayWidth, displayHeight } = computeDisplaySize(pageInfo, containerWidth, 900);
   const pageBoxes = boxes.filter(b => b.page === pageInfo.pageNumber);
+  const [imgLoaded, setImgLoaded] = useState(false);
+  const [imgError, setImgError] = useState(false);
   return (
     <div className="mask-preview" style={{ position: 'relative', width: displayWidth, height: displayHeight, background: '#fff' }}>
-      <img src={`/api/tasks/${pageInfo.taskId}/page-image/${pageInfo.pageNumber}`} alt="" style={{ width: displayWidth, height: displayHeight, display: 'block', userSelect: 'none' }} draggable={false} />
+      {!imgLoaded && !imgError && <div className="page-img-loading" style={{ position: 'absolute', inset: 0 }}>页面恢复中…</div>}
+      {imgError && <div className="page-img-loading" style={{ position: 'absolute', inset: 0 }}>页面加载失败</div>}
+      <img src={`/api/tasks/${pageInfo.taskId}/page-image/${pageInfo.pageNumber}`} alt="" style={{ width: displayWidth, height: displayHeight, display: imgLoaded ? 'block' : 'none', userSelect: 'none' }} draggable={false} onLoad={() => setImgLoaded(true)} onError={() => setImgError(true)} />
       <svg width={displayWidth} height={displayHeight} style={{ position: 'absolute', top: 0, left: 0 }}>
         {pageBoxes.map(box => {
           const css = normalizedToCSS(box, displayWidth, displayHeight);
@@ -400,11 +408,14 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   }, [resumeTaskId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Scroll → update currentPage ──────────────────────────
+  const scrollIgnoreRef = useRef(false);
+
   useEffect(() => {
     if (mode !== 'mask' || pageImages.length <= 1) return;
     const container = scrollRef.current;
     if (!container) return;
     const observer = new IntersectionObserver((entries) => {
+      if (scrollIgnoreRef.current) return; // ignore during programmatic scroll
       let best = 0, bestPage = currentPage;
       for (const e of entries) { if (e.intersectionRatio > best) { best = e.intersectionRatio; bestPage = parseInt(e.target.dataset.page, 10) || currentPage; } }
       if (best > 0.3 && bestPage !== currentPage) setCurrentPage(bestPage);
@@ -413,7 +424,17 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     return () => observer.disconnect();
   }, [mode, pageImages.length, currentPage]);
 
-  const scrollToPage = useCallback((n) => { const el = pageRowRefs.current[n]; if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); setCurrentPage(n); }, []);
+  const scrollToPage = useCallback((n) => {
+    if (n < 1 || n > pageImages.length) return;
+    setCurrentPage(n);
+    const container = scrollRef.current;
+    const el = pageRowRefs.current[n];
+    if (!container || !el) return;
+    scrollIgnoreRef.current = true;
+    const headerHeight = 56;
+    container.scrollTo({ top: el.offsetTop - headerHeight, behavior: 'smooth' });
+    setTimeout(() => { scrollIgnoreRef.current = false; }, 500);
+  }, [pageImages.length]);
 
   // ─── S5: Right-click cancel handler ────────────────────────
   const handleRightClickBox = useCallback((box) => {

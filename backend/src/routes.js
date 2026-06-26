@@ -2487,6 +2487,27 @@ router.post('/tasks/:id/analyze', async (req, res) => {
       console.warn('[WARN] Failed to write session.json:', sessionErr.message);
     }
 
+    // ── Slice 1.1: Render page images once after analyze ──
+    const pagesDir = path.join(workDir, 'pages');
+    const renderManifestPath = path.join(workDir, 'render-manifest.json');
+    try {
+      if (!existsSync(pagesDir)) mkdirSync(pagesDir, { recursive: true });
+      await execFileAsync(bin, ['render-pages', sourcePath, '--dpi', '200', '--out-dir', pagesDir, '--out', renderManifestPath], {
+        timeout: 60000,
+      });
+      console.log(`[analyze] Pages rendered for task ${taskId}`);
+    } catch (renderErr) {
+      console.warn('[WARN] Page rendering failed (non-fatal):', renderErr.message);
+    }
+
+    // Read render manifest for response (pages metadata)
+    let renderManifest = null;
+    try {
+      if (existsSync(renderManifestPath)) {
+        renderManifest = JSON.parse(await fs.readFile(renderManifestPath, 'utf-8'));
+      }
+    } catch {}
+
     res.json({
       success: true,
       data: {
@@ -2494,7 +2515,7 @@ router.post('/tasks/:id/analyze', async (req, res) => {
         refinedBoxes,
         textEntities,
         sealBoxes,
-        manifest: analyzeData.manifest || {},
+        manifest: renderManifest || analyzeData.manifest || {},
         diagnostics: diagData,
       },
     });
@@ -2551,31 +2572,23 @@ router.get('/tasks/:id/session', async (req, res) => {
       return res.status(404).json({ success: false, message: '分析数据不存在，请重新上传' });
     }
 
-    // Ensure render manifest and page images exist (re-render if missing)
+    // Read render manifest (read-only, never re-render here)
     const manifestPath = path.join(workDir, 'render-manifest.json');
-    const pagesDir = path.join(workDir, 'pages');
-    let manifest = sessionData.manifest || {};
-
-    const needsRender = !existsSync(manifestPath)
-      || !manifest.pages?.length
-      || manifest.pages.some(p => !p.imagePath || !existsSync(p.imagePath));
-
-    if (needsRender) {
-      console.log(`[session] Re-rendering pages for task ${taskId}...`);
-      try {
-        await fs.rm(pagesDir, { recursive: true, force: true });
-      } catch {}
-      await fs.mkdir(pagesDir, { recursive: true });
-
-      const { resolveLegalDesensBin } = await import('./services/cliResolver.js');
-      const bin = resolveLegalDesensBin();
-      await execFileAsync(bin, ['render-pages', sourcePath, '--dpi', '200', '--out-dir', pagesDir, '--out', manifestPath], {
-        timeout: 60000,
-      });
-    }
-
+    let manifest = {};
+    let renderCacheStatus = 'unknown';
     if (existsSync(manifestPath)) {
-      manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
+      try {
+        manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
+        // Check if all page images actually exist
+        const pagesDir = path.join(workDir, 'pages');
+        const allImagesExist = manifest.pages?.length > 0
+          && manifest.pages.every(p => p.imagePath && existsSync(p.imagePath));
+        renderCacheStatus = allImagesExist ? 'ready' : 'missing';
+      } catch {
+        renderCacheStatus = 'missing';
+      }
+    } else {
+      renderCacheStatus = 'missing';
     }
 
     // Read saved boxes; if none, use refinedBoxes + sealBoxes as initial
@@ -2611,6 +2624,7 @@ router.get('/tasks/:id/session', async (req, res) => {
         manifest,
         ocrText: sessionData.ocrText || ocrBoxes.map(b => b.text || '').join('\n'),
         diagnostics: sessionData.diagnostics || null,
+        renderCacheStatus,
       },
     });
   } catch (error) {
@@ -2785,7 +2799,20 @@ router.post('/tasks/:id/mask-export', async (req, res) => {
 
 /**
  * GET /api/tasks/:id/page-image/:pageNum - 获取任务的页面图像
+ * Slice 1.3: Per-task render lock — concurrent requests share one render.
  */
+// Per-task render locks: taskId → Promise
+const _renderLocks = new Map();
+
+function getOrCreateRender(taskId, renderFn) {
+  if (_renderLocks.has(taskId)) {
+    return _renderLocks.get(taskId);
+  }
+  const p = renderFn().finally(() => _renderLocks.delete(taskId));
+  _renderLocks.set(taskId, p);
+  return p;
+}
+
 router.get('/tasks/:id/page-image/:pageNum', async (req, res) => {
   try {
     const taskId = parseInt(req.params.id, 10);
@@ -2798,58 +2825,50 @@ router.get('/tasks/:id/page-image/:pageNum', async (req, res) => {
       return res.status(409).json({ success: false, message: '源文件已丢失' });
     }
 
-    // Render the specific page on-demand
-    const { resolveLegalDesensBin } = await import('./services/cliResolver.js');
-    const bin = resolveLegalDesensBin();
-
     const workDir = task.work_dir || path.join(uploadsDir, 'tasks', `.work_${taskId}`);
     const pagesDir = path.join(workDir, 'pages');
-    if (!existsSync(pagesDir)) mkdirSync(pagesDir, { recursive: true });
-
     const manifestPath = path.join(workDir, 'render-manifest.json');
 
-    // Check if we already have a render manifest
+    // Try reading existing manifest
     let manifest = null;
     try {
       manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
-    } catch {
-      // Need to render: first clean pagesDir to avoid FzErrorSystem (File exists)
-      try {
-        await fs.rm(pagesDir, { recursive: true, force: true });
-      } catch {}
-      await fs.mkdir(pagesDir, { recursive: true });
+    } catch {}
 
-      await execFileAsync(bin, ['render-pages', sourcePath, '--dpi', '200', '--out-dir', pagesDir, '--out', manifestPath], {
-        timeout: 60000,
+    const pageMeta = manifest?.pages?.[pageNum - 1];
+    const imageReady = pageMeta?.imagePath && existsSync(pageMeta.imagePath);
+
+    if (!imageReady) {
+      // Need to render — use lock so concurrent requests share one render
+      await getOrCreateRender(taskId, async () => {
+        console.log(`[page-image] Rendering pages for task ${taskId}...`);
+        if (!existsSync(pagesDir)) mkdirSync(pagesDir, { recursive: true });
+        // Don't rm existing pages — only add missing ones if possible
+        // But render-pages expects empty dir, so we must wipe
+        try { await fs.rm(pagesDir, { recursive: true, force: true }); } catch {}
+        await fs.mkdir(pagesDir, { recursive: true });
+
+        const { resolveLegalDesensBin } = await import('./services/cliResolver.js');
+        const bin = resolveLegalDesensBin();
+        await execFileAsync(bin, ['render-pages', sourcePath, '--dpi', '200', '--out-dir', pagesDir, '--out', manifestPath], {
+          timeout: 60000,
+        });
       });
-      manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
-    }
 
-    const pageMeta = manifest.pages?.[pageNum - 1];
-    if (!pageMeta) return res.status(404).json({ success: false, message: `页面 ${pageNum} 不存在` });
-
-    const imagePath = pageMeta.imagePath;
-
-    // S1: If image file missing but manifest exists, re-render pages
-    if (!imagePath || !existsSync(imagePath)) {
-      console.log(`[S1] Page ${pageNum} image missing, re-rendering pages...`);
+      // Re-read manifest after render
       try {
-        await fs.rm(pagesDir, { recursive: true, force: true });
-      } catch {}
-      await fs.mkdir(pagesDir, { recursive: true });
-
-      await execFileAsync(bin, ['render-pages', sourcePath, '--dpi', '200', '--out-dir', pagesDir, '--out', manifestPath], {
-        timeout: 60000,
-      });
-      manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
-      const refreshedMeta = manifest.pages?.[pageNum - 1];
-      if (!refreshedMeta?.imagePath || !existsSync(refreshedMeta.imagePath)) {
-        return res.status(404).json({ success: false, message: '页面图像重渲染失败' });
+        manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
+      } catch {
+        return res.status(500).json({ success: false, message: '页面渲染失败' });
       }
-      return res.sendFile(refreshedMeta.imagePath);
     }
 
-    res.sendFile(imagePath);
+    const meta = manifest.pages?.[pageNum - 1];
+    if (!meta?.imagePath || !existsSync(meta.imagePath)) {
+      return res.status(404).json({ success: false, message: `页面 ${pageNum} 图像不存在` });
+    }
+
+    res.sendFile(meta.imagePath);
   } catch (error) {
     console.error('Page Image Error:', error);
     res.status(500).json({ success: false, message: '获取页面图像失败', error: error.message });
