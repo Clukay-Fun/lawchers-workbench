@@ -174,7 +174,22 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
 
   return (
     <div className="page-canvas" style={{ position: 'relative', width: displayWidth, height: displayHeight }}>
-      {isRecovering && <div className="page-img-loading" style={{ position: 'absolute', inset: 0 }}>页面恢复中…</div>}
+      {/* Image always renders when URL exists; overlays sit on top */}
+      {imageUrl && (
+        <img
+          src={imageUrl}
+          alt={`Page ${pageInfo.pageNumber}`}
+          style={{ width: displayWidth, height: displayHeight, display: 'block', userSelect: 'none' }}
+          draggable={false}
+          onLoad={() => onLoadSuccess?.(pageInfo.pageNumber)}
+          onError={() => onLoadError?.(pageInfo.pageNumber)}
+        />
+      )}
+      {/* Loading/recovering overlay */}
+      {isRecovering && (
+        <div className="page-img-loading" style={{ position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.7)' }}>页面恢复中…</div>
+      )}
+      {/* Failed overlay with recovery buttons */}
       {isFailed && (
         <div className="page-img-loading" style={{ position: 'absolute', inset: 0, flexDirection: 'column', gap: 8, background: 'var(--muted)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <span style={{ color: 'var(--base01)', fontSize: 12, fontWeight: 500 }}>页面加载失败</span>
@@ -184,17 +199,9 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
           </div>
         </div>
       )}
-      {imageUrl && (
-        <img
-          src={imageUrl}
-          alt={`Page ${pageInfo.pageNumber}`}
-          style={{ width: displayWidth, height: displayHeight, display: isReady ? 'block' : 'none', userSelect: 'none' }}
-          draggable={false}
-          onLoad={() => { if (status !== 'ready') onLoadSuccess?.(pageInfo.pageNumber); }}
-          onError={() => onLoadError?.(pageInfo.pageNumber)}
-        />
-      )}
-      <div ref={overlayRef} className="box-overlay" style={{ position: 'absolute', top: 0, left: 0, width: displayWidth, height: displayHeight, cursor: 'crosshair', display: isReady ? 'block' : 'none' }} onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}>
+      {/* Box overlay: only show when image is ready */}
+      {isReady && (
+      <div ref={overlayRef} className="box-overlay" style={{ position: 'absolute', top: 0, left: 0, width: displayWidth, height: displayHeight, cursor: 'crosshair' }} onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}>
         {pageBoxes.map(box => {
           const css = normalizedToCSS(box, displayWidth, displayHeight);
           const isActive = hoveredBox === box.id || selectedBox === box.id;
@@ -234,6 +241,7 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
         })}
         {drawing && <div style={{ position: 'absolute', left: Math.min(drawing.startX, drawing.currentX || drawing.startX) * displayWidth, top: Math.min(drawing.startY, drawing.currentY || drawing.startY) * displayHeight, width: Math.abs((drawing.currentX || drawing.startX) - drawing.startX) * displayWidth, height: Math.abs((drawing.currentY || drawing.startY) - drawing.startY) * displayHeight, border: '2px dashed #3b82f6', background: 'rgba(59,130,246,0.1)', pointerEvents: 'none' }} />}
       </div>
+      )}
     </div>
   );
 }
@@ -250,21 +258,28 @@ function MaskPreview({ pageInfo, boxes, containerWidth, selectedBox, hoveredBox,
 
   return (
     <div className="mask-preview" style={{ position: 'relative', width: displayWidth, height: displayHeight, background: '#fff' }}>
-      {isRecovering && <div className="page-img-loading" style={{ position: 'absolute', inset: 0 }}>页面恢复中…</div>}
+      {/* Image always renders when URL exists */}
+      {imageUrl && (
+        <img
+          src={imageUrl}
+          alt=""
+          style={{ width: displayWidth, height: displayHeight, display: 'block', userSelect: 'none' }}
+          draggable={false}
+        />
+      )}
+      {/* Loading overlay */}
+      {isRecovering && (
+        <div className="page-img-loading" style={{ position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.7)' }}>页面恢复中…</div>
+      )}
+      {/* Failed overlay */}
       {isFailed && (
         <div className="page-img-loading" style={{ position: 'absolute', inset: 0, background: 'var(--muted)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <span style={{ color: 'var(--base01)', fontSize: 12, fontWeight: 500 }}>预览不可用</span>
         </div>
       )}
-      {imageUrl && (
-        <img
-          src={imageUrl}
-          alt=""
-          style={{ width: displayWidth, height: displayHeight, display: isReady ? 'block' : 'none', userSelect: 'none' }}
-          draggable={false}
-        />
-      )}
-      <svg width={displayWidth} height={displayHeight} style={{ position: 'absolute', top: 0, left: 0, display: isReady ? 'block' : 'none' }}>
+      {/* SVG overlay: only show when ready */}
+      {isReady && (
+      <svg width={displayWidth} height={displayHeight} style={{ position: 'absolute', top: 0, left: 0 }}>
         {pageBoxes.map(box => {
           const css = normalizedToCSS(box, displayWidth, displayHeight);
           const isSelected = selectedBox === box.id || hoveredBox === box.id;
@@ -277,6 +292,7 @@ function MaskPreview({ pageInfo, boxes, containerWidth, selectedBox, hoveredBox,
           );
         })}
       </svg>
+      )}
     </div>
   );
 }
@@ -419,8 +435,10 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
 
   const [pageStatus, setPageStatus] = useState({});
   const [imageUrls, setImageUrls] = useState({});
+  const renderCacheRef = useRef('unknown'); // 'ready' | 'missing' | 'unknown'
 
   // ─── Initialize page load status and image URLs ──────────────
+  // Only reset when taskId or pageImages length changes (not on every render)
   useEffect(() => {
     if (!task || !pageImages.length) {
       setPageStatus({});
@@ -428,15 +446,18 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
       return;
     }
     const tid = task.taskId;
+    const cacheReady = renderCacheRef.current === 'ready';
     const initialStatus = {};
     const initialUrls = {};
     pageImages.forEach((pg) => {
-      initialStatus[pg.pageNumber] = 'loading';
+      // If cache is ready, start as 'ready' — image will display immediately
+      // onLoad will still fire and confirm. If it fails, status goes to 'recovering'.
+      initialStatus[pg.pageNumber] = cacheReady ? 'ready' : 'loading';
       initialUrls[pg.pageNumber] = `/api/tasks/${tid}/page-image/${pg.pageNumber}`;
     });
     setPageStatus(initialStatus);
     setImageUrls(initialUrls);
-  }, [pageImages, task?.taskId]);
+  }, [task?.taskId, pageImages.length]);
 
   const containerRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -574,6 +595,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     try {
       const session = await getTaskSession(taskId);
       const normalized = normalizeTask(session.task);
+      renderCacheRef.current = session.renderCacheStatus || 'unknown';
       setTask(normalized);
       setBoxes(session.boxes || []);
       setTextEntities(session.textEntities || []);
@@ -583,7 +605,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
       setCurrentPage(1);
       hasLoadedRef.current = true;
       localStorage.setItem('activeTaskId', String(taskId));
-      // P1: adjust mode to document kind
+      // Adjust mode to document kind
       const availModes = getAvailableModes(normalized?.document_kind);
       setMode(prev => availModes.includes(prev) ? prev : availModes[0]);
     } catch (err) {
@@ -734,7 +756,8 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
 
   const handleFile = async (file) => {
     if (!file) return;
-    localStorage.removeItem('activeTaskId'); // S4: clear before new upload
+    localStorage.removeItem('activeTaskId');
+    renderCacheRef.current = 'unknown';
     setLoading(true); setError(null); setBoxes([]); setTextEntities([]); setOcrText(''); setPageImages([]); cancelledRef.current = new Set(); setUploadPercent(0); setProcessingStep('上传中…');
     try {
       const taskData = await uploadWithProgress(file, _settings?.rulesConfig, setUploadPercent);
