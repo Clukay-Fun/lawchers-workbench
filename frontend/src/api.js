@@ -168,6 +168,17 @@ export async function getTaskSession(taskId) {
   return result.data;
 }
 
+/** 重新渲染全部页面 */
+export async function renderTasksPages(taskId) {
+  const response = await fetch(`${API_BASE}/tasks/${taskId}/render-pages`, { method: 'POST' });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.message || '重新渲染页面失败');
+  }
+  return response.json();
+}
+
+
 /** 更新任务的遮蔽框列表 */
 export async function updateTaskBoxes(taskId, boxes) {
   const response = await fetch(`${API_BASE}/tasks/${taskId}/boxes`, {

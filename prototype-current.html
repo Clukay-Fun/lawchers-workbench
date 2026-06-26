@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LAWCHERS 脱敏工具 — 当前 UI 原型</title>
+<style>
+:root {
+  /* shadcn/ui 核心主题变量映射到 Warm Paper 调色板 */
+  --background: #f7f4ee;
+  --foreground: #3f4a4d;
+  --card: #fbfaf6;
+  --card-foreground: #3f4a4d;
+  --popover: #fbfaf6;
+  --popover-foreground: #3f4a4d;
+  --primary: #4a6b8a;
+  --primary-foreground: #f7f4ee;
+  --secondary: #f1ede4;
+  --secondary-foreground: #7a8488;
+  --muted: #f1ede4;
+  --muted-foreground: #7a8488;
+  --accent: #2a8c8c;
+  --accent-foreground: #f7f4ee;
+  --destructive: #dc322f;
+  --destructive-foreground: #f7f4ee;
+  --border: rgba(63, 74, 77, 0.13);
+  --input: rgba(63, 74, 77, 0.24);
+  --ring: #4a6b8a;
+  --radius: 12px;
+
+  /* Warm Paper 主题配色 */
+  --base03: #2b3338;
+  --base02: #3f4a4d;   /* 主文字 */
+  --base01: #7a8488;   /* 次文字 */
+  --base00: #8a9296;
+  --base1: #b1b6b8;
+  --base2: #f1ede4;    /* 面板 / 次级面 */
+  --base3: #f7f4ee;    /* 画布 */
+  --yellow: #facc15;   /* 荧光黄高亮 */
+  --orange: #cb4b16;   /* 警告 */
+  --red: #dc322f;      /* 阻断错误 */
+  --blue: #4a6b8a;     /* 主点缀：钢蓝 */
+  --cyan: #2a8c8c;     /* 脱敏/来源标记 */
+  --green: #859900;    /* 已确认 */
+  --canvas: #f3efe6;
+  --paper: #fbfaf6;    /* 卡片/主表面 */
+  --line: rgba(63, 74, 77, 0.13);
+  --line-strong: rgba(63, 74, 77, 0.24);
+  --shadow-sm: 0 1px 2px rgba(63, 74, 77, .05);
+  --shadow-md: 0 8px 24px rgba(63, 74, 77, .08);
+  --radius-control: 6px;
+  --radius-card: 12px;
+  --font-display: "Songti SC", STSong, "Noto Serif CJK SC", serif;
+  --font-ui: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --font-mono: SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font: 14px/1.5 var(--font-ui); color: var(--base02); background: var(--base3); overflow: hidden; }
+button { cursor: pointer; border: 0; background: transparent; }
+
+/* ── Shell ── */
+.app-shell { display: flex; width: 100vw; height: 100vh; overflow: hidden; background: var(--base3); }
+.sidebar {
+  width: 68px; flex: 0 0 68px; height: 100%; display: flex; flex-direction: column; align-items: center;
+  padding: 14px 8px 12px; background: rgba(241,237,228,.66); border-right: 1px solid var(--line);
+}
+.brand-mark {
+  width: 42px; height: 42px; color: var(--base02);
+  font: 600 30px/1 var(--font-display); margin-bottom: 22px; text-align: center;
+}
+.nav-menu { display: flex; flex-direction: column; width: 100%; gap: 8px; }
+.nav-item {
+  appearance: none; border: 1px solid transparent; background: transparent; min-height: 54px; padding: 7px 2px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  color: var(--base01); border-radius: 8px; transition: background-color 150ms, color 150ms, border-color 150ms;
+}
+.nav-item svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.nav-item span { font-size: 11px; }
+.nav-item:hover { color: var(--base02); background: rgba(247,244,238,.72); }
+.nav-item.active { color: var(--blue); background: var(--base3); border-color: var(--line); }
+.local-only { margin-top: auto; display: flex; align-items: center; gap: 5px; color: var(--base01); font-size: 10px; }
+.local-only span { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+
+/* ── Main ── */
+.main-container { min-width: 0; flex: 1; display: flex; flex-direction: column; height: 100%; }
+.page-wrapper { min-height: 0; flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+
+/* ── Scenario tabs ── */
+.scenario-tabs { display: flex; gap: 8px; padding: 10px 16px; background: rgba(247,244,238,.5); border-bottom: 1px solid var(--line); flex-shrink: 0; }
+.scenario-tab { padding: 6px 14px; border: 1px solid var(--line-strong); border-radius: var(--radius-control); background: var(--paper); color: var(--base01); font-size: 12px; cursor: pointer; font-family: var(--font-ui); }
+.scenario-tab:hover { background: rgba(0,0,0,.04); }
+.scenario-tab.active { background: var(--blue); color: #fff; border-color: var(--blue); }
+.scenario-label { font-size: 11px; color: var(--base01); margin-left: auto; align-self: center; }
+
+/* ── Workspace layout ── */
+.workspace-container { display: flex; width: 100%; height: 100%; overflow: hidden; background: var(--background); }
+.workspace-sidebar { flex: 0 0 220px; border-right: 1px solid var(--border); background: var(--card); display: flex; flex-direction: column; padding: 16px; overflow-y: auto; height: 100%; box-sizing: border-box; transition: width 0.2s; }
+.workspace-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; position: relative; }
+
+/* File Sidebar List */
+.sidebar-title { font-size: 11px; font-weight: 700; color: var(--base01); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px; margin-top: 8px; }
+.file-list { display: flex; flex-direction: column; gap: 8px; flex: 1; overflow-y: auto; margin-bottom: 16px; }
+.file-card { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); cursor: pointer; transition: all 150ms ease; position: relative; min-width: 0; overflow: hidden; }
+.file-card:hover { border-color: var(--primary); background: rgba(74, 107, 138, 0.04); }
+.file-card.active { border-color: var(--primary); background: rgba(74, 107, 138, 0.06); box-shadow: 0 0 0 1px var(--primary) inset, var(--shadow-sm); }
+.file-card-title { font-size: 13px; font-weight: 500; color: var(--foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 20px; min-width: 0; width: 100%; box-sizing: border-box; }
+.file-card-meta { font-size: 11px; color: var(--base01); display: flex; justify-content: space-between; align-items: center; }
+.file-card-delete-btn { position: absolute !important; top: 50% !important; transform: translateY(-50%); right: 6px; height: 20px !important; width: 20px !important; padding: 0 !important; border-radius: 50% !important; display: flex !important; align-items: center; justify-content: center; opacity: 0.3; transition: opacity 120ms ease, background-color 120ms ease, color 120ms ease; color: var(--base01); font-size: 16px; font-family: Arial, sans-serif; cursor: pointer; }
+.file-card:hover .file-card-delete-btn { opacity: 1; }
+.file-card-delete-btn:hover { color: var(--red); background: rgba(220,50,47,.08); }
+
+.sidebar-upload-btn { margin-top: 8px; border: 1.5px dashed rgba(74, 107, 138, 0.3); background: rgba(74, 107, 138, 0.02); border-radius: 8px; padding: 12px; text-align: center; cursor: pointer; font-size: 13px; color: var(--primary); font-weight: 500; transition: all 150ms ease; }
+.sidebar-upload-btn:hover { border-color: var(--primary); background: rgba(74, 107, 138, 0.08); }
+
+/* ── Topbar ── */
+.mask-topbar { display: flex; align-items: center; justify-content: space-between; padding: 8px 16px; border-bottom: 1px solid var(--line); background: rgba(247,244,238,.95); z-index: 60; flex-shrink: 0; height: 50px; }
+.mask-topbar-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.mask-topbar-center { display: flex; align-items: center; justify-content: center; }
+.mask-topbar-right { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+.mask-filename { font-weight: 600; font-size: 13px; color: var(--base02); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 300px; }
+
+/* Mode switch */
+.mode-switch { display: flex; gap: 0; border: 1px solid var(--line-strong); border-radius: var(--radius-control); overflow: hidden; }
+.mode-btn { padding: 4px 14px; border: 0; background: transparent; color: var(--base01); font-size: 12px; cursor: pointer; transition: background 120ms, color 120ms; font-family: var(--font-ui); }
+.mode-btn:hover { background: rgba(0,0,0,.04); }
+.mode-btn.active { background: var(--blue); color: #fff; }
+
+/* Buttons */
+.btn { display: inline-flex; align-items: center; justify-content: center; padding: 4px 14px; border-radius: var(--radius-control); font-size: 13px; font-weight: 500; cursor: pointer; border: 1px solid var(--line-strong); background: var(--paper); color: var(--base02); transition: background 80ms; font-family: var(--font-ui); }
+.btn:hover { background: rgba(0,0,0,.04); }
+.btn-primary { background: var(--blue); color: #fff; border-color: var(--blue); }
+.btn-primary:hover { background: #3d5a73; }
+
+/* Scroll container */
+.mask-scroll-container { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 0 0 16px; scroll-behavior: smooth; }
+
+/* Shared header row */
+.mask-col-header-row { display: flex; gap: 16px; justify-content: center; position: sticky; top: 0; z-index: 10; background: rgba(247,244,238,.95); padding: 12px 16px 0px; margin-bottom: 0; box-sizing: border-box; width: 100%; }
+.mask-col-header { flex: 0 0 auto; height: 42px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; background: var(--card); border: 1px solid var(--line); border-bottom: none; border-radius: var(--radius) var(--radius) 0 0; box-shadow: var(--shadow-sm); box-sizing: border-box; }
+.mask-col-header-title { font-weight: 600; font-size: 13px; color: var(--base02); }
+
+/* Page rows */
+.mask-page-row { display: flex; gap: 16px; margin-bottom: 24px; justify-content: center; flex-wrap: nowrap; padding: 0 16px; box-sizing: border-box; width: 100%; }
+.mask-page-col { flex: 0 1 auto; min-width: 0; display: flex; flex-direction: column; }
+
+/* Page canvas */
+.page-canvas { box-shadow: var(--shadow-sm); border: 1px solid var(--line); border-radius: 0 0 2px 2px; overflow: visible; max-width: 100%; box-sizing: border-box; position: relative; }
+.page-canvas-img { display: block; user-select: none; }
+
+/* Mask preview */
+.mask-preview { border-radius: 0 0 2px 2px; box-shadow: var(--shadow-sm); border: 1px solid var(--line); overflow: hidden; border-top: none; max-width: 100%; position: relative; box-sizing: border-box; }
+.mask-preview svg { position: absolute; top: 0; left: 0; }
+
+/* Yellow highlight box overlay */
+.box-overlay { position: absolute; top: 0; left: 0; cursor: crosshair; }
+.box-rect { position: absolute; border: 1px solid transparent; background: rgba(250, 204, 21, 0.25); border-radius: 2px; cursor: move; transition: border-color 0.12s, background 0.12s; }
+.box-rect:hover, .box-rect.active { border: 2px solid var(--yellow); background: rgba(250, 204, 21, 0.4); }
+.box-delete { position: absolute; top: -11px; right: -11px; width: 22px; height: 22px; border-radius: 50%; background: var(--red); color: #fff; border: 2px solid #fff; cursor: pointer; display: none; align-items: center; justify-content: center; z-index: 20; box-shadow: 0 1px 4px rgba(0,0,0,.2); }
+.box-rect:hover .box-delete, .box-rect.active .box-delete { display: flex; }
+.box-handle { position: absolute; width: 8px; height: 8px; background: var(--yellow); border: 1px solid #fff; border-radius: 2px; z-index: 10; display: none; }
+.box-rect:hover .box-handle, .box-rect.active .box-handle { display: block; }
+.box-handle.nw { top: -4px; left: -4px; cursor: nwse-resize; }
+.box-handle.ne { top: -4px; right: -4px; cursor: nesw-resize; }
+.box-handle.sw { bottom: -4px; left: -4px; cursor: nesw-resize; }
+.box-handle.se { bottom: -4px; right: -4px; cursor: nwse-resize; }
+
+/* Page nav */
+.page-nav { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--base01); }
+.page-nav button { padding: 2px 8px; background: var(--paper); border: 1px solid var(--line-strong); border-radius: 4px; font-size: 11px; color: var(--base02); transition: background-color 100ms; cursor: pointer; }
+.page-nav button:hover { background: rgba(0,0,0,0.04); }
+.page-nav button:disabled { opacity: 0.4; cursor: not-allowed; }
+.page-nav span { min-width: 40px; text-align: center; }
+
+/* Text dual-column */
+.text-mode-container { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; padding: 0 16px 16px; }
+.text-dual-column { flex: 1; display: flex; gap: 16px; padding-top: 16px; overflow: hidden; min-height: 0; width: 100%; max-width: 1136px; margin: 0 auto; align-self: center; }
+.text-panel { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius-card); overflow: hidden; }
+.text-panel-header { flex: 0 0 auto; padding: 10px 16px; font-weight: 600; font-size: 13px; color: var(--base02); border-bottom: 1px solid var(--line); background: rgba(247,244,238,.5); }
+.text-panel-body { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; }
+.text-content { margin: 0; font: 13px/1.7 var(--font-mono); color: var(--base02); white-space: pre-wrap; word-break: break-all; }
+.text-entity-highlight { background: rgba(250, 204, 21, .25); border-radius: 2px; cursor: pointer; transition: background 120ms; }
+.text-entity-highlight:hover, .text-entity-highlight.active { background: rgba(250, 204, 21, .5); }
+.text-entity-highlight.replaced { background: rgba(59, 130, 246, .15); }
+.text-entity-highlight.replaced:hover, .text-entity-highlight.replaced.active { background: rgba(59, 130, 246, .35); }
+.text-preview-note { margin-top: 12px; font-size: 11px; color: var(--base01); font-style: italic; }
+
+/* Empty state */
+.tool-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; height: 100%; color: var(--base01); }
+.tool-empty strong { font: 500 18px/1.3 var(--font-display); color: var(--base02); }
+.tool-empty p { font-size: 13px; }
+
+/* Progress */
+.progress-container { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 16px; padding: 0 40px; }
+.progress-bar-wrapper { width: 100%; max-width: 400px; height: 4px; background: rgba(0,0,0,.08); border-radius: 2px; overflow: hidden; }
+.progress-bar-fill { height: 100%; border-radius: 2px; background: var(--blue); transition: width 200ms ease; }
+.progress-bar-fill.indeterminate { width: 30%; animation: indeterminate 1.4s ease-in-out infinite; }
+@keyframes indeterminate { 0% { transform: translateX(-100%); } 100% { transform: translateX(400%); } }
+.progress-step-text { font-size: 13px; color: var(--base01); }
+
+/* Visually hidden */
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <button class="brand-mark">L</button>
+    <nav class="nav-menu">
+      <button class="nav-item active"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg><span>脱敏</span></button>
+      <button class="nav-item"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9"/><path d="M3 3v6h6"/></svg><span>还原</span></button>
+      <button class="nav-item"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg><span>历史</span></button>
+      <button class="nav-item"><svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg><span>规则</span></button>
+      <button class="nav-item"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><span>下载</span></button>
+      <button class="nav-item"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span>设置</span></button>
+    </nav>
+    <div class="local-only"><span></span>本地</div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main-container">
+    <div class="page-wrapper">
+      <div class="scenario-tabs">
+        <button class="scenario-tab active" onclick="showScenario('mask')">遮蔽模式</button>
+        <button class="scenario-tab" onclick="showScenario('star')">星号模式</button>
+        <button class="scenario-tab" onclick="showScenario('placeholder')">占位模式</button>
+        <button class="scenario-tab" onclick="showScenario('empty')">空态</button>
+        <button class="scenario-tab" onclick="showScenario('loading')">加载中</button>
+        <span class="scenario-label">当前 UI 高保真原型快照</span>
+      </div>
+
+      <!-- Workspace container -->
+      <div class="workspace-container">
+        <!-- 左栏：本案材料列表 -->
+        <aside class="workspace-sidebar">
+          <h4 class="sidebar-title">本案材料</h4>
+          <div class="file-list">
+            <div id="file-contract" class="file-card active" onclick="switchFile('contract')">
+              <div class="file-card-title" title="【20261201】委托代理合同）（海源节能vs何育强）.pdf">【20261201】委托代理合同）（海源节能vs何育强）.pdf</div>
+              <div class="file-card-meta">
+                <span>7 页</span>
+                <span>4.2 MB</span>
+              </div>
+              <button class="file-card-delete-btn" onclick="deleteFile('contract', event)" title="删除材料">×</button>
+            </div>
+            <div id="file-complaint" class="file-card" onclick="switchFile('complaint')">
+              <div class="file-card-title" title="劳动争议仲裁申请书（何育强）.pdf">劳动争议仲裁申请书（何育强）.pdf</div>
+              <div class="file-card-meta">
+                <span>2 页</span>
+                <span>1.8 MB</span>
+              </div>
+              <button class="file-card-delete-btn" onclick="deleteFile('complaint', event)" title="删除材料">×</button>
+            </div>
+          </div>
+          <div class="sidebar-upload-btn">+ 上传材料</div>
+        </aside>
+
+        <!-- 右栏：主编辑区 -->
+        <div class="workspace-main">
+          
+          <!-- === 遮蔽模式 === -->
+          <div id="sc-mask" class="sc" style="display: flex; flex-direction: column; flex: 1; overflow: hidden; width: 100%;">
+            <div class="mask-topbar">
+              <div class="mask-topbar-left"><span class="mask-filename" id="mask-filename-mask">【20261201】委托代理合同）（海源节能vs何育强）.pdf</span></div>
+              <div class="mask-topbar-center">
+                <div class="mode-switch">
+                  <button class="mode-btn active" onclick="showScenario('mask')">遮蔽</button>
+                  <button class="mode-btn" onclick="showScenario('star')">星号</button>
+                  <button class="mode-btn" onclick="showScenario('placeholder')">占位</button>
+                </div>
+              </div>
+              <div class="mask-topbar-right">
+                <button class="btn btn-primary">导出 ▾</button>
+              </div>
+            </div>
+            
+            <div class="mask-scroll-container">
+              <!-- S2: Shared header — renders once, sticky -->
+              <div class="mask-col-header-row">
+                <div class="mask-col-header" style="width: 480px;">
+                  <span class="mask-col-header-title">OCR 抽取原文</span>
+                  <div class="page-nav">
+                    <button id="prev-btn" disabled onclick="scrollToPage(currentPage - 1)">←</button>
+                    <span id="page-indicator">1 / 2</span>
+                    <button id="next-btn" onclick="scrollToPage(currentPage + 1)">→</button>
+                  </div>
+                </div>
+                <div class="mask-col-header" style="width: 480px; justify-content: flex-start;">
+                  <span class="mask-col-header-title">脱敏预览</span>
+                </div>
+              </div>
+
+              <!-- Page 1 -->
+              <div class="mask-page-row" id="page-row-1" data-page="1">
+                <div class="mask-page-col">
+                  <div class="page-canvas" style="width: 480px; height: 680px; background: var(--paper);">
+                    <div style="padding: 40px 36px; font-size: 13px; line-height: 2; color: var(--base02); font-family: var(--font-display);">
+                      <div style="font-size: 18px; font-weight: 600; margin-bottom: 24px; text-align: center;">委托代理合同</div>
+                      <div>聘请方（甲方）：<span class="box-rect" style="position: relative; display: inline-block;">深圳市海源节能科技有限公司<span class="box-delete">×</span><span class="box-handle nw"></span><span class="box-handle ne"></span><span class="box-handle sw"></span><span class="box-handle se"></span></span></div>
+                      <div style="margin-top: 8px;">受聘方（乙方）：<span class="box-rect" style="position: relative; display: inline-block;">北京市隆安（深圳）律师事务所<span class="box-delete">×</span><span class="box-handle nw"></span><span class="box-handle ne"></span><span class="box-handle sw"></span><span class="box-handle se"></span></span></div>
+                      <div style="margin-top: 8px;">因劳动争议纠纷一案，甲方特聘请乙方的律师为代理人。</div>
+                      <div style="margin-top: 8px;">第一条 乙方指派<span class="box-rect" style="position: relative; display: inline-block;">唐秀荣<span class="box-delete">×</span><span class="box-handle nw"></span><span class="box-handle ne"></span><span class="box-handle sw"></span><span class="box-handle se"></span></span>、何育强律师担任甲方的代理人。</div>
+                      <div style="margin-top: 8px;">第二条 代理权限为：特别授权，包含代为调解、承认或放弃诉讼请求。</div>
+                      <div style="margin-top: 12px; color: var(--base01); font-family: var(--font-ui); font-size: 11px; border-top: 1px dashed var(--line); padding-top: 8px; text-align: center;">1 / 2 页</div>
+                    </div>
+                  </div>
+                </div>
+                <div class="mask-page-col">
+                  <div class="mask-preview" style="width: 480px; height: 680px; background: #fff;">
+                    <svg width="480" height="680" style="position: absolute; top: 0; left: 0;">
+                      <!-- 深圳市海源节能科技有限公司 -->
+                      <rect x="136" y="90" width="180" height="20" fill="#000"/>
+                      <!-- 北京市隆安（深圳）律师事务所 -->
+                      <rect x="136" y="118" width="188" height="20" fill="#000"/>
+                      <!-- 唐秀荣 -->
+                      <rect x="156" y="174" width="46" height="20" fill="#000"/>
+                    </svg>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Page 2 -->
+              <div class="mask-page-row" id="page-row-2" data-page="2">
+                <div class="mask-page-col">
+                  <div class="page-canvas" style="width: 480px; height: 680px; background: var(--paper);">
+                    <div style="padding: 40px 36px; font-size: 13px; line-height: 2; color: var(--base02); font-family: var(--font-display);">
+                      <div style="font-size: 15px; font-weight: 600; margin-bottom: 16px;">第三条 律师代理费</div>
+                      <div>双方约定代理费为固定金额人民币<span class="box-rect" style="position: relative; display: inline-block;">50000元<span class="box-delete">×</span><span class="box-handle nw"></span><span class="box-handle ne"></span><span class="box-handle sw"></span><span class="box-handle se"></span></span>整。</div>
+                      <div style="margin-top: 8px;">第四条 争议解决</div>
+                      <div>因本合同履约产生的分歧，双方应协商解决，协商不成可向<span class="box-rect" style="position: relative; display: inline-block;">深圳市南山区人民法院<span class="box-delete">×</span><span class="box-handle nw"></span><span class="box-handle ne"></span><span class="box-handle sw"></span><span class="box-handle se"></span></span>提起诉讼。</div>
+                      <div style="margin-top: 24px;">甲方签名：__________________</div>
+                      <div style="margin-top: 8px;">乙方盖章：北京市隆安（深圳）律师事务所</div>
+                      <div style="margin-top: 8px;">签约时间：2026年12月01日</div>
+                      <div style="margin-top: 36px; color: var(--base01); font-family: var(--font-ui); font-size: 11px; border-top: 1px dashed var(--line); padding-top: 8px; text-align: center;">2 / 2 页</div>
+                    </div>
+                  </div>
+                </div>
+                <div class="mask-page-col">
+                  <div class="mask-preview" style="width: 480px; height: 680px; background: #fff;">
+                    <svg width="480" height="680" style="position: absolute; top: 0; left: 0;">
+                      <!-- 50000元 -->
+                      <rect x="238" y="62" width="58" height="20" fill="#000"/>
+                      <!-- 深圳市南山区人民法院 -->
+                      <rect x="256" y="118" width="144" height="20" fill="#000"/>
+                    </svg>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- === 星号模式 === -->
+          <div id="sc-star" class="sc" style="display: none; flex-direction: column; flex: 1; overflow: hidden; width: 100%;">
+            <div class="mask-topbar">
+              <div class="mask-topbar-left"><span class="mask-filename" id="mask-filename-star">【20261201】委托代理合同）（海源节能vs何育强）.pdf</span></div>
+              <div class="mask-topbar-center">
+                <div class="mode-switch">
+                  <button class="mode-btn" onclick="showScenario('mask')">遮蔽</button>
+                  <button class="mode-btn active" onclick="showScenario('star')">星号</button>
+                  <button class="mode-btn" onclick="showScenario('placeholder')">占位</button>
+                </div>
+              </div>
+              <div class="mask-topbar-right">
+                <button class="btn btn-primary">导出 ▾</button>
+              </div>
+            </div>
+            
+            <div class="text-mode-container">
+              <div class="text-dual-column">
+                <div class="text-panel">
+                  <div class="text-panel-header" id="star-ocr-title">OCR 抽取原文（5 个敏感实体命中）</div>
+                  <div class="text-panel-body">
+                    <pre class="text-content" id="star-ocr-body">聘请方（甲方）：<span class="text-entity-highlight">深圳市海源节能科技有限公司</span>
+受聘方（乙方）：<span class="text-entity-highlight">北京市隆安（深圳）律师事务所</span>
+乙方指派：<span class="text-entity-highlight">唐秀荣</span> 律师担任甲方的代理人。
+代理费为固定金额人民币：<span class="text-entity-highlight">50000元</span>。
+争议解决法院：<span class="text-entity-highlight">深圳市南山区人民法院</span>。</pre>
+                  </div>
+                </div>
+                <div class="text-panel">
+                  <div class="text-panel-header">星号替换预览</div>
+                  <div class="text-panel-body">
+                    <pre class="text-content" id="star-replace-body">聘请方（甲方）：<span class="text-entity-highlight replaced">深**********司</span>
+受聘方（乙方）：<span class="text-entity-highlight replaced">北**********务所</span>
+乙方指派：<span class="text-entity-highlight replaced">唐*</span> 律师担任甲方的代理人。
+代理费为固定金额人民币：<span class="text-entity-highlight replaced">****元</span>。
+争议解决法院：<span class="text-entity-highlight replaced">深**********院</span>。</pre>
+                    <div class="text-preview-note">预览仅供参考，以实际导出为准</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- === 占位模式 === -->
+          <div id="sc-placeholder" class="sc" style="display: none; flex-direction: column; flex: 1; overflow: hidden; width: 100%;">
+            <div class="mask-topbar">
+              <div class="mask-topbar-left"><span class="mask-filename" id="mask-filename-placeholder">【20261201】委托代理合同）（海源节能vs何育强）.pdf</span></div>
+              <div class="mask-topbar-center">
+                <div class="mode-switch">
+                  <button class="mode-btn" onclick="showScenario('mask')">遮蔽</button>
+                  <button class="mode-btn" onclick="showScenario('star')">星号</button>
+                  <button class="mode-btn active" onclick="showScenario('placeholder')">占位</button>
+                </div>
+              </div>
+              <div class="mask-topbar-right">
+                <button class="btn btn-primary">导出 ▾</button>
+              </div>
+            </div>
+            
+            <div class="text-mode-container">
+              <div class="text-dual-column">
+                <div class="text-panel">
+                  <div class="text-panel-header" id="placeholder-ocr-title">OCR 抽取原文（5 个敏感实体命中）</div>
+                  <div class="text-panel-body">
+                    <pre class="text-content" id="placeholder-ocr-body">聘请方（甲方）：<span class="text-entity-highlight">深圳市海源节能科技有限公司</span>
+受聘方（乙方）：<span class="text-entity-highlight">北京市隆安（深圳）律师事务所</span>
+乙方指派：<span class="text-entity-highlight">唐秀荣</span> 律师担任甲方的代理人。
+代理费为固定金额人民币：<span class="text-entity-highlight">50000元</span>。
+争议解决法院：<span class="text-entity-highlight">深圳市南山区人民法院</span>。</pre>
+                  </div>
+                </div>
+                <div class="text-panel">
+                  <div class="text-panel-header">占位替换预览</div>
+                  <div class="text-panel-body">
+                    <pre class="text-content" id="placeholder-replace-body">聘请方（甲方）：<span class="text-entity-highlight replaced">&lt;公司1&gt;</span>
+受聘方（乙方）：<span class="text-entity-highlight replaced">&lt;律所1&gt;</span>
+乙方指派：<span class="text-entity-highlight replaced">&lt;姓名1&gt;</span> 律师担任甲方的代理人。
+代理费为固定金额人民币：<span class="text-entity-highlight replaced">&lt;金额1&gt;</span>。
+争议解决法院：<span class="text-entity-highlight replaced">&lt;法院1&gt;</span>。</pre>
+                    <div class="text-preview-note">预览仅供参考，以实际导出为准</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- === 空态 === -->
+          <div id="sc-empty" class="sc" style="display: none; flex-direction: column; flex: 1; overflow: hidden; width: 100%;">
+            <div class="tool-empty">
+              <strong>请选择或上传文档</strong>
+              <p>支持文本 PDF 和扫描 PDF 两种文件格式</p>
+              <button class="btn btn-primary">上传新文件</button>
+            </div>
+          </div>
+
+          <!-- === 加载中 === -->
+          <div id="sc-loading" class="sc" style="display: none; flex-direction: column; flex: 1; overflow: hidden; width: 100%;">
+            <div class="progress-container">
+              <div class="progress-bar-wrapper"><div class="progress-bar-fill indeterminate"></div></div>
+              <div class="progress-step-text">正在加载任务…</div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+// 当前场景状态
+let currentScenario = 'mask';
+// 当前文档状态 ('contract' / 'complaint')
+let currentFile = 'contract';
+// 遮蔽模式页码状态
+let currentPage = 1;
+const totalPages = 2;
+
+// 文档模拟数据库
+const filesDb = {
+  contract: {
+    filename: '【20261201】委托代理合同）（海源节能vs何育强）.pdf',
+    starOcrTitle: 'OCR 抽取原文（5 个敏感实体命中）',
+    starOcrBody: `聘请方（甲方）：<span class="text-entity-highlight">深圳市海源节能科技有限公司</span>
+受聘方（乙方）：<span class="text-entity-highlight">北京市隆安（深圳）律师事务所</span>
+乙方指派：<span class="text-entity-highlight">唐秀荣</span> 律师担任甲方的代理人。
+代理费为固定金额人民币：<span class="text-entity-highlight">50000元</span>。
+争议解决法院：<span class="text-entity-highlight">深圳市南山区人民法院</span>。`,
+    starReplaceBody: `聘请方（甲方）：<span class="text-entity-highlight replaced">深**********司</span>
+受聘方（乙方）：<span class="text-entity-highlight replaced">北**********务所</span>
+乙方指派：<span class="text-entity-highlight replaced">唐*</span> 律师担任甲方的代理人。
+代理费为固定金额人民币：<span class="text-entity-highlight replaced">****元</span>。
+争议解决法院：<span class="text-entity-highlight replaced">深**********院</span>。`,
+    placeholderOcrBody: `聘请方（甲方）：<span class="text-entity-highlight">深圳市海源节能科技有限公司</span>
+受聘方（乙方）：<span class="text-entity-highlight">北京市隆安（深圳）律师事务所</span>
+乙方指派：<span class="text-entity-highlight">唐秀荣</span> 律师担任甲方的代理人。
+代理费为固定金额人民币：<span class="text-entity-highlight">50000元</span>。
+争议解决法院：<span class="text-entity-highlight">深圳市南山区人民法院</span>。`,
+    placeholderReplaceBody: `聘请方（甲方）：<span class="text-entity-highlight replaced">&lt;公司1&gt;</span>
+受聘方（乙方）：<span class="text-entity-highlight replaced">&lt;律所1&gt;</span>
+乙方指派：<span class="text-entity-highlight replaced">&lt;姓名1&gt;</span> 律师担任甲方的代理人。
+代理费为固定金额人民币：<span class="text-entity-highlight replaced">&lt;金额1&gt;</span>。
+争议解决法院：<span class="text-entity-highlight replaced">&lt;法院1&gt;</span>。`
+  },
+  complaint: {
+    filename: '劳动争议仲裁申请书（何育强）.pdf',
+    starOcrTitle: 'OCR 抽取原文（3 个敏感实体命中）',
+    starOcrBody: `申请人：<span class="text-entity-highlight">何育强</span>，身份证号：<span class="text-entity-highlight">44030119901010XXXX</span>。
+被申请人：深圳市海源节能科技有限公司。
+仲裁请求金额为经济补偿金：<span class="text-entity-highlight">28000元</span>。`,
+    starReplaceBody: `申请人：<span class="text-entity-highlight replaced">何**</span>，身份证号：<span class="text-entity-highlight replaced">440301**********XX</span>。
+被申请人：深圳市海源节能科技有限公司。
+仲裁请求金额为经济补偿金：<span class="text-entity-highlight replaced">****元</span>。`,
+    placeholderOcrBody: `申请人：<span class="text-entity-highlight">何育强</span>，身份证号：<span class="text-entity-highlight">44030119901010XXXX</span>。
+被申请人：深圳市海源节能科技有限公司。
+仲裁请求金额为经济补偿金：<span class="text-entity-highlight">28000元</span>。`,
+    placeholderReplaceBody: `申请人：<span class="text-entity-highlight replaced">&lt;姓名1&gt;</span>，身份证号：<span class="text-entity-highlight replaced">&lt;身份证1&gt;</span>。
+被申请人：深圳市海源节能科技有限公司。
+仲裁请求金额为经济补偿金：<span class="text-entity-highlight replaced">&lt;金额1&gt;</span>。`
+  }
+};
+
+// 1. 切换场景/模式
+function showScenario(name) {
+  currentScenario = name;
+  document.querySelectorAll('.sc').forEach(el => el.style.display = 'none');
+  document.querySelectorAll('.scenario-tab').forEach(el => el.classList.remove('active'));
+  
+  const targetEl = document.getElementById('sc-' + name);
+  if (targetEl) targetEl.style.display = 'flex';
+  
+  // 激活顶部对应的场景标签
+  const tabs = document.querySelectorAll('.scenario-tab');
+  tabs.forEach(tab => {
+    if (tab.getAttribute('onclick').includes(name)) {
+      tab.classList.add('active');
+    }
+  });
+
+  // 依据场景决定是否展示侧边栏 (空态时彻底隐藏侧边栏)
+  const sidebar = document.querySelector('.workspace-sidebar');
+  if (name === 'empty') {
+    sidebar.style.display = 'none';
+  } else {
+    sidebar.style.display = 'flex';
+  }
+}
+
+// 2. 切换文档
+function switchFile(fileKey) {
+  currentFile = fileKey;
+  
+  // 更新侧边栏卡片激活状态
+  document.querySelectorAll('.file-card').forEach(el => el.classList.remove('active'));
+  document.getElementById('file-' + fileKey).classList.add('active');
+  
+  const fileData = filesDb[fileKey];
+  if (!fileData) return;
+
+  // 更新所有文件名标题显示
+  document.getElementById('mask-filename-mask').innerText = fileData.filename;
+  document.getElementById('mask-filename-star').innerText = fileData.filename;
+  document.getElementById('mask-filename-placeholder').innerText = fileData.filename;
+
+  // 更新星号模式内容
+  document.getElementById('star-ocr-title').innerText = fileData.starOcrTitle;
+  document.getElementById('star-ocr-body').innerHTML = fileData.starOcrBody;
+  document.getElementById('star-replace-body').innerHTML = fileData.starReplaceBody;
+
+  // 更新占位模式内容
+  document.getElementById('placeholder-ocr-title').innerText = fileData.starOcrTitle;
+  document.getElementById('placeholder-ocr-body').innerHTML = fileData.placeholderOcrBody;
+  document.getElementById('placeholder-replace-body').innerHTML = fileData.placeholderReplaceBody;
+
+  // 如果是在遮蔽模式，切回第一页
+  if (currentScenario === 'mask') {
+    scrollToPage(1);
+  }
+}
+
+// 3. 删除文档卡片 (静态模拟)
+function deleteFile(fileKey, event) {
+  event.stopPropagation();
+  const card = document.getElementById('file-' + fileKey);
+  if (card) card.remove();
+  
+  // 如果当前选中的被删了，切换到另一个
+  const remainingCards = document.querySelectorAll('.file-card');
+  if (remainingCards.length > 0) {
+    const nextKey = remainingCards[0].id.replace('file-', '');
+    switchFile(nextKey);
+  } else {
+    showScenario('empty');
+  }
+}
+
+// 4. 遮蔽模式翻页功能
+function scrollToPage(n) {
+  if (n < 1 || n > totalPages) return;
+  currentPage = n;
+  
+  // 更新导航指示器和状态
+  document.getElementById('page-indicator').innerText = currentPage + ' / ' + totalPages;
+  document.getElementById('prev-btn').disabled = (currentPage === 1);
+  document.getElementById('next-btn').disabled = (currentPage === totalPages);
+
+  // 滚动至目标页面行
+  const container = document.querySelector('.mask-scroll-container');
+  const targetRow = document.getElementById('page-row-' + n);
+  if (container && targetRow) {
+    container.scrollIgnore = true;
+    container.scrollTo({
+      top: targetRow.offsetTop - 12,
+      behavior: 'smooth'
+    });
+    setTimeout(() => { container.scrollIgnore = false; }, 800);
+  }
+}
+
+// 5. 监听纵向滚动，同步更新上一页/下一页指示器页码
+const scrollContainer = document.querySelector('.mask-scroll-container');
+if (scrollContainer) {
+  scrollContainer.addEventListener('scroll', () => {
+    if (scrollContainer.scrollIgnore) return;
+    const p1 = document.getElementById('page-row-1');
+    const p2 = document.getElementById('page-row-2');
+    if (!p1 || !p2) return;
+    
+    const containerTop = scrollContainer.getBoundingClientRect().top;
+    const p2Top = p2.getBoundingClientRect().top;
+    
+    let activePage = 1;
+    // 如果第二页已经进入可视区域 200px 以上，视为切换到了第2页
+    if (p2Top - containerTop < 200) {
+      activePage = 2;
+    }
+    
+    if (activePage !== currentPage) {
+      currentPage = activePage;
+      document.getElementById('page-indicator').innerText = currentPage + ' / ' + totalPages;
+      document.getElementById('prev-btn').disabled = (currentPage === 1);
+      document.getElementById('next-btn').disabled = (currentPage === totalPages);
+    }
+  });
+}
+</script>
+</body>
+</html>

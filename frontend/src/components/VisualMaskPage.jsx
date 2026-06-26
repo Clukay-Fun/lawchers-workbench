@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { analyzeTask, updateTaskBoxes, maskExportTask, textExportTask, getTaskSession, updateCancelledEntities } from '../api';
+import { analyzeTask, updateTaskBoxes, maskExportTask, textExportTask, getTaskSession, updateCancelledEntities, getHistory, deleteHistory, renderTasksPages } from '../api';
 import { Button } from '@/components/ui/button';
 import { normalizedToCSS, computeDisplaySize, createNormalizedBox } from '../services/coords';
 
@@ -11,6 +11,26 @@ const MODES = [
   { key: 'star', label: '星号', desc: '部分可见 → TXT/MD/DOCX' },
   { key: 'placeholder', label: '占位', desc: '类型标签 → TXT/MD/DOCX' },
 ];
+
+// P0: normalize task — upload returns taskId/documentKind, session returns id/document_kind
+function normalizeTask(raw) {
+  if (!raw) return null;
+  const taskId = raw.taskId ?? raw.id;
+  const documentKind = raw.document_kind ?? raw.documentKind ?? '';
+  return {
+    ...raw,
+    taskId,
+    id: raw.id ?? taskId,
+    document_kind: documentKind,
+    documentKind,
+  };
+}
+
+// P1: available modes by document kind
+function getAvailableModes(documentKind) {
+  if (documentKind === 'pdf-text') return ['star', 'placeholder'];
+  return ['mask', 'star', 'placeholder'];
+}
 
 const MASK_FORMATS = [
   { value: 'pdf', label: '导出 PDF（遮蔽版）' },
@@ -94,13 +114,11 @@ function ProgressBar({ percent, step }) {
 
 // ─── Page Image Component ────────────────────────────────────
 
-function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBox, onSelectBox, hoveredBox, onHoverBox, onRightClickBox }) {
+function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBox, onSelectBox, hoveredBox, onHoverBox, onRightClickBox, status, imageUrl, onLoadSuccess, onLoadError, onReloadPage, onRerenderAll }) {
   const overlayRef = useRef(null);
   const [drawing, setDrawing] = useState(null);
   const [dragging, setDragging] = useState(null);
   const [resizing, setResizing] = useState(null);
-  const [imgLoaded, setImgLoaded] = useState(false);
-  const [imgError, setImgError] = useState(false);
   const { displayWidth, displayHeight } = computeDisplaySize(pageInfo, containerWidth, 900);
 
   const toNormalized = useCallback((e) => {
@@ -158,42 +176,117 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
   const handleResizeStart = useCallback((e, boxId, handle) => { e.stopPropagation(); setResizing({ boxId, handle }); }, []);
 
   const pageBoxes = boxes.filter(b => b.page === pageInfo.pageNumber);
+  const isFailed = status === 'failed';
+  const isRecovering = status === 'loading' || status === 'recovering';
+  const isReady = status === 'ready';
 
   return (
     <div className="page-canvas" style={{ position: 'relative', width: displayWidth, height: displayHeight }}>
-      {!imgLoaded && !imgError && <div className="page-img-loading" style={{ position: 'absolute', inset: 0 }}>页面恢复中…</div>}
-      {imgError && <div className="page-img-loading" style={{ position: 'absolute', inset: 0 }}>页面加载失败</div>}
-      <img src={`/api/tasks/${pageInfo.taskId}/page-image/${pageInfo.pageNumber}`} alt={`Page ${pageInfo.pageNumber}`} style={{ width: displayWidth, height: displayHeight, display: imgLoaded ? 'block' : 'none', userSelect: 'none' }} draggable={false} onLoad={() => setImgLoaded(true)} onError={() => setImgError(true)} />
+      {/* Image always renders when URL exists; overlays sit on top */}
+      {imageUrl && (
+        <img
+          src={imageUrl}
+          alt={`Page ${pageInfo.pageNumber}`}
+          style={{ width: displayWidth, height: displayHeight, display: 'block', userSelect: 'none' }}
+          draggable={false}
+          onLoad={() => onLoadSuccess?.(pageInfo.pageNumber)}
+          onError={() => onLoadError?.(pageInfo.pageNumber)}
+        />
+      )}
+      {/* Loading/recovering overlay */}
+      {isRecovering && (
+        <div className="page-img-loading" style={{ position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.7)' }}>页面恢复中…</div>
+      )}
+      {/* Failed overlay with recovery buttons */}
+      {isFailed && (
+        <div className="page-img-loading" style={{ position: 'absolute', inset: 0, flexDirection: 'column', gap: 8, background: 'var(--muted)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <span style={{ color: 'var(--base01)', fontSize: 12, fontWeight: 500 }}>页面加载失败</span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Button variant="outline" size="sm" onClick={() => onReloadPage?.(pageInfo.pageNumber)}>重新加载本页</Button>
+            <Button variant="outline" size="sm" onClick={onRerenderAll}>重新渲染全部</Button>
+          </div>
+        </div>
+      )}
+      {/* Box overlay: only show when image is ready */}
+      {isReady && (
       <div ref={overlayRef} className="box-overlay" style={{ position: 'absolute', top: 0, left: 0, width: displayWidth, height: displayHeight, cursor: 'crosshair' }} onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}>
         {pageBoxes.map(box => {
           const css = normalizedToCSS(box, displayWidth, displayHeight);
           const isActive = hoveredBox === box.id || selectedBox === box.id;
           return (
             <div key={box.id} style={{ position: 'absolute', left: css.left, top: css.top, width: css.width, height: css.height }}>
-              <div data-box-id={box.id} style={{ width: '100%', height: '100%', border: `2px solid ${isActive ? '#3b82f6' : 'rgba(59,130,246,0.6)'}`, background: isActive ? 'rgba(59,130,246,0.12)' : 'rgba(59,130,246,0.06)', cursor: 'move', transition: 'border-color 0.12s, background 0.12s' }} onMouseDown={(e) => handleBoxMouseDown(e, box)} onContextMenu={(e) => { e.preventDefault(); onRightClickBox?.(box); }} onMouseEnter={() => onHoverBox?.(box.id)} onMouseLeave={() => onHoverBox?.(null)} />
-              {isActive && <button style={{ position: 'absolute', top: -12, right: -12, width: 22, height: 22, borderRadius: '50%', background: '#ef4444', color: '#fff', border: '2px solid #fff', cursor: 'pointer', fontSize: 13, lineHeight: '18px', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 20, boxShadow: '0 1px 4px rgba(0,0,0,0.2)' }} onMouseDown={(e) => e.stopPropagation()} onClick={(e) => handleDeleteBox(e, box.id)} title="删除">×</button>}
+              <div data-box-id={box.id} style={{ width: '100%', height: '100%', border: isActive ? '2px solid #3b82f6' : '1px solid rgba(59,130,246,0.6)', background: isActive ? 'rgba(59,130,246,0.12)' : 'rgba(59,130,246,0.06)', borderRadius: '2px', cursor: 'move', transition: 'border-color 0.12s, background 0.12s' }} onMouseDown={(e) => handleBoxMouseDown(e, box)} onContextMenu={(e) => { e.preventDefault(); onRightClickBox?.(box); }} onMouseEnter={() => onHoverBox?.(box.id)} onMouseLeave={() => onHoverBox?.(null)} />
+              {isActive && (
+                <button
+                  style={{
+                    position: 'absolute',
+                    top: '50%',
+                    right: -18,
+                    transform: 'translateY(-50%)',
+                    width: 16,
+                    height: 16,
+                    borderRadius: '50%',
+                    background: '#ef4444',
+                    color: '#fff',
+                    border: '2px solid #fff',
+                    cursor: 'pointer',
+                    fontSize: 10,
+                    lineHeight: '12px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    zIndex: 20,
+                    boxShadow: '0 1px 4px rgba(0,0,0,0.2)',
+                  }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => handleDeleteBox(e, box.id)}
+                  title="删除"
+                >×</button>
+              )}
               {isActive && ['nw', 'ne', 'sw', 'se'].map(h => <div key={h} data-handle={h} style={{ position: 'absolute', width: 8, height: 8, background: '#3b82f6', border: '1px solid #fff', borderRadius: 2, zIndex: 10, ...(h.includes('n') ? { top: -4 } : { bottom: -4 }), ...(h.includes('w') ? { left: -4 } : { right: -4 }), cursor: h === 'nw' || h === 'se' ? 'nwse-resize' : 'nesw-resize' }} onMouseDown={(e) => handleResizeStart(e, box.id, h)} />)}
             </div>
           );
         })}
         {drawing && <div style={{ position: 'absolute', left: Math.min(drawing.startX, drawing.currentX || drawing.startX) * displayWidth, top: Math.min(drawing.startY, drawing.currentY || drawing.startY) * displayHeight, width: Math.abs((drawing.currentX || drawing.startX) - drawing.startX) * displayWidth, height: Math.abs((drawing.currentY || drawing.startY) - drawing.startY) * displayHeight, border: '2px dashed #3b82f6', background: 'rgba(59,130,246,0.1)', pointerEvents: 'none' }} />}
       </div>
+      )}
     </div>
   );
 }
 
-// ─── Mask Preview Panel (P9-3: white border on selected) ────
+// ─── Mask Preview Panel ──────────────────────────────────────
 
-function MaskPreview({ pageInfo, boxes, containerWidth, selectedBox, hoveredBox, onRightClickBox }) {
+function MaskPreview({ pageInfo, boxes, containerWidth, selectedBox, hoveredBox, onRightClickBox, status, imageUrl }) {
   const { displayWidth, displayHeight } = computeDisplaySize(pageInfo, containerWidth, 900);
   const pageBoxes = boxes.filter(b => b.page === pageInfo.pageNumber);
-  const [imgLoaded, setImgLoaded] = useState(false);
-  const [imgError, setImgError] = useState(false);
+  
+  const isFailed = status === 'failed';
+  const isRecovering = status === 'loading' || status === 'recovering';
+  const isReady = status === 'ready';
+
   return (
     <div className="mask-preview" style={{ position: 'relative', width: displayWidth, height: displayHeight, background: '#fff' }}>
-      {!imgLoaded && !imgError && <div className="page-img-loading" style={{ position: 'absolute', inset: 0 }}>页面恢复中…</div>}
-      {imgError && <div className="page-img-loading" style={{ position: 'absolute', inset: 0 }}>页面加载失败</div>}
-      <img src={`/api/tasks/${pageInfo.taskId}/page-image/${pageInfo.pageNumber}`} alt="" style={{ width: displayWidth, height: displayHeight, display: imgLoaded ? 'block' : 'none', userSelect: 'none' }} draggable={false} onLoad={() => setImgLoaded(true)} onError={() => setImgError(true)} />
+      {/* Image always renders when URL exists */}
+      {imageUrl && (
+        <img
+          src={imageUrl}
+          alt=""
+          style={{ width: displayWidth, height: displayHeight, display: 'block', userSelect: 'none' }}
+          draggable={false}
+        />
+      )}
+      {/* Loading overlay */}
+      {isRecovering && (
+        <div className="page-img-loading" style={{ position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.7)' }}>页面恢复中…</div>
+      )}
+      {/* Failed overlay */}
+      {isFailed && (
+        <div className="page-img-loading" style={{ position: 'absolute', inset: 0, background: 'var(--muted)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <span style={{ color: 'var(--base01)', fontSize: 12, fontWeight: 500 }}>预览不可用</span>
+        </div>
+      )}
+      {/* SVG overlay: only show when ready */}
+      {isReady && (
       <svg width={displayWidth} height={displayHeight} style={{ position: 'absolute', top: 0, left: 0 }}>
         {pageBoxes.map(box => {
           const css = normalizedToCSS(box, displayWidth, displayHeight);
@@ -207,6 +300,7 @@ function MaskPreview({ pageInfo, boxes, containerWidth, selectedBox, hoveredBox,
           );
         })}
       </svg>
+      )}
     </div>
   );
 }
@@ -328,6 +422,8 @@ function ExportDropdown({ mode, onExport, exporting, disabled }) {
 
 export default function VisualMaskPage({ settings: _settings, resumeTaskId, onResumeDone }) {
   const [task, setTask] = useState(null);
+  const [tasks, setTasks] = useState([]);
+  const [tasksLoading, setTasksLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [processingStep, setProcessingStep] = useState('');
   const [uploadPercent, setUploadPercent] = useState(0);
@@ -344,6 +440,32 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const [toast, setToast] = useState('');
   const [exporting, setExporting] = useState(false);
   const [mode, setMode] = useState('mask');
+
+  const [pageStatus, setPageStatus] = useState({});
+  const [imageUrls, setImageUrls] = useState({});
+  const renderCacheRef = useRef('unknown'); // 'ready' | 'missing' | 'unknown'
+
+  // ─── Initialize page load status and image URLs ──────────────
+  // Only reset when taskId or pageImages length changes (not on every render)
+  useEffect(() => {
+    if (!task || !pageImages.length) {
+      setPageStatus({}); // eslint-disable-line react-hooks/set-state-in-effect
+      setImageUrls({});
+      return;
+    }
+    const tid = task.taskId;
+    const cacheReady = renderCacheRef.current === 'ready';
+    const initialStatus = {};
+    const initialUrls = {};
+    pageImages.forEach((pg) => {
+      // If cache is ready, start as 'ready' — image will display immediately
+      // onLoad will still fire and confirm. If it fails, status goes to 'recovering'.
+      initialStatus[pg.pageNumber] = cacheReady ? 'ready' : 'loading';
+      initialUrls[pg.pageNumber] = `/api/tasks/${tid}/page-image/${pg.pageNumber}`;
+    });
+    setPageStatus(initialStatus);
+    setImageUrls(initialUrls);
+  }, [task?.taskId, pageImages.length]);
 
   const containerRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -373,65 +495,204 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
 
   const showToast = useCallback((msg) => { setToast(msg); setTimeout(() => setToast(''), 2400); }, []);
 
+  // ─── 页面图片加载三层处理逻辑 ──────────────────────────
+  
+  /**
+   * 页面图片加载成功回调
+   * 参数: pageNum - 页码
+   */
+  const handlePageLoadSuccess = useCallback((pageNum) => {
+    setPageStatus(prev => ({ ...prev, [pageNum]: 'ready' }));
+  }, []);
+
+  /**
+   * 页面图片加载失败回调
+   * 参数: pageNum - 页码
+   */
+  const handlePageLoadError = useCallback((pageNum) => {
+    if (!task) return;
+    setPageStatus(prev => {
+      const current = prev[pageNum];
+      if (current === 'loading') {
+        // 第一层：尝试自动重试，状态转为 recovering
+        console.warn(`Page ${pageNum} failed to load first time. Auto retrying...`);
+        setImageUrls(prevUrls => ({
+          ...prevUrls,
+          [pageNum]: `/api/tasks/${task.taskId}/page-image/${pageNum}?retry=1&t=${Date.now()}`
+        }));
+        return { ...prev, [pageNum]: 'recovering' };
+      } else if (current === 'recovering') {
+        // 第二层：自动重试仍然失败，状态转为 failed
+        console.error(`Page ${pageNum} failed to load second time. Mark as failed.`);
+        return { ...prev, [pageNum]: 'failed' };
+      }
+      return prev;
+    });
+  }, [task]);
+
+  /**
+   * 重新加载单页 (手动恢复出口)
+   * 参数: pageNum - 页码
+   */
+  const handleReloadPage = useCallback((pageNum) => {
+    if (!task) return;
+    setPageStatus(prev => ({ ...prev, [pageNum]: 'loading' }));
+    setImageUrls(prevUrls => ({
+      ...prevUrls,
+      [pageNum]: `/api/tasks/${task.taskId}/page-image/${pageNum}?t=${Date.now()}`
+    }));
+  }, [task]);
+
+  /**
+   * 重新渲染全部页面 (手动恢复出口)
+   */
+  const handleRerenderAll = useCallback(async () => {
+    if (!task) return;
+    setLoading(true);
+    setProcessingStep('正在重新渲染全部页面…');
+    try {
+      await renderTasksPages(task.taskId);
+      
+      // 成功后，将所有页面状态重置为 loading，并加上防缓存时间戳重新请求
+      setPageStatus(prev => {
+        const nextStatus = {};
+        Object.keys(prev).forEach(k => { nextStatus[k] = 'loading'; });
+        return nextStatus;
+      });
+      setImageUrls(prevUrls => {
+        const nextUrls = {};
+        Object.keys(prevUrls).forEach(pageNum => {
+          nextUrls[pageNum] = `/api/tasks/${task.taskId}/page-image/${pageNum}?t=${Date.now()}`;
+        });
+        return nextUrls;
+      });
+      showToast('所有页面重新渲染完成，正在重新加载');
+    } catch (err) {
+      showToast(err.message || '重新渲染页面失败');
+    } finally {
+      setLoading(false);
+      setProcessingStep('');
+    }
+  }, [task, showToast]);
+
+  // #region 任务列表与会话管理
+
+  /**
+   * 加载历史任务列表
+   * 用途: 从后端获取历史上传材料列表
+   */
+  const loadTasksList = useCallback(async () => {
+    setTasksLoading(true);
+    try {
+      const list = await getHistory();
+      setTasks(list || []);
+    } catch (err) {
+      showToast(err.message || '加载历史任务失败');
+    } finally {
+      setTasksLoading(false);
+    }
+  }, [showToast]);
+
+  /**
+   * 加载特定的任务会话
+   * 用途: 恢复任务会话，更新所有分析和脱敏状态
+   * 参数: taskId - 任务 ID
+   */
+  const loadTaskSession = useCallback(async (taskId) => {
+    setLoading(true); setProcessingStep('正在加载任务会话…'); setError(null);
+    try {
+      const session = await getTaskSession(taskId);
+      const normalized = normalizeTask(session.task);
+      renderCacheRef.current = session.renderCacheStatus || 'unknown';
+      setTask(normalized);
+      setBoxes(session.boxes || []);
+      setTextEntities(session.textEntities || []);
+      setOcrText(session.ocrText || '');
+      setPageImages(session.manifest?.pages || []);
+      cancelledRef.current = new Set(session.cancelledEntities || []);
+      setCurrentPage(1);
+      hasLoadedRef.current = true;
+      localStorage.setItem('activeTaskId', String(taskId));
+      // Adjust mode to document kind
+      const availModes = getAvailableModes(normalized?.document_kind);
+      setMode(prev => availModes.includes(prev) ? prev : availModes[0]);
+    } catch (err) {
+      setError(err.message || '加载任务会话失败');
+      localStorage.removeItem('activeTaskId');
+    } finally {
+      setLoading(false); setProcessingStep('');
+    }
+  }, []);
+
+  /**
+   * 删除材料
+   * 用途: 删除特定的历史文档记录及分析缓存
+   * 参数: taskId - 任务 ID, e - 点击事件
+   */
+  const handleDeleteTask = useCallback(async (taskId, e) => {
+    e.stopPropagation();
+    if (!window.confirm('确认删除此材料？这将清除该文档的脱敏记录及所有分析缓存。')) return;
+    try {
+      await deleteHistory(taskId);
+      const remaining = tasks.filter(t => t.id !== taskId);
+      setTasks(remaining);
+      showToast('材料已删除');
+
+      if (task && (task.taskId === taskId || task.id === taskId)) {
+        if (remaining.length > 0) {
+          // Switch to first remaining task
+          loadTaskSession(remaining[0].id);
+        } else {
+          // Clear everything — show empty state
+          setTask(null);
+          setBoxes([]);
+          setTextEntities([]);
+          setOcrText('');
+          setPageImages([]);
+          setPageStatus({});
+          setImageUrls({});
+          cancelledRef.current = new Set();
+          hasLoadedRef.current = false;
+          setCurrentPage(1);
+          localStorage.removeItem('activeTaskId');
+        }
+      }
+    } catch (err) {
+      showToast(err.message || '删除失败');
+    }
+  }, [task, tasks, showToast, loadTaskSession]);
+
+  // 挂载时拉取任务列表
+  useEffect(() => {
+    loadTasksList(); // eslint-disable-line react-hooks/set-state-in-effect
+  }, [loadTasksList]);
+
+  // #endregion
+
   // ─── S2: Auto-restore from localStorage on mount ───────────
   useEffect(() => {
-    if (resumeTaskId) return; // handled by resumeTaskId effect
+    if (resumeTaskId) return;
     const storedId = localStorage.getItem('activeTaskId');
     if (!storedId) return;
-    let cancelled = false;
-    (async () => {
-      setLoading(true); setProcessingStep('正在恢复任务…'); setError(null);
-      try {
-        const session = await getTaskSession(parseInt(storedId, 10));
-        if (cancelled) return;
-        setTask(session.task);
-        setBoxes(session.boxes || []);
-        setTextEntities(session.textEntities || []);
-        setOcrText(session.ocrText || '');
-        setPageImages(session.manifest?.pages || []);
-        cancelledRef.current = new Set(session.cancelledEntities || []);
-        setCurrentPage(1);
-        hasLoadedRef.current = true;
-      } catch {
-        localStorage.removeItem('activeTaskId');
-      } finally {
-        if (!cancelled) { setLoading(false); setProcessingStep(''); }
-      }
-    })();
-    return () => { cancelled = true; };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    loadTaskSession(parseInt(storedId, 10)); // eslint-disable-line react-hooks/set-state-in-effect
+  }, [resumeTaskId, loadTaskSession]);
 
   // ─── Hydrate from session (P9-1) ──────────────────────────
   useEffect(() => {
     if (!resumeTaskId) return;
-    let cancelled = false;
-    (async () => {
-      setLoading(true); setProcessingStep('正在恢复任务…'); setError(null);
-      try {
-        const session = await getTaskSession(resumeTaskId);
-        if (cancelled) return;
-        setTask(session.task);
-        setBoxes(session.boxes || []);
-        setTextEntities(session.textEntities || []);
-        setOcrText(session.ocrText || '');
-        setPageImages(session.manifest?.pages || []);
-        cancelledRef.current = new Set(session.cancelledEntities || []);
-        setCurrentPage(1);
-        hasLoadedRef.current = true;
-        localStorage.setItem('activeTaskId', String(resumeTaskId));
-        showToast('已恢复上次编辑');
-      } catch (err) {
-        if (!cancelled) setError(err.message);
-      } finally {
-        if (!cancelled) { setLoading(false); setProcessingStep(''); }
-      }
-    })();
+    loadTaskSession(resumeTaskId); // eslint-disable-line react-hooks/set-state-in-effect
     onResumeDone?.();
-    return () => { cancelled = true; };
-  }, [resumeTaskId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [resumeTaskId, loadTaskSession, onResumeDone]);
 
   // ─── Scroll → update currentPage ──────────────────────────
   const scrollIgnoreRef = useRef(false);
+  const scrollTimeoutRef = useRef(null);
+
+  useEffect(() => {
+    return () => {
+      if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (mode !== 'mask' || pageImages.length <= 1) return;
@@ -454,9 +715,12 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     const el = pageRowRefs.current[n];
     if (!container || !el) return;
     scrollIgnoreRef.current = true;
-    const headerHeight = 56;
-    container.scrollTo({ top: el.offsetTop - headerHeight, behavior: 'smooth' });
-    setTimeout(() => { scrollIgnoreRef.current = false; }, 500);
+    const targetTop = n === 1 ? 0 : el.offsetTop - 56;
+    container.scrollTo({ top: targetTop, behavior: 'smooth' });
+    if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
+    scrollTimeoutRef.current = setTimeout(() => {
+      scrollIgnoreRef.current = false;
+    }, 800);
   }, [pageImages.length]);
 
   // ─── S5: Right-click cancel handler (Slice 2: persist to backend) ──
@@ -500,12 +764,14 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
 
   const handleFile = async (file) => {
     if (!file) return;
-    localStorage.removeItem('activeTaskId'); // S4: clear before new upload
+    localStorage.removeItem('activeTaskId');
+    renderCacheRef.current = 'unknown';
     setLoading(true); setError(null); setBoxes([]); setTextEntities([]); setOcrText(''); setPageImages([]); cancelledRef.current = new Set(); setUploadPercent(0); setProcessingStep('上传中…');
     try {
       const taskData = await uploadWithProgress(file, _settings?.rulesConfig, setUploadPercent);
-      setTask(taskData); setUploadPercent(100);
-      localStorage.setItem('activeTaskId', String(taskData.taskId));
+      const normalized = normalizeTask(taskData);
+      setTask(normalized); setUploadPercent(100);
+      localStorage.setItem('activeTaskId', String(normalized.taskId));
 
       setProcessingStep('正在 OCR 识别…');
       const analyzeData = await analyzeTask(taskData.taskId);
@@ -555,6 +821,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
 
       setProcessingStep('生成预览…');
       showToast('文档分析完成');
+      loadTasksList();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -567,6 +834,15 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
 
   const doExport = async (exportFormat) => {
     if (!task) return;
+
+    if (mode === 'mask') {
+      const hasFailedPages = Object.values(pageStatus).some(status => status === 'failed' || status === 'recovering');
+      if (hasFailedPages) {
+        showToast('有页面未成功加载，请恢复页面后再导出');
+        return;
+      }
+    }
+
     setExporting(true);
     try {
       await updateTaskBoxes(task.taskId, boxes);
@@ -578,14 +854,22 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
         const response = await maskExportTask(task.taskId, boxes);
         downloadBlob(await response.blob(), `${baseName}_脱敏${ext}`);
       } else {
-        if (textEntities.length === 0) { showToast('没有检测到可替换的文本实体'); return; }
-        const response = await textExportTask(task.taskId, textEntities, mode === 'mask' ? 'star' : mode, exportFormat);
-        downloadBlob(await response.blob(), `${baseName}_脱敏.${exportFormat}`);
+        const payloadEntities = textEntities.map(e => ({
+          original: e.original,
+          entity_type: e.entity_type,
+          start: e.start,
+          end: e.end,
+        }));
+        const response = await textExportTask(task.taskId, payloadEntities, mode, exportFormat);
+        const exportExt = exportFormat === 'pdf' ? 'txt' : exportFormat;
+        downloadBlob(await response.blob(), `${baseName}_脱敏.${exportExt}`);
       }
       showToast('导出成功');
     } catch (err) {
       showToast(err.message || '导出失败');
-    } finally { setExporting(false); }
+    } finally {
+      setExporting(false);
+    }
   };
 
   function downloadBlob(blob, filename) { const url = window.URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); window.URL.revokeObjectURL(url); }
@@ -594,26 +878,35 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const totalPages = pageImages.length;
   const isMaskMode = mode === 'mask';
 
-  // ─── Empty state ───────────────────────────────────────────
+  // ─── Main render ──────────────────────────────────────────
+
+  // ─── Empty state (no sidebar) ─────────────────────────────
 
   if (!task && !loading) {
     return (
-      <div className="tool-empty">
-        <strong>上传 PDF 开始脱敏</strong>
-        <p>支持文本 PDF 和扫描 PDF</p>
-        <Button variant="default" onClick={() => fileInputRef.current?.click()}>选择文件</Button>
+      <div className="visual-mask-page" ref={containerRef}>
+        <div className="tool-empty">
+          <strong>请选择或上传文档</strong>
+          <p>支持文本 PDF 和扫描 PDF 两种文件格式</p>
+          <Button variant="default" onClick={() => fileInputRef.current?.click()}>上传新文件</Button>
+        </div>
         <input ref={fileInputRef} className="visually-hidden" type="file" accept=".pdf" onChange={(e) => handleFile(e.target.files?.[0])} />
+        <div className={`toast ${toast ? 'show' : ''}`}>{toast}</div>
       </div>
     );
   }
 
   if (loading) {
-    return <ProgressBar percent={uploadPercent} step={processingStep || '正在恢复任务…'} />;
+    return (
+      <div className="visual-mask-page-full-loading" style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <ProgressBar percent={uploadPercent} step={processingStep || '正在加载任务…'} />
+      </div>
+    );
   }
 
   if (error) {
     return (
-      <div className="tool-error">
+      <div className="tool-error" style={{ padding: '40px', maxWidth: '600px', margin: '40px auto', textAlign: 'center' }}>
         <strong>处理失败</strong>
         <p>{error}</p>
         <Button variant="outline" onClick={() => { setError(null); setTask(null); }}>重试</Button>
@@ -621,72 +914,132 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     );
   }
 
-  // ─── Main render ──────────────────────────────────────────
+  // ─── Main render (with sidebar workspace) ──────────────────
+  const firstPage = pageImages[0];
+  let actualDisplayWidth = containerWidth;
+  if (firstPage) {
+    const size = computeDisplaySize(firstPage, containerWidth, 900);
+    actualDisplayWidth = size.displayWidth;
+  }
 
   return (
-    <div className="visual-mask-page" ref={containerRef}>
-      {/* S4: Top bar — left=filename, center=modes, right=upload+export */}
-      <div className="mask-topbar">
-        <div className="mask-topbar-left">
-          <span className="mask-filename">{task?.filename}</span>
-        </div>
-        <div className="mask-topbar-center">
-          <div className="mode-switch">
-            {MODES.map(m => <button key={m.key} className={`mode-btn ${mode === m.key ? 'active' : ''}`} onClick={() => setMode(m.key)} title={m.desc}>{m.label}</button>)}
+    <div className="workspace-container" ref={containerRef}>
+      {/* 左栏：本案材料列表 */}
+      <div className="workspace-sidebar">
+        <h4 className="sidebar-title">本案材料</h4>
+        
+        {tasksLoading && tasks.length === 0 ? (
+          <div className="text-xs text-muted-foreground py-4 text-center">加载中…</div>
+        ) : (
+          <div className="file-list">
+            {tasks.length === 0 ? (
+              <div className="text-xs text-muted-foreground py-8 text-center italic">暂无材料</div>
+            ) : (
+              tasks.map(t => {
+                const isActive = task && task.taskId === t.id;
+                return (
+                  <div
+                    key={t.id}
+                    className={`file-card ${isActive ? 'active' : ''}`}
+                    onClick={() => { if (!isActive) loadTaskSession(t.id); }}
+                  >
+                    <div className="file-card-title" title={t.filename}>{t.filename}</div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="file-card-delete-btn text-muted-foreground hover:text-destructive"
+                      onClick={(e) => handleDeleteTask(t.id, e)}
+                      title="删除材料"
+                    >
+                      ×
+                    </Button>
+                  </div>
+                );
+              })
+            )}
           </div>
-        </div>
-        <div className="mask-topbar-right">
-          <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>上传</Button>
-          <ExportDropdown mode={mode} onExport={doExport} exporting={exporting} disabled={isMaskMode ? redactionCount === 0 : textEntities.length === 0} />
+        )}
+
+        <div className="sidebar-upload-btn" onClick={() => fileInputRef.current?.click()}>
+          ＋ 追加上传本地材料
         </div>
       </div>
 
-      {isMaskMode ? (
-        /* Mask mode: shared header + continuous scroll pages */
-        <div className="mask-scroll-container" ref={scrollRef}>
-          {/* S2: Shared header — renders once, sticky */}
-          <div className="mask-col-header-row">
-            <div className="mask-col-header">
-              <div className="page-nav">
-                <Button variant="ghost" size="sm" disabled={currentPage <= 1} onClick={() => scrollToPage(currentPage - 1)}>←</Button>
-                <span>{currentPage} / {totalPages}</span>
-                <Button variant="ghost" size="sm" disabled={currentPage >= totalPages} onClick={() => scrollToPage(currentPage + 1)}>→</Button>
-              </div>
-            </div>
-            <div className="mask-col-header">
-              <span className="mask-col-header-title">脱敏预览</span>
+      {/* 右栏：主编辑区 */}
+      <div className="workspace-main" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0, position: 'relative' }}>
+        {/* S4: Top bar — left=filename, center=modes, right=upload+export */}
+        <div className="mask-topbar">
+          <div className="mask-topbar-left">
+            <span className="mask-filename">{task?.filename}</span>
+          </div>
+          <div className="mask-topbar-center">
+            <div className="mode-switch">
+              {MODES.filter(m => getAvailableModes(task?.document_kind).includes(m.key)).map(m => (
+                <button key={m.key} className={`mode-btn ${mode === m.key ? 'active' : ''}`} onClick={() => setMode(m.key)} title={m.desc}>{m.label}</button>
+              ))}
             </div>
           </div>
-          {/* Page rows — no headers, just content */}
-          {pageImages.map((pg) => {
-            const pgInfo = { ...pg, taskId: task?.taskId };
-            return (
-              <div key={pg.pageNumber} className="mask-page-row" data-page={pg.pageNumber} ref={el => { pageRowRefs.current[pg.pageNumber] = el; }}>
-                <div className="mask-page-col">
-                  <PageCanvas
-                    pageInfo={pgInfo} boxes={boxes} onBoxesChange={setBoxes} containerWidth={containerWidth}
-                    selectedBox={selectedBox} onSelectBox={setSelectedBox}
-                    hoveredBox={hoveredBox} onHoverBox={setHoveredBox}
-                    onRightClickBox={handleRightClickBox}
-                  />
-                </div>
-                <div className="mask-page-col">
-                  <MaskPreview
-                    pageInfo={pgInfo} boxes={boxes} containerWidth={containerWidth}
-                    selectedBox={selectedBox} hoveredBox={hoveredBox}
-                    onRightClickBox={handleRightClickBox}
-                  />
+          <div className="mask-topbar-right" style={{ display: 'flex', gap: '8px' }}>
+            <ExportDropdown mode={mode} onExport={doExport} exporting={exporting} disabled={isMaskMode ? redactionCount === 0 : textEntities.length === 0} />
+          </div>
+        </div>
+
+        {isMaskMode ? (
+          /* Mask mode: shared header + continuous scroll pages */
+          <div className="mask-scroll-container" ref={scrollRef}>
+            {/* S2: Shared header — renders once, sticky */}
+            <div className="mask-col-header-row">
+              <div className="mask-col-header" style={{ width: actualDisplayWidth ? `${actualDisplayWidth}px` : 'auto' }}>
+                <span className="mask-col-header-title">OCR 抽取原文</span>
+                <div className="page-nav">
+                  <Button variant="ghost" size="sm" disabled={currentPage <= 1} onClick={() => scrollToPage(currentPage - 1)}>←</Button>
+                  <span>{currentPage} / {totalPages}</span>
+                  <Button variant="ghost" size="sm" disabled={currentPage >= totalPages} onClick={() => scrollToPage(currentPage + 1)}>→</Button>
                 </div>
               </div>
-            );
-          })}
-        </div>
-      ) : (
-        /* Star/Placeholder mode: text dual-column */
-        <div className="text-mode-container">
-          <TextDualColumn ocrText={ocrText} entities={textEntities} mode={mode} onRightClickEntity={handleRightClickEntity} />
-        </div>
-      )}
+              <div className="mask-col-header" style={{ width: actualDisplayWidth ? `${actualDisplayWidth}px` : 'auto', justifyContent: 'flex-start' }}>
+                <span className="mask-col-header-title">脱敏预览</span>
+              </div>
+            </div>
+            {/* Page rows — no headers, just content */}
+            {pageImages.map((pg) => {
+              const pgInfo = { ...pg, taskId: task?.taskId };
+              return (
+                <div key={pg.pageNumber} className="mask-page-row" data-page={pg.pageNumber} ref={el => { pageRowRefs.current[pg.pageNumber] = el; }}>
+                  <div className="mask-page-col">
+                    <PageCanvas
+                      pageInfo={pgInfo} boxes={boxes} onBoxesChange={setBoxes} containerWidth={containerWidth}
+                      selectedBox={selectedBox} onSelectBox={setSelectedBox}
+                      hoveredBox={hoveredBox} onHoverBox={setHoveredBox}
+                      onRightClickBox={handleRightClickBox}
+                      status={pageStatus[pg.pageNumber]}
+                      imageUrl={imageUrls[pg.pageNumber]}
+                      onLoadSuccess={handlePageLoadSuccess}
+                      onLoadError={handlePageLoadError}
+                      onReloadPage={handleReloadPage}
+                      onRerenderAll={handleRerenderAll}
+                    />
+                  </div>
+                  <div className="mask-page-col">
+                    <MaskPreview
+                      pageInfo={pgInfo} boxes={boxes} containerWidth={containerWidth}
+                      selectedBox={selectedBox} hoveredBox={hoveredBox}
+                      onRightClickBox={handleRightClickBox}
+                      status={pageStatus[pg.pageNumber]}
+                      imageUrl={imageUrls[pg.pageNumber]}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          /* Star/Placeholder mode: text dual-column */
+          <div className="text-mode-container">
+            <TextDualColumn ocrText={ocrText} entities={textEntities} mode={mode} onRightClickEntity={handleRightClickEntity} />
+          </div>
+        )}
+      </div>
 
       <input ref={fileInputRef} className="visually-hidden" type="file" accept=".pdf" onChange={(e) => handleFile(e.target.files?.[0])} />
       <div className={`toast ${toast ? 'show' : ''}`}>{toast}</div>
