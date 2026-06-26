@@ -350,6 +350,21 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const scrollRef = useRef(null);
   const pageRowRefs = useRef({});
   const hasLoadedRef = useRef(false);
+  const [containerWidth, setContainerWidth] = useState(560);
+
+  // Track container width for adaptive layout
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect?.width || 560;
+      // available = container - padding(32) - gap(16), split for two columns
+      const pageW = Math.min(Math.floor((w - 48) / 2), 720);
+      setContainerWidth(Math.max(pageW, 280));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   const showToast = useCallback((msg) => { setToast(msg); setTimeout(() => setToast(''), 2400); }, []);
 
@@ -644,7 +659,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
               <div key={pg.pageNumber} className="mask-page-row" data-page={pg.pageNumber} ref={el => { pageRowRefs.current[pg.pageNumber] = el; }}>
                 <div className="mask-page-col">
                   <PageCanvas
-                    pageInfo={pgInfo} boxes={boxes} onBoxesChange={setBoxes} containerWidth={560}
+                    pageInfo={pgInfo} boxes={boxes} onBoxesChange={setBoxes} containerWidth={containerWidth}
                     selectedBox={selectedBox} onSelectBox={setSelectedBox}
                     hoveredBox={hoveredBox} onHoverBox={setHoveredBox}
                     onRightClickBox={handleRightClickBox}
@@ -652,7 +667,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
                 </div>
                 <div className="mask-page-col">
                   <MaskPreview
-                    pageInfo={pgInfo} boxes={boxes} containerWidth={560}
+                    pageInfo={pgInfo} boxes={boxes} containerWidth={containerWidth}
                     selectedBox={selectedBox} hoveredBox={hoveredBox}
                     onRightClickBox={handleRightClickBox}
                   />
