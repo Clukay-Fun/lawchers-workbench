@@ -119,7 +119,7 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
   const [drawing, setDrawing] = useState(null);
   const [dragging, setDragging] = useState(null);
   const [resizing, setResizing] = useState(null);
-  const { displayWidth, displayHeight } = computeDisplaySize(pageInfo, containerWidth, 900);
+  const { displayWidth, displayHeight } = computeDisplaySize(pageInfo, containerWidth, 2400);
 
   const toNormalized = useCallback((e) => {
     const rect = overlayRef.current?.getBoundingClientRect();
@@ -257,7 +257,7 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
 // ─── Mask Preview Panel ──────────────────────────────────────
 
 function MaskPreview({ pageInfo, boxes, containerWidth, selectedBox, hoveredBox, onRightClickBox, status, imageUrl }) {
-  const { displayWidth, displayHeight } = computeDisplaySize(pageInfo, containerWidth, 900);
+  const { displayWidth, displayHeight } = computeDisplaySize(pageInfo, containerWidth, 2400);
   const pageBoxes = boxes.filter(b => b.page === pageInfo.pageNumber);
   
   const isFailed = status === 'failed';
@@ -307,8 +307,10 @@ function MaskPreview({ pageInfo, boxes, containerWidth, selectedBox, hoveredBox,
 
 // ─── Text Dual-Column (P9-3: sync scroll + hover highlight) ─
 
-function TextDualColumn({ ocrText, entities, mode, onRightClickEntity }) {
+function TextDualColumn({ ocrText, entities, mode, onRightClickEntity, onAddManualEntity, onTextChange }) {
   const [hoveredEntity, setHoveredEntity] = useState(null);
+  const [editing, setEditing] = useState(false);
+  const [draftText, setDraftText] = useState(ocrText || '');
   const leftRef = useRef(null);
   const rightRef = useRef(null);
   const syncingRef = useRef(false);
@@ -320,11 +322,11 @@ function TextDualColumn({ ocrText, entities, mode, onRightClickEntity }) {
     let last = 0;
     const sorted = [...entities].sort((a, b) => (a.start || 0) - (b.start || 0));
     for (const ent of sorted) {
-      if (ent.start > last) parts.push({ text: ocrText.substring(last, ent.start), type: 'normal' });
-      parts.push({ text: ent.original, type: 'entity', entity: ent });
+      if (ent.start > last) parts.push({ text: ocrText.substring(last, ent.start), type: 'normal', start: last, end: ent.start });
+      parts.push({ text: ent.original, type: 'entity', entity: ent, start: ent.start, end: ent.end });
       last = ent.end;
     }
-    if (last < ocrText.length) parts.push({ text: ocrText.substring(last), type: 'normal' });
+    if (last < ocrText.length) parts.push({ text: ocrText.substring(last), type: 'normal', start: last, end: ocrText.length });
     return parts;
   }, [ocrText, entities]);
 
@@ -335,12 +337,12 @@ function TextDualColumn({ ocrText, entities, mode, onRightClickEntity }) {
     let last = 0;
     const sorted = [...entities].sort((a, b) => (a.start || 0) - (b.start || 0));
     for (const ent of sorted) {
-      if (ent.start > last) parts.push({ text: ocrText.substring(last, ent.start), type: 'normal' });
+      if (ent.start > last) parts.push({ text: ocrText.substring(last, ent.start), type: 'normal', start: last, end: ent.start });
       const masked = mode === 'star' ? starMask(ent.original, ent.entity_type) : placeholderMask(ent.entity_type);
-      parts.push({ text: masked, type: 'entity', entity: ent });
+      parts.push({ text: masked, type: 'entity', entity: ent, start: ent.start, end: ent.end });
       last = ent.end;
     }
-    if (last < ocrText.length) parts.push({ text: ocrText.substring(last), type: 'normal' });
+    if (last < ocrText.length) parts.push({ text: ocrText.substring(last), type: 'normal', start: last, end: ocrText.length });
     return parts;
   }, [ocrText, entities, mode]);
 
@@ -368,20 +370,64 @@ function TextDualColumn({ ocrText, entities, mode, onRightClickEntity }) {
     return ent.start === hoveredEntity.start && ent.end === hoveredEntity.end && ent.entity_type === hoveredEntity.entity_type;
   }, [hoveredEntity]);
 
+  const getSelectionOffset = useCallback((node, offset) => {
+    const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+    const span = el?.closest?.('[data-src-start]');
+    if (!span) return null;
+    return parseInt(span.getAttribute('data-src-start'), 10) + offset;
+  }, []);
+
+  const handleOriginalMouseUp = useCallback(() => {
+    if (editing) return;
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || !leftRef.current?.contains(selection.anchorNode) || !leftRef.current?.contains(selection.focusNode)) return;
+    const range = selection.getRangeAt(0);
+    const start = getSelectionOffset(range.startContainer, range.startOffset);
+    const end = getSelectionOffset(range.endContainer, range.endOffset);
+    if (start === null || end === null) return;
+    const s = Math.min(start, end);
+    const e = Math.max(start, end);
+    const original = ocrText.substring(s, e).trim();
+    if (!original) return;
+    onAddManualEntity?.({ start: s, end: e, original });
+    selection.removeAllRanges();
+  }, [editing, getSelectionOffset, ocrText, onAddManualEntity]);
+
+  const saveEdit = useCallback(() => {
+    onTextChange?.(draftText);
+    setEditing(false);
+  }, [draftText, onTextChange]);
+
   return (
     <div className="text-dual-column">
       <div className="text-panel">
-        <div className="text-panel-header">OCR 抽取原文（{entities.length} 个敏感实体命中）</div>
-        <div className="text-panel-body" ref={leftRef} onScroll={handleLeftScroll}>
-          <pre className="text-content">
-            {Array.isArray(highlightedOriginal)
-              ? highlightedOriginal.map((part, i) => part.type === 'entity'
-                ? <span key={i} className={`text-entity-highlight ${isHighlighted(part.entity) ? 'active' : ''}`} onMouseEnter={() => setHoveredEntity(part.entity)} onMouseLeave={() => setHoveredEntity(null)} onContextMenu={(e) => { e.preventDefault(); onRightClickEntity?.(part.entity); }}>{part.text}</span>
-                : <span key={i}>{part.text}</span>
-              )
-              : highlightedOriginal
-            }
-          </pre>
+        <div className="text-panel-header">
+          <span>OCR 抽取原文（{entities.length} 个敏感实体命中）</span>
+          <div className="text-panel-actions">
+            {editing ? (
+              <>
+                <Button variant="ghost" size="sm" onClick={() => { setDraftText(ocrText || ''); setEditing(false); }}>退出编辑</Button>
+                <Button variant="outline" size="sm" onClick={saveEdit}>保存原文</Button>
+              </>
+            ) : (
+              <Button variant="outline" size="sm" onClick={() => { setDraftText(ocrText || ''); setEditing(true); }}>编辑原文</Button>
+            )}
+          </div>
+        </div>
+        <div className="text-panel-body" ref={leftRef} onScroll={handleLeftScroll} onMouseUp={handleOriginalMouseUp}>
+          {editing ? (
+            <textarea className="text-edit-area" value={draftText} onChange={(e) => setDraftText(e.target.value)} />
+          ) : (
+            <pre className="text-content">
+              {Array.isArray(highlightedOriginal)
+                ? highlightedOriginal.map((part, i) => part.type === 'entity'
+                  ? <span key={i} data-src-start={part.start} className={`text-entity-highlight ${isHighlighted(part.entity) ? 'active' : ''}`} onMouseEnter={() => setHoveredEntity(part.entity)} onMouseLeave={() => setHoveredEntity(null)} onContextMenu={(e) => { e.preventDefault(); onRightClickEntity?.(part.entity); }}>{part.text}</span>
+                  : <span key={i} data-src-start={part.start}>{part.text}</span>
+                )
+                : highlightedOriginal
+              }
+            </pre>
+          )}
         </div>
       </div>
       <div className="text-panel">
@@ -431,6 +477,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
 
   const [boxes, setBoxes] = useState([]);
   const [textEntities, setTextEntities] = useState([]);
+  const [ocrBoxes, setOcrBoxes] = useState([]);
   const [ocrText, setOcrText] = useState('');
   const [pageImages, setPageImages] = useState([]);
   const cancelledRef = useRef(new Set());
@@ -470,6 +517,8 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const containerRef = useRef(null);
   const fileInputRef = useRef(null);
   const scrollRef = useRef(null);
+  const maskPreviewScrollRef = useRef(null);
+  const maskScrollSyncRef = useRef(false);
   const pageRowRefs = useRef({});
   const hasLoadedRef = useRef(false);
   const [containerWidth, setContainerWidth] = useState(560);
@@ -482,7 +531,9 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
 
     const update = () => {
       const w = el.getBoundingClientRect().width || 560;
-      const pageW = Math.min(Math.floor((w - 48) / 2), 720);
+      // scrollRef is now the left panel body, i.e. already a single-column width.
+      // Do not divide by 2 here; that belonged to the old shared dual-column container.
+      const pageW = Math.min(Math.floor(w), 860);
       setContainerWidth(Math.max(pageW, 280));
     };
 
@@ -494,6 +545,11 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   }, [mode, task, pageImages.length]);
 
   const showToast = useCallback((msg) => { setToast(msg); setTimeout(() => setToast(''), 2400); }, []);
+
+  useEffect(() => {
+    if (!task?.taskId) return;
+    localStorage.setItem(`taskMode:${task.taskId}`, mode);
+  }, [mode, task?.taskId]);
 
   // ─── 页面图片加载三层处理逻辑 ──────────────────────────
   
@@ -607,6 +663,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
       setTask(normalized);
       setBoxes(session.boxes || []);
       setTextEntities(session.textEntities || []);
+      setOcrBoxes(session.ocrBoxes || []);
       setOcrText(session.ocrText || '');
       setPageImages(session.manifest?.pages || []);
       cancelledRef.current = new Set(session.cancelledEntities || []);
@@ -615,7 +672,11 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
       localStorage.setItem('activeTaskId', String(taskId));
       // Adjust mode to document kind
       const availModes = getAvailableModes(normalized?.document_kind);
-      setMode(prev => availModes.includes(prev) ? prev : availModes[0]);
+      const savedMode = localStorage.getItem(`taskMode:${normalized.taskId}`);
+      setMode(prev => {
+        if (savedMode && availModes.includes(savedMode)) return savedMode;
+        return availModes.includes(prev) ? prev : availModes[0];
+      });
     } catch (err) {
       setError(err.message || '加载任务会话失败');
       localStorage.removeItem('activeTaskId');
@@ -647,6 +708,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
           setTask(null);
           setBoxes([]);
           setTextEntities([]);
+          setOcrBoxes([]);
           setOcrText('');
           setPageImages([]);
           setPageStatus({});
@@ -715,13 +777,35 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     const el = pageRowRefs.current[n];
     if (!container || !el) return;
     scrollIgnoreRef.current = true;
-    const targetTop = n === 1 ? 0 : el.offsetTop - 56;
-    container.scrollTo({ top: targetTop, behavior: 'smooth' });
+    // Use element's offsetTop relative to the scroll container
+    const containerRect = container.getBoundingClientRect();
+    const elRect = el.getBoundingClientRect();
+    const scrollDelta = elRect.top - containerRect.top;
+    const targetTop = container.scrollTop + scrollDelta - 16;
+    container.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' });
     if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
     scrollTimeoutRef.current = setTimeout(() => {
       scrollIgnoreRef.current = false;
     }, 800);
   }, [pageImages.length]);
+
+  const handleMaskLeftScroll = useCallback(() => {
+    if (maskScrollSyncRef.current) return;
+    maskScrollSyncRef.current = true;
+    if (maskPreviewScrollRef.current && scrollRef.current) {
+      maskPreviewScrollRef.current.scrollTop = scrollRef.current.scrollTop;
+    }
+    maskScrollSyncRef.current = false;
+  }, []);
+
+  const handleMaskRightScroll = useCallback(() => {
+    if (maskScrollSyncRef.current) return;
+    maskScrollSyncRef.current = true;
+    if (scrollRef.current && maskPreviewScrollRef.current) {
+      scrollRef.current.scrollTop = maskPreviewScrollRef.current.scrollTop;
+    }
+    maskScrollSyncRef.current = false;
+  }, []);
 
   // ─── S5: Right-click cancel handler (Slice 2: persist to backend) ──
   const persistCancelled = useCallback((newSet) => {
@@ -747,6 +831,62 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     showToast('已取消该实体脱敏');
   }, [showToast, persistCancelled]);
 
+  const createBoxForTextEntity = useCallback((entity) => {
+    let offset = 0;
+    for (const line of ocrBoxes) {
+      const text = line.text || '';
+      const lineStart = offset;
+      const lineEnd = offset + text.length;
+      offset = lineEnd + 1;
+      if (entity.start < lineStart || entity.start >= lineEnd || !text.length) continue;
+      const startInLine = Math.max(0, entity.start - lineStart);
+      const endInLine = Math.min(text.length, entity.end - lineStart);
+      const ratioStart = startInLine / text.length;
+      const ratioWidth = Math.max(1 / text.length, (endInLine - startInLine) / text.length);
+      return createNormalizedBox({
+        id: `manual_box_${entity.id}`,
+        page: line.page || line.pageNumber || 1,
+        x: (line.x || 0) + (line.width || 0) * ratioStart,
+        y: line.y || 0,
+        width: (line.width || 0) * ratioWidth,
+        height: line.height || 0.015,
+        pageWidth: 595,
+        pageHeight: 842,
+        source: 'manual-text',
+        entityType: entity.entity_type,
+        text: entity.original,
+        entityId: entity.id,
+      });
+    }
+    return null;
+  }, [ocrBoxes]);
+
+  const handleAddManualEntity = useCallback(({ start, end, original }) => {
+    const cleanOriginal = original.trim();
+    if (!cleanOriginal) return;
+    const entity = {
+      id: `CUSTOM:${start}:${end}`,
+      original: cleanOriginal,
+      entity_type: 'CUSTOM',
+      start,
+      end,
+      source: 'manual',
+    };
+    setTextEntities(prev => prev.some(e => e.id === entity.id) ? prev : [...prev, entity].sort((a, b) => a.start - b.start));
+    const box = createBoxForTextEntity(entity);
+    if (box) setBoxes(prev => prev.some(b => b.entityId === entity.id) ? prev : [...prev, box]);
+    showToast(box ? '已新增脱敏' : '已新增文本脱敏，遮蔽框需手动补充');
+  }, [createBoxForTextEntity, showToast]);
+
+  const handleTextChange = useCallback((nextText) => {
+    setOcrText(nextText);
+    setTextEntities([]);
+    setBoxes(prev => prev.filter(b => !b.entityId));
+    cancelledRef.current = new Set();
+    if (task?.taskId) updateCancelledEntities(task.taskId, []).catch(() => {});
+    showToast('原文已更新，请重新滑选需要脱敏的内容');
+  }, [showToast, task]);
+
   // Persist boxes on change (debounced) — allow empty array to clear
   useEffect(() => {
     if (!task) hasLoadedRef.current = false;
@@ -766,12 +906,14 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     if (!file) return;
     localStorage.removeItem('activeTaskId');
     renderCacheRef.current = 'unknown';
-    setLoading(true); setError(null); setBoxes([]); setTextEntities([]); setOcrText(''); setPageImages([]); cancelledRef.current = new Set(); setUploadPercent(0); setProcessingStep('上传中…');
+    setLoading(true); setError(null); setBoxes([]); setTextEntities([]); setOcrBoxes([]); setOcrText(''); setPageImages([]); cancelledRef.current = new Set(); setUploadPercent(0); setProcessingStep('上传中…');
     try {
       const taskData = await uploadWithProgress(file, _settings?.rulesConfig, setUploadPercent);
       const normalized = normalizeTask(taskData);
       setTask(normalized); setUploadPercent(100);
       localStorage.setItem('activeTaskId', String(normalized.taskId));
+      const initialModes = getAvailableModes(normalized.document_kind);
+      setMode(prev => initialModes.includes(prev) ? prev : initialModes[0]);
 
       setProcessingStep('正在 OCR 识别…');
       const analyzeData = await analyzeTask(taskData.taskId);
@@ -792,6 +934,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
       });
       const fullText = (analyzeData.ocrBoxes || []).map(b => b.text || '').join('\n');
       setTextEntities(backendTextEntities);
+      setOcrBoxes(analyzeData.ocrBoxes || []);
       setOcrText(fullText);
 
       const refined = (analyzeData.refinedBoxes || []).map((b, i) => {
@@ -914,14 +1057,6 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     );
   }
 
-  // ─── Main render (with sidebar workspace) ──────────────────
-  const firstPage = pageImages[0];
-  let actualDisplayWidth = containerWidth;
-  if (firstPage) {
-    const size = computeDisplaySize(firstPage, containerWidth, 900);
-    actualDisplayWidth = size.displayWidth;
-  }
-
   return (
     <div className="workspace-container" ref={containerRef}>
       {/* 左栏：本案材料列表 */}
@@ -985,11 +1120,10 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
         </div>
 
         {isMaskMode ? (
-          /* Mask mode: shared header + continuous scroll pages */
-          <div className="mask-scroll-container" ref={scrollRef}>
-            {/* S2: Shared header — renders once, sticky */}
-            <div className="mask-col-header-row">
-              <div className="mask-col-header" style={{ width: actualDisplayWidth ? `${actualDisplayWidth}px` : 'auto' }}>
+          /* Mask mode: panel/header/body layout like text mode */
+          <div className="mask-dual-column">
+            <div className="mask-panel">
+              <div className="mask-panel-header">
                 <span className="mask-col-header-title">OCR 抽取原文</span>
                 <div className="page-nav">
                   <Button variant="ghost" size="sm" disabled={currentPage <= 1} onClick={() => scrollToPage(currentPage - 1)}>←</Button>
@@ -997,46 +1131,61 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
                   <Button variant="ghost" size="sm" disabled={currentPage >= totalPages} onClick={() => scrollToPage(currentPage + 1)}>→</Button>
                 </div>
               </div>
-              <div className="mask-col-header" style={{ width: actualDisplayWidth ? `${actualDisplayWidth}px` : 'auto', justifyContent: 'flex-start' }}>
-                <span className="mask-col-header-title">脱敏预览</span>
+              <div className="mask-panel-body" ref={scrollRef} onScroll={handleMaskLeftScroll}>
+                {pageImages.map((pg) => {
+                  const pgInfo = { ...pg, taskId: task?.taskId };
+                  return (
+                    <div key={pg.pageNumber} className="mask-page-row" data-page={pg.pageNumber} ref={el => { pageRowRefs.current[pg.pageNumber] = el; }}>
+                      <PageCanvas
+                        pageInfo={pgInfo} boxes={boxes} onBoxesChange={setBoxes} containerWidth={containerWidth}
+                        selectedBox={selectedBox} onSelectBox={setSelectedBox}
+                        hoveredBox={hoveredBox} onHoverBox={setHoveredBox}
+                        onRightClickBox={handleRightClickBox}
+                        status={pageStatus[pg.pageNumber]}
+                        imageUrl={imageUrls[pg.pageNumber]}
+                        onLoadSuccess={handlePageLoadSuccess}
+                        onLoadError={handlePageLoadError}
+                        onReloadPage={handleReloadPage}
+                        onRerenderAll={handleRerenderAll}
+                      />
+                    </div>
+                  );
+                })}
               </div>
             </div>
-            {/* Page rows — no headers, just content */}
-            {pageImages.map((pg) => {
-              const pgInfo = { ...pg, taskId: task?.taskId };
-              return (
-                <div key={pg.pageNumber} className="mask-page-row" data-page={pg.pageNumber} ref={el => { pageRowRefs.current[pg.pageNumber] = el; }}>
-                  <div className="mask-page-col">
-                    <PageCanvas
-                      pageInfo={pgInfo} boxes={boxes} onBoxesChange={setBoxes} containerWidth={containerWidth}
-                      selectedBox={selectedBox} onSelectBox={setSelectedBox}
-                      hoveredBox={hoveredBox} onHoverBox={setHoveredBox}
-                      onRightClickBox={handleRightClickBox}
-                      status={pageStatus[pg.pageNumber]}
-                      imageUrl={imageUrls[pg.pageNumber]}
-                      onLoadSuccess={handlePageLoadSuccess}
-                      onLoadError={handlePageLoadError}
-                      onReloadPage={handleReloadPage}
-                      onRerenderAll={handleRerenderAll}
-                    />
-                  </div>
-                  <div className="mask-page-col">
-                    <MaskPreview
-                      pageInfo={pgInfo} boxes={boxes} containerWidth={containerWidth}
-                      selectedBox={selectedBox} hoveredBox={hoveredBox}
-                      onRightClickBox={handleRightClickBox}
-                      status={pageStatus[pg.pageNumber]}
-                      imageUrl={imageUrls[pg.pageNumber]}
-                    />
-                  </div>
-                </div>
-              );
-            })}
+            <div className="mask-panel">
+              <div className="mask-panel-header mask-panel-header-left">
+                <span className="mask-col-header-title">脱敏预览</span>
+              </div>
+              <div className="mask-panel-body" ref={maskPreviewScrollRef} onScroll={handleMaskRightScroll}>
+                {pageImages.map((pg) => {
+                  const pgInfo = { ...pg, taskId: task?.taskId };
+                  return (
+                    <div key={pg.pageNumber} className="mask-page-row" data-page={pg.pageNumber}>
+                      <MaskPreview
+                        pageInfo={pgInfo} boxes={boxes} containerWidth={containerWidth}
+                        selectedBox={selectedBox} hoveredBox={hoveredBox}
+                        onRightClickBox={handleRightClickBox}
+                        status={pageStatus[pg.pageNumber]}
+                        imageUrl={imageUrls[pg.pageNumber]}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         ) : (
           /* Star/Placeholder mode: text dual-column */
           <div className="text-mode-container">
-            <TextDualColumn ocrText={ocrText} entities={textEntities} mode={mode} onRightClickEntity={handleRightClickEntity} />
+            <TextDualColumn
+              ocrText={ocrText}
+              entities={textEntities}
+              mode={mode}
+              onRightClickEntity={handleRightClickEntity}
+              onAddManualEntity={handleAddManualEntity}
+              onTextChange={handleTextChange}
+            />
           </div>
         )}
       </div>
