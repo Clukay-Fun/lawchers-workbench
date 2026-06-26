@@ -353,7 +353,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 
 /* 历史 */
 .history-table { width: 100%; }
-.history-header, .history-row { display: grid; grid-template-columns: 1.5fr 60px 1fr 40px 120px 36px; align-items: center; gap: 8px; padding: 8px 0; font-size: 13px; }
+.history-header, .history-row { display: grid; grid-template-columns: 1.5fr 60px 1fr 40px 120px 120px; align-items: center; gap: 8px; padding: 8px 0; font-size: 13px; }
 .history-header { font-weight: 600; color: var(--base01); border-bottom: 1px solid var(--line); font-size: 12px; }
 .history-row { border-bottom: 1px solid var(--line); }
 .history-row:last-child { border-bottom: 0; }
@@ -362,6 +362,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .history-pass { color: var(--green); font-weight: 600; text-align: center; }
 .history-fail { color: var(--red); font-weight: 600; text-align: center; }
 .history-date { font-size: 12px; color: var(--base01); }
+.history-actions { display: flex; align-items: center; gap: 4px; justify-content: flex-end; }
+.history-disabled-hint { font-size: 11px; color: var(--base01); cursor: help; }
 
 .download-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
 .download-head h2 { margin: 0 0 6px; font: 500 20px/1.3 var(--font-display); }
@@ -426,6 +428,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .mask-diagnostics { display: flex; gap: 12px; padding: 4px 0; font: 10px var(--font-mono); color: var(--base01); border-bottom: 1px solid var(--line); }
 .mask-diagnostics span { padding: 1px 6px; background: rgba(0,0,0,.03); border-radius: 3px; }
 .mask-diagnostics .diag-warn { color: #b45309; background: rgba(180,83,9,.08); }
+.mask-diagnostics .diag-filtered { color: #6b7280; background: rgba(107,114,128,.08); }
 
 /* Mode switch */
 .mode-switch { display: flex; gap: 0; border: 1px solid var(--line-strong); border-radius: var(--radius-control); overflow: hidden; }

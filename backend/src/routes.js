@@ -2415,6 +2415,26 @@ router.post('/tasks/:id/analyze', async (req, res) => {
       }
     }
 
+    // ── P9-4: Filter false positives ──
+    // Layer 1: Drop NER_MISC (position/book/game/movie → "律师/负责人/《…标准》")
+    // Layer 2: Drop exact-match generic legal terms (full text == generic term)
+    //          but NOT entities that contain generic terms as part of longer names
+    const GENERIC_LEGAL_TERMS = new Set([
+      '法院', '司法部门', '行政机关', '合同', '甲方', '乙方',
+      '签约时间', '签约地点', '律师', '律师事务所', '事务所',
+      '委托代理合同', '委托代理', '代理合同',
+    ]);
+
+    const preFilterCount = textEntities.length;
+    textEntities = textEntities.filter(ent => {
+      // Layer 1: NER_MISC never enters redaction
+      if (ent.entity_type === 'NER_MISC') return false;
+      // Layer 2: exact-match generic terms only
+      if (ent.source === 'ner' && GENERIC_LEGAL_TERMS.has(ent.original)) return false;
+      return true;
+    });
+    const filteredCount = preFilterCount - textEntities.length;
+
     // Run seal detection (best-effort, don't fail if it errors)
     let sealBoxes = [];
     try {
@@ -2448,6 +2468,7 @@ router.post('/tasks/:id/analyze', async (req, res) => {
           nerHits: nerEntities.length,
           sealHits: sealBoxes.length,
           totalEntities: textEntities.length,
+          filteredOut: filteredCount,
           nerEnabled,
           nerWarning: nerWarning || null,
         },
@@ -2456,6 +2477,85 @@ router.post('/tasks/:id/analyze', async (req, res) => {
   } catch (error) {
     console.error('Analyze Error:', error);
     res.status(500).json({ success: false, message: 'OCR 分析失败', error: error.message });
+  }
+});
+
+/**
+ * GET /api/tasks/:id/session - 恢复任务会话（不重跑 analyze）
+ * 从 work_dir 回读已落盘的分析产物和已保存的 boxes。
+ */
+router.get('/tasks/:id/session', async (req, res) => {
+  try {
+    const taskId = parseInt(req.params.id, 10);
+    const task = getTaskById(taskId);
+    if (!task) return res.status(404).json({ success: false, message: '任务不存在' });
+
+    const workDir = task.work_dir;
+    const sourcePath = task.source_path;
+
+    // Check prerequisites
+    if (!workDir || !existsSync(workDir)) {
+      return res.status(404).json({ success: false, message: '工作目录不存在，无法恢复会话' });
+    }
+    if (!sourcePath || !existsSync(sourcePath)) {
+      return res.status(404).json({ success: false, message: '源文件已清理，仅可下载已导出结果' });
+    }
+
+    // Read saved artifacts from work_dir
+    const analyzePath = path.join(workDir, 'analyze.json');
+    const manifestPath = path.join(workDir, 'render-manifest.json');
+    const boxesPath = path.join(workDir, 'boxes.json');
+
+    if (!existsSync(analyzePath)) {
+      return res.status(404).json({ success: false, message: '分析数据不存在，请重新上传' });
+    }
+
+    const analyzeData = JSON.parse(await fs.readFile(analyzePath, 'utf-8'));
+
+    // Read render manifest if exists
+    let manifest = {};
+    if (existsSync(manifestPath)) {
+      manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
+    } else {
+      manifest = analyzeData.manifest || {};
+    }
+
+    // Read saved boxes
+    let boxes = [];
+    if (existsSync(boxesPath)) {
+      boxes = JSON.parse(await fs.readFile(boxesPath, 'utf-8'));
+    }
+
+    // Reconstruct textEntities from saved analyze data
+    const ocrText = (analyzeData.ocrBoxes || []).map(b => b.text || '').join('\n');
+    const textEntities = analyzeData.textEntities || [];
+
+    res.json({
+      success: true,
+      data: {
+        task: {
+          id: task.id,
+          filename: task.filename,
+          ext: task.ext,
+          document_kind: task.document_kind,
+          source_path: task.source_path,
+          work_dir: task.work_dir,
+          export_path: task.export_path,
+          created_at: task.created_at,
+        },
+        ocrBoxes: analyzeData.ocrBoxes || [],
+        textEntities,
+        sealBoxes: analyzeData.sealBoxes || [],
+        refinedBoxes: refineToEntityBoxes(analyzeData.ocrBoxes || [], textEntities),
+        boxes, // previously saved boxes
+        manifest,
+        ocrText,
+        diagnostics: analyzeData.diagnostics || null,
+      },
+    });
+  } catch (error) {
+    console.error('Session Restore Error:', error);
+    res.status(500).json({ success: false, message: '恢复会话失败', error: error.message });
   }
 });
 

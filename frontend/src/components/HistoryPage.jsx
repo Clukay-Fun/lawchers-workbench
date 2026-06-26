@@ -9,7 +9,7 @@ function formatDate(value) {
   return d.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
-export default function HistoryPage() {
+export default function HistoryPage({ onResumeTask }) {
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState('');
@@ -38,6 +38,8 @@ export default function HistoryPage() {
     }
   };
 
+  const canResume = (t) => t.work_dir && t.source_path;
+
   if (loading) return <div className="tool-loading">加载中…</div>;
 
   return (
@@ -53,6 +55,7 @@ export default function HistoryPage() {
             {tasks.map((t) => {
               const stats = (() => { try { return JSON.parse(t.entity_stats || '{}'); } catch { return {}; } })();
               const statStr = Object.entries(stats).map(([k, v]) => `${k}×${v}`).join(' ') || '—';
+              const resumeable = canResume(t);
               return (
                 <div key={t.id} className="history-row">
                   <span className="history-filename">{t.filename}</span>
@@ -62,7 +65,16 @@ export default function HistoryPage() {
                     {t.residual_passed ? '✓' : '✗'}
                   </span>
                   <span className="history-date">{formatDate(t.created_at)}</span>
-                  <Button variant="ghost" size="icon" aria-label="删除" onClick={() => handleDelete(t.id)}>×</Button>
+                  <div className="history-actions">
+                    {resumeable ? (
+                      <Button variant="ghost" size="sm" onClick={() => onResumeTask?.(t.id)}>
+                        继续编辑
+                      </Button>
+                    ) : (
+                      <span className="history-disabled-hint" title="源文件已清理，仅可下载已导出结果">不可编辑</span>
+                    )}
+                    <Button variant="ghost" size="icon" aria-label="删除" onClick={() => handleDelete(t.id)}>×</Button>
+                  </div>
                 </div>
               );
             })}

@@ -146,6 +146,18 @@ export async function analyzeTask(taskId) {
   return result.data;
 }
 
+/** 恢复任务会话（不重跑 analyze，从 work_dir 回读） */
+export async function getTaskSession(taskId) {
+  const response = await fetch(`${API_BASE}/tasks/${taskId}/session`, { method: 'GET' });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.message || '恢复会话失败');
+  }
+  const result = await response.json();
+  if (!result.success) throw new Error(result.message || '恢复会话异常');
+  return result.data;
+}
+
 /** 更新任务的遮蔽框列表 */
 export async function updateTaskBoxes(taskId, boxes) {
   const response = await fetch(`${API_BASE}/tasks/${taskId}/boxes`, {

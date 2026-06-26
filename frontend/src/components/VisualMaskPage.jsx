@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { analyzeTask, updateTaskBoxes, maskExportTask, textExportTask } from '../api';
+import { analyzeTask, updateTaskBoxes, maskExportTask, textExportTask, getTaskSession } from '../api';
 import { Button } from '@/components/ui/button';
 import { normalizedToCSS, computeDisplaySize, createNormalizedBox } from '../services/coords';
 
@@ -246,7 +246,7 @@ function ExportDropdown({ mode, onExport, exporting, disabled }) {
 
 // ─── Main VisualMaskPage ─────────────────────────────────────
 
-export default function VisualMaskPage({ settings: _settings }) {
+export default function VisualMaskPage({ settings: _settings, resumeTaskId, onResumeDone }) {
   const [task, setTask] = useState(null);
   const [loading, setLoading] = useState(false);
   const [processingStep, setProcessingStep] = useState('');
@@ -272,6 +272,35 @@ export default function VisualMaskPage({ settings: _settings }) {
   const pageRowRefs = useRef({});
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 2400); };
+
+  // ─── Hydrate from session (P9-1: task recovery) ──────────
+  useEffect(() => {
+    if (!resumeTaskId) return;
+    let cancelled = false;
+    (async () => {
+      setLoading(true); setError(null);
+      try {
+        const session = await getTaskSession(resumeTaskId);
+        if (cancelled) return;
+        setTask(session.task);
+        setBoxes(session.boxes || []);
+        setTextEntities(session.textEntities || []);
+        setOcrText(session.ocrText || '');
+        setDiagnostics(session.diagnostics || null);
+        setPageImages(session.manifest?.pages || []);
+        setCurrentPage(1);
+        showToast('已恢复上次编辑');
+      } catch (err) {
+        if (!cancelled) setError(err.message);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    onResumeDone?.();
+    return () => { cancelled = true; };
+  }, [resumeTaskId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ─── Scroll → update currentPage (#3) ─────────────────────
 
   // ─── Scroll → update currentPage (#3) ─────────────────────
 
@@ -464,6 +493,7 @@ export default function VisualMaskPage({ settings: _settings }) {
               <span>正则 {diagnostics.regexHits}</span>
               <span>NER {diagnostics.nerHits}</span>
               <span>公章 {diagnostics.sealHits}</span>
+              {diagnostics.filteredOut > 0 && <span className="diag-filtered">过滤 {diagnostics.filteredOut}</span>}
               {diagnostics.nerWarning && <span className="diag-warn">{diagnostics.nerWarning}</span>}
             </div>
           )}
