@@ -351,7 +351,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     if (!storedId) return;
     let cancelled = false;
     (async () => {
-      setLoading(true); setError(null);
+      setLoading(true); setProcessingStep('正在恢复任务…'); setError(null);
       try {
         const session = await getTaskSession(parseInt(storedId, 10));
         if (cancelled) return;
@@ -363,10 +363,9 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
         setCurrentPage(1);
         hasLoadedRef.current = true;
       } catch {
-        // Session gone or invalid — clear stored id
         localStorage.removeItem('activeTaskId');
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) { setLoading(false); setProcessingStep(''); }
       }
     })();
     return () => { cancelled = true; };
@@ -377,7 +376,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     if (!resumeTaskId) return;
     let cancelled = false;
     (async () => {
-      setLoading(true); setError(null);
+      setLoading(true); setProcessingStep('正在恢复任务…'); setError(null);
       try {
         const session = await getTaskSession(resumeTaskId);
         if (cancelled) return;
@@ -393,7 +392,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
       } catch (err) {
         if (!cancelled) setError(err.message);
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) { setLoading(false); setProcessingStep(''); }
       }
     })();
     onResumeDone?.();
@@ -560,7 +559,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   }
 
   if (loading) {
-    return <ProgressBar percent={uploadPercent} step={processingStep} />;
+    return <ProgressBar percent={uploadPercent} step={processingStep || '正在恢复任务…'} />;
   }
 
   if (error) {
@@ -594,20 +593,27 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
       </div>
 
       {isMaskMode ? (
-        /* Mask mode: dual-column with fixed headers */
+        /* Mask mode: shared header + continuous scroll pages */
         <div className="mask-scroll-container" ref={scrollRef}>
+          {/* S2: Shared header — renders once, sticky */}
+          <div className="mask-col-header-row">
+            <div className="mask-col-header">
+              <div className="page-nav">
+                <Button variant="ghost" size="sm" disabled={currentPage <= 1} onClick={() => scrollToPage(currentPage - 1)}>←</Button>
+                <span>{currentPage} / {totalPages}</span>
+                <Button variant="ghost" size="sm" disabled={currentPage >= totalPages} onClick={() => scrollToPage(currentPage + 1)}>→</Button>
+              </div>
+            </div>
+            <div className="mask-col-header">
+              <span className="mask-col-header-title">脱敏预览</span>
+            </div>
+          </div>
+          {/* Page rows — no headers, just content */}
           {pageImages.map((pg) => {
             const pgInfo = { ...pg, taskId: task?.taskId };
             return (
               <div key={pg.pageNumber} className="mask-page-row" data-page={pg.pageNumber} ref={el => { pageRowRefs.current[pg.pageNumber] = el; }}>
                 <div className="mask-page-col">
-                  <div className="mask-col-header">
-                    <div className="page-nav">
-                      <Button variant="ghost" size="sm" disabled={currentPage <= 1} onClick={() => scrollToPage(currentPage - 1)}>←</Button>
-                      <span>{currentPage} / {totalPages}</span>
-                      <Button variant="ghost" size="sm" disabled={currentPage >= totalPages} onClick={() => scrollToPage(currentPage + 1)}>→</Button>
-                    </div>
-                  </div>
                   <PageCanvas
                     pageInfo={pgInfo} boxes={boxes} onBoxesChange={setBoxes} containerWidth={560}
                     selectedBox={selectedBox} onSelectBox={setSelectedBox}
@@ -616,9 +622,6 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
                   />
                 </div>
                 <div className="mask-page-col">
-                  <div className="mask-col-header">
-                    <span className="mask-col-header-title">脱敏预览</span>
-                  </div>
                   <MaskPreview
                     pageInfo={pgInfo} boxes={boxes} containerWidth={560}
                     selectedBox={selectedBox} hoveredBox={hoveredBox}

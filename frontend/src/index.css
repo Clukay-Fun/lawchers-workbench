@@ -447,9 +447,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 
 /* #3: Continuous vertical scroll dual-column */
 .mask-scroll-container { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 0 16px 16px; }
+.mask-col-header-row { display: flex; gap: 16px; justify-content: center; position: sticky; top: 0; z-index: 10; background: rgba(247,244,238,.95); padding: 8px 0; margin-bottom: 8px; }
 .mask-page-row { display: flex; gap: 16px; margin-bottom: 24px; justify-content: center; }
 .mask-page-col { flex: 0 0 auto; display: flex; flex-direction: column; }
-.mask-col-header { flex: 0 0 auto; height: 40px; display: flex; align-items: center; justify-content: center; padding: 0 12px; background: rgba(247,244,238,.5); border: 1px solid var(--line); border-bottom: none; border-radius: 2px 2px 0 0; }
+.mask-col-header { flex: 0 0 auto; height: 40px; display: flex; align-items: center; justify-content: center; padding: 0 12px; background: rgba(247,244,238,.5); border: 1px solid var(--line); border-bottom: none; border-radius: 2px 2px 0 0; min-width: 560px; }
 .mask-col-header-title { font-weight: 600; font-size: 13px; color: var(--base02); }
 .page-canvas { box-shadow: var(--shadow-sm); border: 1px solid var(--line); border-radius: 0 0 2px 2px; overflow: visible; }
 .mask-preview { border-radius: 0 0 2px 2px; box-shadow: var(--shadow-sm); border: 1px solid var(--line); overflow: hidden; border-top: none; }
