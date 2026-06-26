@@ -773,20 +773,20 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const scrollToPage = useCallback((n) => {
     if (n < 1 || n > pageImages.length) return;
     setCurrentPage(n);
-    const container = scrollRef.current;
-    const el = pageRowRefs.current[n];
-    if (!container || !el) return;
-    scrollIgnoreRef.current = true;
-    // Use element's offsetTop relative to the scroll container
-    const containerRect = container.getBoundingClientRect();
-    const elRect = el.getBoundingClientRect();
-    const scrollDelta = elRect.top - containerRect.top;
-    const targetTop = container.scrollTop + scrollDelta - 16;
-    container.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' });
-    if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
-    scrollTimeoutRef.current = setTimeout(() => {
-      scrollIgnoreRef.current = false;
-    }, 800);
+    // Wait for refs to be available
+    requestAnimationFrame(() => {
+      const container = scrollRef.current;
+      const el = pageRowRefs.current[n];
+      if (!container || !el) return;
+      scrollIgnoreRef.current = true;
+      // Calculate position: element top relative to container's scroll position
+      const elTop = el.offsetTop;
+      container.scrollTo({ top: Math.max(0, elTop - 8), behavior: 'smooth' });
+      if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
+      scrollTimeoutRef.current = setTimeout(() => {
+        scrollIgnoreRef.current = false;
+      }, 800);
+    });
   }, [pageImages.length]);
 
   const handleMaskLeftScroll = useCallback(() => {
