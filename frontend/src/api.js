@@ -182,6 +182,20 @@ export async function updateTaskBoxes(taskId, boxes) {
   return response.json();
 }
 
+/** 更新已取消的实体列表 */
+export async function updateCancelledEntities(taskId, cancelled) {
+  const response = await fetch(`${API_BASE}/tasks/${taskId}/cancelled-entities`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cancelled }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.message || '更新取消列表失败');
+  }
+  return response.json();
+}
+
 /** 导出遮蔽 PDF */
 export async function maskExportTask(taskId, boxes) {
   const response = await fetch(`${API_BASE}/tasks/${taskId}/mask-export`, {

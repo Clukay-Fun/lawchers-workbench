@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { analyzeTask, updateTaskBoxes, maskExportTask, textExportTask, getTaskSession } from '../api';
+import { analyzeTask, updateTaskBoxes, maskExportTask, textExportTask, getTaskSession, updateCancelledEntities } from '../api';
 import { Button } from '@/components/ui/button';
 import { normalizedToCSS, computeDisplaySize, createNormalizedBox } from '../services/coords';
 
@@ -99,6 +99,8 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
   const [drawing, setDrawing] = useState(null);
   const [dragging, setDragging] = useState(null);
   const [resizing, setResizing] = useState(null);
+  const [imgLoaded, setImgLoaded] = useState(false);
+  const [imgError, setImgError] = useState(false);
   const { displayWidth, displayHeight } = computeDisplaySize(pageInfo, containerWidth, 900);
 
   const toNormalized = useCallback((e) => {
@@ -159,7 +161,9 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
 
   return (
     <div className="page-canvas" style={{ position: 'relative', width: displayWidth, height: displayHeight }}>
-      <img src={`/api/tasks/${pageInfo.taskId}/page-image/${pageInfo.pageNumber}`} alt={`Page ${pageInfo.pageNumber}`} style={{ width: displayWidth, height: displayHeight, display: 'block', userSelect: 'none' }} draggable={false} />
+      {!imgLoaded && !imgError && <div className="page-img-loading" style={{ position: 'absolute', inset: 0 }}>页面恢复中…</div>}
+      {imgError && <div className="page-img-loading" style={{ position: 'absolute', inset: 0 }}>页面加载失败</div>}
+      <img src={`/api/tasks/${pageInfo.taskId}/page-image/${pageInfo.pageNumber}`} alt={`Page ${pageInfo.pageNumber}`} style={{ width: displayWidth, height: displayHeight, display: imgLoaded ? 'block' : 'none', userSelect: 'none' }} draggable={false} onLoad={() => setImgLoaded(true)} onError={() => setImgError(true)} />
       <div ref={overlayRef} className="box-overlay" style={{ position: 'absolute', top: 0, left: 0, width: displayWidth, height: displayHeight, cursor: 'crosshair' }} onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}>
         {pageBoxes.map(box => {
           const css = normalizedToCSS(box, displayWidth, displayHeight);
@@ -183,9 +187,13 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
 function MaskPreview({ pageInfo, boxes, containerWidth, selectedBox, hoveredBox, onRightClickBox }) {
   const { displayWidth, displayHeight } = computeDisplaySize(pageInfo, containerWidth, 900);
   const pageBoxes = boxes.filter(b => b.page === pageInfo.pageNumber);
+  const [imgLoaded, setImgLoaded] = useState(false);
+  const [imgError, setImgError] = useState(false);
   return (
     <div className="mask-preview" style={{ position: 'relative', width: displayWidth, height: displayHeight, background: '#fff' }}>
-      <img src={`/api/tasks/${pageInfo.taskId}/page-image/${pageInfo.pageNumber}`} alt="" style={{ width: displayWidth, height: displayHeight, display: 'block', userSelect: 'none' }} draggable={false} />
+      {!imgLoaded && !imgError && <div className="page-img-loading" style={{ position: 'absolute', inset: 0 }}>页面恢复中…</div>}
+      {imgError && <div className="page-img-loading" style={{ position: 'absolute', inset: 0 }}>页面加载失败</div>}
+      <img src={`/api/tasks/${pageInfo.taskId}/page-image/${pageInfo.pageNumber}`} alt="" style={{ width: displayWidth, height: displayHeight, display: imgLoaded ? 'block' : 'none', userSelect: 'none' }} draggable={false} onLoad={() => setImgLoaded(true)} onError={() => setImgError(true)} />
       <svg width={displayWidth} height={displayHeight} style={{ position: 'absolute', top: 0, left: 0 }}>
         {pageBoxes.map(box => {
           const css = normalizedToCSS(box, displayWidth, displayHeight);
@@ -329,6 +337,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const [textEntities, setTextEntities] = useState([]);
   const [ocrText, setOcrText] = useState('');
   const [pageImages, setPageImages] = useState([]);
+  const cancelledRef = useRef(new Set());
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedBox, setSelectedBox] = useState(null);
   const [hoveredBox, setHoveredBox] = useState(null);
@@ -341,6 +350,26 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const scrollRef = useRef(null);
   const pageRowRefs = useRef({});
   const hasLoadedRef = useRef(false);
+  const [containerWidth, setContainerWidth] = useState(560);
+
+  // Track container width for adaptive layout — rebind when mask mode renders
+  useEffect(() => {
+    if (mode !== 'mask' || !task || pageImages.length === 0) return;
+    const el = scrollRef.current;
+    if (!el) return;
+
+    const update = () => {
+      const w = el.getBoundingClientRect().width || 560;
+      const pageW = Math.min(Math.floor((w - 48) / 2), 720);
+      setContainerWidth(Math.max(pageW, 280));
+    };
+
+    update();
+
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [mode, task, pageImages.length]);
 
   const showToast = useCallback((msg) => { setToast(msg); setTimeout(() => setToast(''), 2400); }, []);
 
@@ -360,6 +389,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
         setTextEntities(session.textEntities || []);
         setOcrText(session.ocrText || '');
         setPageImages(session.manifest?.pages || []);
+        cancelledRef.current = new Set(session.cancelledEntities || []);
         setCurrentPage(1);
         hasLoadedRef.current = true;
       } catch {
@@ -385,6 +415,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
         setTextEntities(session.textEntities || []);
         setOcrText(session.ocrText || '');
         setPageImages(session.manifest?.pages || []);
+        cancelledRef.current = new Set(session.cancelledEntities || []);
         setCurrentPage(1);
         hasLoadedRef.current = true;
         localStorage.setItem('activeTaskId', String(resumeTaskId));
@@ -400,11 +431,14 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   }, [resumeTaskId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Scroll → update currentPage ──────────────────────────
+  const scrollIgnoreRef = useRef(false);
+
   useEffect(() => {
     if (mode !== 'mask' || pageImages.length <= 1) return;
     const container = scrollRef.current;
     if (!container) return;
     const observer = new IntersectionObserver((entries) => {
+      if (scrollIgnoreRef.current) return; // ignore during programmatic scroll
       let best = 0, bestPage = currentPage;
       for (const e of entries) { if (e.intersectionRatio > best) { best = e.intersectionRatio; bestPage = parseInt(e.target.dataset.page, 10) || currentPage; } }
       if (best > 0.3 && bestPage !== currentPage) setCurrentPage(bestPage);
@@ -413,26 +447,41 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     return () => observer.disconnect();
   }, [mode, pageImages.length, currentPage]);
 
-  const scrollToPage = useCallback((n) => { const el = pageRowRefs.current[n]; if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); setCurrentPage(n); }, []);
+  const scrollToPage = useCallback((n) => {
+    if (n < 1 || n > pageImages.length) return;
+    setCurrentPage(n);
+    const container = scrollRef.current;
+    const el = pageRowRefs.current[n];
+    if (!container || !el) return;
+    scrollIgnoreRef.current = true;
+    const headerHeight = 56;
+    container.scrollTo({ top: el.offsetTop - headerHeight, behavior: 'smooth' });
+    setTimeout(() => { scrollIgnoreRef.current = false; }, 500);
+  }, [pageImages.length]);
 
-  // ─── S5: Right-click cancel handler ────────────────────────
+  // ─── S5: Right-click cancel handler (Slice 2: persist to backend) ──
+  const persistCancelled = useCallback((newSet) => {
+    if (!task) return;
+    updateCancelledEntities(task.taskId, [...newSet]).catch(() => {});
+  }, [task]);
+
   const handleRightClickBox = useCallback((box) => {
-    // Remove the box
     setBoxes(prev => prev.filter(b => b.id !== box.id));
-    // If box was from an entity (has entityId), also remove the entity
     if (box.entityId) {
       setTextEntities(prev => prev.filter(e => e.id !== box.entityId));
+      cancelledRef.current.add(box.entityId);
+      persistCancelled(cancelledRef.current);
     }
     showToast('已取消该区域脱敏');
-  }, [showToast]);
+  }, [showToast, persistCancelled]);
 
   const handleRightClickEntity = useCallback((entity) => {
-    // Remove the entity from textEntities by stable id
     setTextEntities(prev => prev.filter(e => e.id !== entity.id));
-    // Remove any box that was generated from this entity (has matching entityId)
     setBoxes(prev => prev.filter(b => !(b.entityId && b.entityId === entity.id)));
+    cancelledRef.current.add(entity.id);
+    persistCancelled(cancelledRef.current);
     showToast('已取消该实体脱敏');
-  }, [showToast]);
+  }, [showToast, persistCancelled]);
 
   // Persist boxes on change (debounced) — allow empty array to clear
   useEffect(() => {
@@ -452,7 +501,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const handleFile = async (file) => {
     if (!file) return;
     localStorage.removeItem('activeTaskId'); // S4: clear before new upload
-    setLoading(true); setError(null); setBoxes([]); setTextEntities([]); setOcrText(''); setPageImages([]); setUploadPercent(0); setProcessingStep('上传中…');
+    setLoading(true); setError(null); setBoxes([]); setTextEntities([]); setOcrText(''); setPageImages([]); cancelledRef.current = new Set(); setUploadPercent(0); setProcessingStep('上传中…');
     try {
       const taskData = await uploadWithProgress(file, _settings?.rulesConfig, setUploadPercent);
       setTask(taskData); setUploadPercent(100);
@@ -615,7 +664,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
               <div key={pg.pageNumber} className="mask-page-row" data-page={pg.pageNumber} ref={el => { pageRowRefs.current[pg.pageNumber] = el; }}>
                 <div className="mask-page-col">
                   <PageCanvas
-                    pageInfo={pgInfo} boxes={boxes} onBoxesChange={setBoxes} containerWidth={560}
+                    pageInfo={pgInfo} boxes={boxes} onBoxesChange={setBoxes} containerWidth={containerWidth}
                     selectedBox={selectedBox} onSelectBox={setSelectedBox}
                     hoveredBox={hoveredBox} onHoverBox={setHoveredBox}
                     onRightClickBox={handleRightClickBox}
@@ -623,7 +672,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
                 </div>
                 <div className="mask-page-col">
                   <MaskPreview
-                    pageInfo={pgInfo} boxes={boxes} containerWidth={560}
+                    pageInfo={pgInfo} boxes={boxes} containerWidth={containerWidth}
                     selectedBox={selectedBox} hoveredBox={hoveredBox}
                     onRightClickBox={handleRightClickBox}
                   />
