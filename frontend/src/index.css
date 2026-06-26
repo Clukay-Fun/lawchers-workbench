@@ -446,11 +446,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .export-menu-item:hover { background: rgba(59,130,246,.08); }
 
 .mask-scroll-container { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 0 0 16px; }
-.mask-dual-column { flex: 1; display: flex; gap: 16px; padding: 16px; overflow: hidden; min-height: 0; width: 100%; max-width: 1504px; margin: 0 auto; align-self: center; box-sizing: border-box; }
-.mask-panel { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius-card); overflow: hidden; box-shadow: var(--shadow-sm); }
-.mask-panel-header { flex: 0 0 auto; height: 42px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; background: rgba(247,244,238,.5); border-bottom: 1px solid var(--line); box-sizing: border-box; }
-.mask-panel-header-left { justify-content: flex-start; }
-.mask-panel-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 0; background: var(--base3); position: relative; }
+/* Mask mode: single scroll container */
+.mask-scroll-container { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 0 16px 16px; }
+.mask-header-row { display: flex; gap: 16px; justify-content: center; position: sticky; top: 0; z-index: 10; background: rgba(247,244,238,.95); padding: 8px 0; margin-bottom: 8px; }
+.mask-header-cell { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; height: 42px; background: var(--card); border: 1px solid var(--line); border-bottom: none; border-radius: 2px 2px 0 0; }
+.mask-page-row { display: flex; gap: 16px; margin-bottom: 24px; justify-content: center; }
+.mask-page-col { flex: 0 1 auto; min-width: 0; display: flex; flex-direction: column; }
 .mask-page-row { display: flex; margin-bottom: 24px; justify-content: center; flex-wrap: nowrap; box-sizing: border-box; width: 100%; }
 .mask-page-row:last-child { margin-bottom: 0; }
 .mask-page-col { flex: 0 1 auto; min-width: 0; display: flex; flex-direction: column; }
