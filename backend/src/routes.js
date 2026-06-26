@@ -2454,24 +2454,43 @@ router.post('/tasks/:id/analyze', async (req, res) => {
       console.warn('Seal detection failed (non-fatal):', sealErr.message);
     }
 
+    const refinedBoxes = refineToEntityBoxes(analyzeData.ocrBoxes || [], textEntities);
+    const diagData = {
+      ocrLines: (analyzeData.ocrBoxes || []).length,
+      regexHits: regexEntities.length,
+      nerHits: nerEntities.length,
+      sealHits: sealBoxes.length,
+      totalEntities: textEntities.length,
+      filteredOut: filteredCount,
+      nerEnabled,
+      nerWarning: nerWarning || null,
+    };
+
+    // ── Persist session data for recovery (P9-1) ──
+    const sessionPath = path.join(workDir, 'session.json');
+    try {
+      await fs.writeFile(sessionPath, JSON.stringify({
+        ocrBoxes: analyzeData.ocrBoxes || [],
+        textEntities,
+        refinedBoxes,
+        sealBoxes,
+        manifest: analyzeData.manifest || {},
+        diagnostics: diagData,
+        ocrText,
+      }, null, 2), 'utf-8');
+    } catch (sessionErr) {
+      console.warn('[WARN] Failed to write session.json:', sessionErr.message);
+    }
+
     res.json({
       success: true,
       data: {
         ocrBoxes: analyzeData.ocrBoxes || [],
-        refinedBoxes: refineToEntityBoxes(analyzeData.ocrBoxes || [], textEntities),
+        refinedBoxes,
         textEntities,
         sealBoxes,
         manifest: analyzeData.manifest || {},
-        diagnostics: {
-          ocrLines: (analyzeData.ocrBoxes || []).length,
-          regexHits: regexEntities.length,
-          nerHits: nerEntities.length,
-          sealHits: sealBoxes.length,
-          totalEntities: textEntities.length,
-          filteredOut: filteredCount,
-          nerEnabled,
-          nerWarning: nerWarning || null,
-        },
+        diagnostics: diagData,
       },
     });
   } catch (error) {
@@ -2482,7 +2501,8 @@ router.post('/tasks/:id/analyze', async (req, res) => {
 
 /**
  * GET /api/tasks/:id/session - 恢复任务会话（不重跑 analyze）
- * 从 work_dir 回读已落盘的分析产物和已保存的 boxes。
+ * 优先从 session.json 读取增强数据，降级到 analyze.json。
+ * boxes.json 存在则用它，否则用 refinedBoxes + sealBoxes 作为初始框。
  */
 router.get('/tasks/:id/session', async (req, res) => {
   try {
@@ -2493,7 +2513,6 @@ router.get('/tasks/:id/session', async (req, res) => {
     const workDir = task.work_dir;
     const sourcePath = task.source_path;
 
-    // Check prerequisites
     if (!workDir || !existsSync(workDir)) {
       return res.status(404).json({ success: false, message: '工作目录不存在，无法恢复会话' });
     }
@@ -2501,34 +2520,50 @@ router.get('/tasks/:id/session', async (req, res) => {
       return res.status(404).json({ success: false, message: '源文件已清理，仅可下载已导出结果' });
     }
 
-    // Read saved artifacts from work_dir
+    // Priority: session.json > analyze.json
+    const sessionPath = path.join(workDir, 'session.json');
     const analyzePath = path.join(workDir, 'analyze.json');
-    const manifestPath = path.join(workDir, 'render-manifest.json');
     const boxesPath = path.join(workDir, 'boxes.json');
 
-    if (!existsSync(analyzePath)) {
+    let sessionData = null;
+    if (existsSync(sessionPath)) {
+      sessionData = JSON.parse(await fs.readFile(sessionPath, 'utf-8'));
+    } else if (existsSync(analyzePath)) {
+      // Legacy: analyze.json doesn't have enhanced fields, but try anyway
+      const raw = JSON.parse(await fs.readFile(analyzePath, 'utf-8'));
+      sessionData = {
+        ocrBoxes: raw.ocrBoxes || [],
+        textEntities: raw.textEntities || [],
+        refinedBoxes: [],
+        sealBoxes: raw.sealBoxes || [],
+        manifest: raw.manifest || {},
+        diagnostics: raw.diagnostics || null,
+        ocrText: (raw.ocrBoxes || []).map(b => b.text || '').join('\n'),
+      };
+    }
+
+    if (!sessionData) {
       return res.status(404).json({ success: false, message: '分析数据不存在，请重新上传' });
     }
 
-    const analyzeData = JSON.parse(await fs.readFile(analyzePath, 'utf-8'));
-
     // Read render manifest if exists
-    let manifest = {};
+    const manifestPath = path.join(workDir, 'render-manifest.json');
+    let manifest = sessionData.manifest || {};
     if (existsSync(manifestPath)) {
       manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
-    } else {
-      manifest = analyzeData.manifest || {};
     }
 
-    // Read saved boxes
+    // Read saved boxes; if none, use refinedBoxes + sealBoxes as initial
     let boxes = [];
     if (existsSync(boxesPath)) {
       boxes = JSON.parse(await fs.readFile(boxesPath, 'utf-8'));
+    } else {
+      // Fallback: use auto-detected boxes as initial
+      boxes = [...(sessionData.refinedBoxes || []), ...(sessionData.sealBoxes || [])];
     }
 
-    // Reconstruct textEntities from saved analyze data
-    const ocrText = (analyzeData.ocrBoxes || []).map(b => b.text || '').join('\n');
-    const textEntities = analyzeData.textEntities || [];
+    const textEntities = sessionData.textEntities || [];
+    const ocrBoxes = sessionData.ocrBoxes || [];
 
     res.json({
       success: true,
@@ -2543,14 +2578,14 @@ router.get('/tasks/:id/session', async (req, res) => {
           export_path: task.export_path,
           created_at: task.created_at,
         },
-        ocrBoxes: analyzeData.ocrBoxes || [],
+        ocrBoxes,
         textEntities,
-        sealBoxes: analyzeData.sealBoxes || [],
-        refinedBoxes: refineToEntityBoxes(analyzeData.ocrBoxes || [], textEntities),
-        boxes, // previously saved boxes
+        sealBoxes: sessionData.sealBoxes || [],
+        refinedBoxes: refineToEntityBoxes(ocrBoxes, textEntities),
+        boxes,
         manifest,
-        ocrText,
-        diagnostics: analyzeData.diagnostics || null,
+        ocrText: sessionData.ocrText || ocrBoxes.map(b => b.text || '').join('\n'),
+        diagnostics: sessionData.diagnostics || null,
       },
     });
   } catch (error) {
