@@ -92,55 +92,9 @@ function ProgressBar({ percent, step }) {
   );
 }
 
-// ─── Diagnostic Panel (P9-5) ─────────────────────────────────
-
-function DiagnosticPanel({ diagnostics }) {
-  const [open, setOpen] = useState(false);
-  if (!diagnostics) return null;
-
-  const typeStats = diagnostics.entityTypeStats || {};
-  const typeEntries = Object.entries(typeStats).sort((a, b) => b[1] - a[1]);
-
-  return (
-    <div className="diag-panel">
-      <button className="diag-toggle" onClick={() => setOpen(!open)}>
-        {open ? '▾ 收起诊断' : '▸ 诊断'}
-        <span className="diag-summary">
-          OCR {diagnostics.ocrLines} · 正则 {diagnostics.regexHits} · NER {diagnostics.nerHits} · 公章 {diagnostics.sealHits}
-          {diagnostics.filteredOut > 0 && ` · 过滤 ${diagnostics.filteredOut}`}
-        </span>
-      </button>
-      {open && (
-        <div className="diag-detail">
-          <div className="diag-grid">
-            <span>OCR 行数</span><strong>{diagnostics.ocrLines}</strong>
-            <span>OCR 文本长度</span><strong>{diagnostics.ocrTextLength || '—'}</strong>
-            <span>textEntities</span><strong>{diagnostics.totalEntities}</strong>
-            <span>refinedBoxes</span><strong>{diagnostics.refinedBoxesCount || '—'}</strong>
-            <span>sealBoxes</span><strong>{diagnostics.sealHits}</strong>
-            <span>NER</span><strong>{(diagnostics.nerEnabled ? '启用' : '未启用')}</strong>
-            <span>被过滤</span><strong>{diagnostics.filteredOut}</strong>
-          </div>
-          {typeEntries.length > 0 && (
-            <div className="diag-types">
-              <div className="diag-types-title">实体类型命中</div>
-              <div className="diag-types-list">
-                {typeEntries.map(([type, count]) => (
-                  <span key={type} className="diag-type-tag">{type} ×{count}</span>
-                ))}
-              </div>
-            </div>
-          )}
-          {diagnostics.nerWarning && <div className="diag-warn">{diagnostics.nerWarning}</div>}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ─── Page Image Component ────────────────────────────────────
 
-function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBox, onSelectBox, hoveredBox, onHoverBox }) {
+function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBox, onSelectBox, hoveredBox, onHoverBox, onRightClickBox }) {
   const overlayRef = useRef(null);
   const [drawing, setDrawing] = useState(null);
   const [dragging, setDragging] = useState(null);
@@ -212,7 +166,7 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
           const isActive = hoveredBox === box.id || selectedBox === box.id;
           return (
             <div key={box.id} style={{ position: 'absolute', left: css.left, top: css.top, width: css.width, height: css.height }}>
-              <div data-box-id={box.id} style={{ width: '100%', height: '100%', border: `2px solid ${isActive ? '#3b82f6' : 'rgba(59,130,246,0.6)'}`, background: isActive ? 'rgba(59,130,246,0.12)' : 'rgba(59,130,246,0.06)', cursor: 'move', transition: 'border-color 0.12s, background 0.12s' }} onMouseDown={(e) => handleBoxMouseDown(e, box)} onMouseEnter={() => onHoverBox?.(box.id)} onMouseLeave={() => onHoverBox?.(null)} />
+              <div data-box-id={box.id} style={{ width: '100%', height: '100%', border: `2px solid ${isActive ? '#3b82f6' : 'rgba(59,130,246,0.6)'}`, background: isActive ? 'rgba(59,130,246,0.12)' : 'rgba(59,130,246,0.06)', cursor: 'move', transition: 'border-color 0.12s, background 0.12s' }} onMouseDown={(e) => handleBoxMouseDown(e, box)} onContextMenu={(e) => { e.preventDefault(); onRightClickBox?.(box); }} onMouseEnter={() => onHoverBox?.(box.id)} onMouseLeave={() => onHoverBox?.(null)} />
               {box.source === 'seal' && <span style={{ position: 'absolute', top: -16, left: 0, fontSize: 10, color: '#3b82f6', whiteSpace: 'nowrap' }}>公章</span>}
               {isActive && <button style={{ position: 'absolute', top: -12, right: -12, width: 22, height: 22, borderRadius: '50%', background: '#ef4444', color: '#fff', border: '2px solid #fff', cursor: 'pointer', fontSize: 13, lineHeight: '18px', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 20, boxShadow: '0 1px 4px rgba(0,0,0,0.2)' }} onMouseDown={(e) => e.stopPropagation()} onClick={(e) => handleDeleteBox(e, box.id)} title="删除">×</button>}
               {isActive && ['nw', 'ne', 'sw', 'se'].map(h => <div key={h} data-handle={h} style={{ position: 'absolute', width: 8, height: 8, background: '#3b82f6', border: '1px solid #fff', borderRadius: 2, zIndex: 10, ...(h.includes('n') ? { top: -4 } : { bottom: -4 }), ...(h.includes('w') ? { left: -4 } : { right: -4 }), cursor: h === 'nw' || h === 'se' ? 'nwse-resize' : 'nesw-resize' }} onMouseDown={(e) => handleResizeStart(e, box.id, h)} />)}
@@ -227,7 +181,7 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
 
 // ─── Mask Preview Panel (P9-3: white border on selected) ────
 
-function MaskPreview({ pageInfo, boxes, containerWidth, selectedBox, hoveredBox }) {
+function MaskPreview({ pageInfo, boxes, containerWidth, selectedBox, hoveredBox, onRightClickBox }) {
   const { displayWidth, displayHeight } = computeDisplaySize(pageInfo, containerWidth, 900);
   const pageBoxes = boxes.filter(b => b.page === pageInfo.pageNumber);
   return (
@@ -238,7 +192,7 @@ function MaskPreview({ pageInfo, boxes, containerWidth, selectedBox, hoveredBox 
           const css = normalizedToCSS(box, displayWidth, displayHeight);
           const isSelected = selectedBox === box.id || hoveredBox === box.id;
           return (
-            <g key={box.id}>
+            <g key={box.id} onContextMenu={(e) => { e.preventDefault(); onRightClickBox?.(box); }} style={{ cursor: 'pointer' }}>
               <rect x={css.left} y={css.top} width={css.width} height={css.height} fill="#000000" stroke="none" />
               {isSelected && <rect x={css.left - 1} y={css.top - 1} width={css.width + 2} height={css.height + 2} fill="none" stroke="#ffffff" strokeWidth="2" />}
               {isSelected && <rect x={css.left - 3} y={css.top - 3} width={css.width + 6} height={css.height + 6} fill="none" stroke="rgba(59,130,246,0.4)" strokeWidth="1" />}
@@ -253,7 +207,7 @@ function MaskPreview({ pageInfo, boxes, containerWidth, selectedBox, hoveredBox 
 
 // ─── Text Dual-Column (P9-3: sync scroll + hover highlight) ─
 
-function TextDualColumn({ ocrText, entities, mode }) {
+function TextDualColumn({ ocrText, entities, mode, onRightClickEntity }) {
   const [hoveredEntity, setHoveredEntity] = useState(null);
   const leftRef = useRef(null);
   const rightRef = useRef(null);
@@ -322,7 +276,7 @@ function TextDualColumn({ ocrText, entities, mode }) {
           <pre className="text-content">
             {Array.isArray(highlightedOriginal)
               ? highlightedOriginal.map((part, i) => part.type === 'entity'
-                ? <span key={i} className={`text-entity-highlight ${isHighlighted(part.entity) ? 'active' : ''}`} onMouseEnter={() => setHoveredEntity(part.entity)} onMouseLeave={() => setHoveredEntity(null)}>{part.text}</span>
+                ? <span key={i} className={`text-entity-highlight ${isHighlighted(part.entity) ? 'active' : ''}`} onMouseEnter={() => setHoveredEntity(part.entity)} onMouseLeave={() => setHoveredEntity(null)} onContextMenu={(e) => { e.preventDefault(); onRightClickEntity?.(part.entity); }}>{part.text}</span>
                 : <span key={i}>{part.text}</span>
               )
               : highlightedOriginal
@@ -336,7 +290,7 @@ function TextDualColumn({ ocrText, entities, mode }) {
           <pre className="text-content">
             {Array.isArray(highlightedReplaced)
               ? highlightedReplaced.map((part, i) => part.type === 'entity'
-                ? <span key={i} className={`text-entity-highlight replaced ${isHighlighted(part.entity) ? 'active' : ''}`} onMouseEnter={() => setHoveredEntity(part.entity)} onMouseLeave={() => setHoveredEntity(null)}>{part.text}</span>
+                ? <span key={i} className={`text-entity-highlight replaced ${isHighlighted(part.entity) ? 'active' : ''}`} onMouseEnter={() => setHoveredEntity(part.entity)} onMouseLeave={() => setHoveredEntity(null)} onContextMenu={(e) => { e.preventDefault(); onRightClickEntity?.(part.entity); }}>{part.text}</span>
                 : <span key={i}>{part.text}</span>
               )
               : highlightedReplaced
@@ -376,7 +330,6 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const [boxes, setBoxes] = useState([]);
   const [textEntities, setTextEntities] = useState([]);
   const [ocrText, setOcrText] = useState('');
-  const [diagnostics, setDiagnostics] = useState(null);
   const [pageImages, setPageImages] = useState([]);
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedBox, setSelectedBox] = useState(null);
@@ -392,6 +345,33 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 2400); };
 
+  // ─── S2: Auto-restore from localStorage on mount ───────────
+  useEffect(() => {
+    if (resumeTaskId) return; // handled by resumeTaskId effect
+    const storedId = localStorage.getItem('activeTaskId');
+    if (!storedId) return;
+    let cancelled = false;
+    (async () => {
+      setLoading(true); setError(null);
+      try {
+        const session = await getTaskSession(parseInt(storedId, 10));
+        if (cancelled) return;
+        setTask(session.task);
+        setBoxes(session.boxes || []);
+        setTextEntities(session.textEntities || []);
+        setOcrText(session.ocrText || '');
+        setPageImages(session.manifest?.pages || []);
+        setCurrentPage(1);
+      } catch {
+        // Session gone or invalid — clear stored id
+        localStorage.removeItem('activeTaskId');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ─── Hydrate from session (P9-1) ──────────────────────────
   useEffect(() => {
     if (!resumeTaskId) return;
@@ -405,9 +385,9 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
         setBoxes(session.boxes || []);
         setTextEntities(session.textEntities || []);
         setOcrText(session.ocrText || '');
-        setDiagnostics(session.diagnostics || null);
         setPageImages(session.manifest?.pages || []);
         setCurrentPage(1);
+        localStorage.setItem('activeTaskId', String(resumeTaskId));
         showToast('已恢复上次编辑');
       } catch (err) {
         if (!cancelled) setError(err.message);
@@ -435,14 +415,45 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
 
   const scrollToPage = useCallback((n) => { const el = pageRowRefs.current[n]; if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); setCurrentPage(n); }, []);
 
+  // ─── S5: Right-click cancel handler ────────────────────────
+  const handleRightClickBox = useCallback((box) => {
+    // Remove the box
+    setBoxes(prev => prev.filter(b => b.id !== box.id));
+    // If box was from an entity (has entityId), also remove the entity
+    if (box.entityId) {
+      setTextEntities(prev => prev.filter(e => e.id !== box.entityId));
+    }
+    showToast('已取消该区域脱敏');
+  }, [showToast]);
+
+  const handleRightClickEntity = useCallback((entity) => {
+    // Remove the entity from textEntities
+    setTextEntities(prev => prev.filter(e =>
+      !(e.start === entity.start && e.end === entity.end && e.entity_type === entity.entity_type)
+    ));
+    // Remove any box that was generated from this entity (has matching entityId)
+    setBoxes(prev => prev.filter(b => !(b.entityId && b.entityId === entity.id)));
+    showToast('已取消该实体脱敏');
+  }, [showToast]);
+
+  // Persist boxes on change (debounced)
+  useEffect(() => {
+    if (!task || boxes.length === 0) return;
+    const timer = setTimeout(() => {
+      updateTaskBoxes(task.taskId, boxes).catch(() => {});
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [task, boxes]);
+
   // ─── Upload + Analyze ────────────────────────────────────────
 
   const handleFile = async (file) => {
     if (!file) return;
-    setLoading(true); setError(null); setBoxes([]); setTextEntities([]); setOcrText(''); setDiagnostics(null); setPageImages([]); setUploadPercent(0); setProcessingStep('上传中…');
+    setLoading(true); setError(null); setBoxes([]); setTextEntities([]); setOcrText(''); setPageImages([]); setUploadPercent(0); setProcessingStep('上传中…');
     try {
       const taskData = await uploadWithProgress(file, _settings?.rulesConfig, setUploadPercent);
       setTask(taskData); setUploadPercent(100);
+      localStorage.setItem('activeTaskId', String(taskData.taskId));
 
       setProcessingStep('正在 OCR 识别…');
       const analyzeData = await analyzeTask(taskData.taskId);
@@ -480,36 +491,14 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
       setPageImages(analyzeData.manifest?.pages || []);
       setCurrentPage(1);
 
-      // Enrich diagnostics with additional counts
-      const diag = analyzeData.diagnostics || {};
-      const typeStats = {};
-      for (const e of backendTextEntities) {
-        typeStats[e.entity_type] = (typeStats[e.entity_type] || 0) + 1;
-      }
-      setDiagnostics({
-        ...diag,
-        ocrTextLength: fullText.length,
-        refinedBoxesCount: refined.length,
-        entityTypeStats: typeStats,
-      });
-
       setProcessingStep('生成预览…');
-      const nerNote = diag.nerWarning ? ` (${diag.nerWarning})` : '';
-      showToast(`识别到 ${refined.length} 个敏感区域、${backendTextEntities.length} 个文本实体${sealBoxes.length > 0 ? `、${sealBoxes.length} 个公章候选` : ''}${nerNote}`);
+      showToast(`识别到 ${refined.length} 个敏感区域、${backendTextEntities.length} 个文本实体${sealBoxes.length > 0 ? `、${sealBoxes.length} 个公章候选` : ''}`);
     } catch (err) {
       setError(err.message);
     } finally {
       setLoading(false); setProcessingStep(''); setUploadPercent(0);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
-  };
-
-  // ─── Save ─────────────────────────────────────────────────
-
-  const handleSaveBoxes = async () => {
-    if (!task) return;
-    try { await updateTaskBoxes(task.taskId, boxes); showToast('已保存'); }
-    catch (err) { showToast(err.message || '保存失败'); }
   };
 
   // ─── Export ────────────────────────────────────────────────
@@ -574,57 +563,52 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
 
   return (
     <div className="visual-mask-page" ref={containerRef}>
-      {/* Global top-right: export only */}
+      {/* S4: Top bar — left=filename, center=modes, right=upload+export */}
       <div className="mask-topbar">
         <div className="mask-topbar-left">
           <span className="mask-filename">{task?.filename}</span>
         </div>
+        <div className="mask-topbar-center">
+          <div className="mode-switch">
+            {MODES.map(m => <button key={m.key} className={`mode-btn ${mode === m.key ? 'active' : ''}`} onClick={() => setMode(m.key)} title={m.desc}>{m.label}</button>)}
+          </div>
+        </div>
         <div className="mask-topbar-right">
+          <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>上传</Button>
           <ExportDropdown mode={mode} onExport={doExport} exporting={exporting} disabled={isMaskMode ? redactionCount === 0 : textEntities.length === 0} />
         </div>
       </div>
 
       {isMaskMode ? (
-        /* Mask mode: toolbar inside scroll area + image dual-column */
+        /* Mask mode: dual-column with fixed headers */
         <div className="mask-scroll-container" ref={scrollRef}>
-          <div className="mask-doc-toolbar">
-            <div className="mask-doc-toolbar-left">
-              <div className="mode-switch">
-                {MODES.map(m => <button key={m.key} className={`mode-btn ${mode === m.key ? 'active' : ''}`} onClick={() => setMode(m.key)} title={m.desc}>{m.label}</button>)}
-              </div>
-              {totalPages > 1 && (
-                <div className="page-nav">
-                  <Button variant="ghost" size="sm" disabled={currentPage <= 1} onClick={() => scrollToPage(currentPage - 1)}>←</Button>
-                  <span>{currentPage} / {totalPages}</span>
-                  <Button variant="ghost" size="sm" disabled={currentPage >= totalPages} onClick={() => scrollToPage(currentPage + 1)}>→</Button>
-                </div>
-              )}
-            </div>
-            <div className="mask-doc-toolbar-right">
-              <span className="mask-box-count">{redactionCount} 个遮蔽区域</span>
-              {boxes.some(b => b.source === 'seal') && <span className="mask-seal-notice">已识别公章候选，可手动补充或调整</span>}
-              <Button variant="outline" size="sm" onClick={handleSaveBoxes}>保存框</Button>
-              <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>换文件</Button>
-            </div>
-          </div>
-
-          <DiagnosticPanel diagnostics={diagnostics} />
-
           {pageImages.map((pg) => {
             const pgInfo = { ...pg, taskId: task?.taskId };
             return (
               <div key={pg.pageNumber} className="mask-page-row" data-page={pg.pageNumber} ref={el => { pageRowRefs.current[pg.pageNumber] = el; }}>
                 <div className="mask-page-col">
+                  <div className="mask-col-header">
+                    <div className="page-nav">
+                      <Button variant="ghost" size="sm" disabled={currentPage <= 1} onClick={() => scrollToPage(currentPage - 1)}>←</Button>
+                      <span>{currentPage} / {totalPages}</span>
+                      <Button variant="ghost" size="sm" disabled={currentPage >= totalPages} onClick={() => scrollToPage(currentPage + 1)}>→</Button>
+                    </div>
+                  </div>
                   <PageCanvas
                     pageInfo={pgInfo} boxes={boxes} onBoxesChange={setBoxes} containerWidth={560}
                     selectedBox={selectedBox} onSelectBox={setSelectedBox}
                     hoveredBox={hoveredBox} onHoverBox={setHoveredBox}
+                    onRightClickBox={handleRightClickBox}
                   />
                 </div>
                 <div className="mask-page-col">
+                  <div className="mask-col-header">
+                    <span className="mask-col-header-title">脱敏预览</span>
+                  </div>
                   <MaskPreview
                     pageInfo={pgInfo} boxes={boxes} containerWidth={560}
                     selectedBox={selectedBox} hoveredBox={hoveredBox}
+                    onRightClickBox={handleRightClickBox}
                   />
                 </div>
               </div>
@@ -632,23 +616,9 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
           })}
         </div>
       ) : (
-        /* Star/Placeholder mode: text dual-column + mode switch above */
+        /* Star/Placeholder mode: text dual-column */
         <div className="text-mode-container">
-          <div className="mask-doc-toolbar">
-            <div className="mask-doc-toolbar-left">
-              <div className="mode-switch">
-                {MODES.map(m => <button key={m.key} className={`mode-btn ${mode === m.key ? 'active' : ''}`} onClick={() => setMode(m.key)} title={m.desc}>{m.label}</button>)}
-              </div>
-            </div>
-            <div className="mask-doc-toolbar-right">
-              <span className="mask-box-count">{textEntities.length} 个敏感实体</span>
-              <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>换文件</Button>
-            </div>
-          </div>
-
-          <DiagnosticPanel diagnostics={diagnostics} />
-
-          <TextDualColumn ocrText={ocrText} entities={textEntities} mode={mode} />
+          <TextDualColumn ocrText={ocrText} entities={textEntities} mode={mode} onRightClickEntity={handleRightClickEntity} />
         </div>
       )}
 
