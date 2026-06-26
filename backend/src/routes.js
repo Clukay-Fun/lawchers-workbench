@@ -2596,11 +2596,37 @@ router.get('/tasks/:id/session', async (req, res) => {
     if (existsSync(boxesPath)) {
       boxes = JSON.parse(await fs.readFile(boxesPath, 'utf-8'));
     } else {
-      // Fallback: use auto-detected boxes as initial
       boxes = [...(sessionData.refinedBoxes || []), ...(sessionData.sealBoxes || [])];
     }
 
-    const textEntities = sessionData.textEntities || [];
+    // Read cancelled entities set
+    const cancelledPath = path.join(workDir, 'cancelled-entities.json');
+    let cancelledEntities = [];
+    if (existsSync(cancelledPath)) {
+      try {
+        cancelledEntities = JSON.parse(await fs.readFile(cancelledPath, 'utf-8'));
+      } catch {}
+    }
+    const cancelledSet = new Set(cancelledEntities);
+
+    // Filter textEntities: remove cancelled
+    const textEntities = (sessionData.textEntities || []).filter(e => !cancelledSet.has(e.id));
+
+    // Filter refinedBoxes: remove boxes whose entityId is cancelled
+    const refinedBoxes = refineToEntityBoxes(sessionData.ocrBoxes || [], textEntities);
+
+    // Rebuild boxes: user-saved boxes (minus cancelled) + refined + seal
+    let savedBoxes = [];
+    if (existsSync(boxesPath)) {
+      savedBoxes = JSON.parse(await fs.readFile(boxesPath, 'utf-8'));
+    }
+    // Filter out boxes whose entityId is cancelled
+    const filteredSavedBoxes = savedBoxes.filter(b => !b.entityId || !cancelledSet.has(b.entityId));
+    // If no saved boxes, use refined + seal as initial
+    const finalBoxes = filteredSavedBoxes.length > 0
+      ? filteredSavedBoxes
+      : [...refinedBoxes, ...(sessionData.sealBoxes || [])].filter(b => !b.entityId || !cancelledSet.has(b.entityId));
+
     const ocrBoxes = sessionData.ocrBoxes || [];
 
     res.json({
@@ -2619,12 +2645,13 @@ router.get('/tasks/:id/session', async (req, res) => {
         ocrBoxes,
         textEntities,
         sealBoxes: sessionData.sealBoxes || [],
-        refinedBoxes: refineToEntityBoxes(ocrBoxes, textEntities),
-        boxes,
+        refinedBoxes,
+        boxes: finalBoxes,
         manifest,
         ocrText: sessionData.ocrText || ocrBoxes.map(b => b.text || '').join('\n'),
         diagnostics: sessionData.diagnostics || null,
         renderCacheStatus,
+        cancelledEntities: cancelledEntities,
       },
     });
   } catch (error) {
@@ -2673,6 +2700,34 @@ router.patch('/tasks/:id/boxes', async (req, res) => {
   } catch (error) {
     console.error('Boxes Update Error:', error);
     res.status(500).json({ success: false, message: '更新框失败', error: error.message });
+  }
+});
+
+/**
+ * PATCH /api/tasks/:id/cancelled-entities - 更新已取消的实体列表
+ * Body: { cancelled: ["ORG:120:138", "PER:300:302"] }
+ * 右键取消 = 当前任务复核决定，不写规则中心。
+ */
+router.patch('/tasks/:id/cancelled-entities', async (req, res) => {
+  try {
+    const taskId = parseInt(req.params.id, 10);
+    const task = getTaskById(taskId);
+    if (!task) return res.status(404).json({ success: false, message: '任务不存在' });
+
+    const { cancelled } = req.body;
+    if (!Array.isArray(cancelled)) {
+      return res.status(400).json({ success: false, message: 'cancelled 必须是数组' });
+    }
+
+    const workDir = task.work_dir || path.join(uploadsDir, 'tasks', `.work_${taskId}`);
+    if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
+    const cancelledPath = path.join(workDir, 'cancelled-entities.json');
+    await fs.writeFile(cancelledPath, JSON.stringify(cancelled, null, 2), 'utf-8');
+
+    res.json({ success: true, data: { count: cancelled.length } });
+  } catch (error) {
+    console.error('Cancelled Entities Error:', error);
+    res.status(500).json({ success: false, message: '更新取消列表失败', error: error.message });
   }
 });
 

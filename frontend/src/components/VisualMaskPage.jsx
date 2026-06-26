@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { analyzeTask, updateTaskBoxes, maskExportTask, textExportTask, getTaskSession } from '../api';
+import { analyzeTask, updateTaskBoxes, maskExportTask, textExportTask, getTaskSession, updateCancelledEntities } from '../api';
 import { Button } from '@/components/ui/button';
 import { normalizedToCSS, computeDisplaySize, createNormalizedBox } from '../services/coords';
 
@@ -337,6 +337,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const [textEntities, setTextEntities] = useState([]);
   const [ocrText, setOcrText] = useState('');
   const [pageImages, setPageImages] = useState([]);
+  const cancelledRef = useRef(new Set());
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedBox, setSelectedBox] = useState(null);
   const [hoveredBox, setHoveredBox] = useState(null);
@@ -368,6 +369,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
         setTextEntities(session.textEntities || []);
         setOcrText(session.ocrText || '');
         setPageImages(session.manifest?.pages || []);
+        cancelledRef.current = new Set(session.cancelledEntities || []);
         setCurrentPage(1);
         hasLoadedRef.current = true;
       } catch {
@@ -393,6 +395,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
         setTextEntities(session.textEntities || []);
         setOcrText(session.ocrText || '');
         setPageImages(session.manifest?.pages || []);
+        cancelledRef.current = new Set(session.cancelledEntities || []);
         setCurrentPage(1);
         hasLoadedRef.current = true;
         localStorage.setItem('activeTaskId', String(resumeTaskId));
@@ -436,24 +439,29 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     setTimeout(() => { scrollIgnoreRef.current = false; }, 500);
   }, [pageImages.length]);
 
-  // ─── S5: Right-click cancel handler ────────────────────────
+  // ─── S5: Right-click cancel handler (Slice 2: persist to backend) ──
+  const persistCancelled = useCallback((newSet) => {
+    if (!task) return;
+    updateCancelledEntities(task.taskId, [...newSet]).catch(() => {});
+  }, [task]);
+
   const handleRightClickBox = useCallback((box) => {
-    // Remove the box
     setBoxes(prev => prev.filter(b => b.id !== box.id));
-    // If box was from an entity (has entityId), also remove the entity
     if (box.entityId) {
       setTextEntities(prev => prev.filter(e => e.id !== box.entityId));
+      cancelledRef.current.add(box.entityId);
+      persistCancelled(cancelledRef.current);
     }
     showToast('已取消该区域脱敏');
-  }, [showToast]);
+  }, [showToast, persistCancelled]);
 
   const handleRightClickEntity = useCallback((entity) => {
-    // Remove the entity from textEntities by stable id
     setTextEntities(prev => prev.filter(e => e.id !== entity.id));
-    // Remove any box that was generated from this entity (has matching entityId)
     setBoxes(prev => prev.filter(b => !(b.entityId && b.entityId === entity.id)));
+    cancelledRef.current.add(entity.id);
+    persistCancelled(cancelledRef.current);
     showToast('已取消该实体脱敏');
-  }, [showToast]);
+  }, [showToast, persistCancelled]);
 
   // Persist boxes on change (debounced) — allow empty array to clear
   useEffect(() => {
@@ -473,7 +481,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const handleFile = async (file) => {
     if (!file) return;
     localStorage.removeItem('activeTaskId'); // S4: clear before new upload
-    setLoading(true); setError(null); setBoxes([]); setTextEntities([]); setOcrText(''); setPageImages([]); setUploadPercent(0); setProcessingStep('上传中…');
+    setLoading(true); setError(null); setBoxes([]); setTextEntities([]); setOcrText(''); setPageImages([]); cancelledRef.current = new Set(); setUploadPercent(0); setProcessingStep('上传中…');
     try {
       const taskData = await uploadWithProgress(file, _settings?.rulesConfig, setUploadPercent);
       setTask(taskData); setUploadPercent(100);
