@@ -437,8 +437,8 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
 
   // Persist boxes on change (debounced) — allow empty array to clear
   useEffect(() => {
-    if (!task) { hasLoadedRef.current = false; return; }
-  }, [task?.taskId]);
+    if (!task) hasLoadedRef.current = false;
+  }, [task]);
 
   useEffect(() => {
     if (!task || !hasLoadedRef.current) return;
