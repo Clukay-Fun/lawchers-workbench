@@ -2551,9 +2551,29 @@ router.get('/tasks/:id/session', async (req, res) => {
       return res.status(404).json({ success: false, message: '分析数据不存在，请重新上传' });
     }
 
-    // Read render manifest if exists
+    // Ensure render manifest and page images exist (re-render if missing)
     const manifestPath = path.join(workDir, 'render-manifest.json');
+    const pagesDir = path.join(workDir, 'pages');
     let manifest = sessionData.manifest || {};
+
+    const needsRender = !existsSync(manifestPath)
+      || !manifest.pages?.length
+      || manifest.pages.some(p => !p.imagePath || !existsSync(p.imagePath));
+
+    if (needsRender) {
+      console.log(`[session] Re-rendering pages for task ${taskId}...`);
+      try {
+        await fs.rm(pagesDir, { recursive: true, force: true });
+      } catch {}
+      await fs.mkdir(pagesDir, { recursive: true });
+
+      const { resolveLegalDesensBin } = await import('./services/cliResolver.js');
+      const bin = resolveLegalDesensBin();
+      await execFileAsync(bin, ['render-pages', sourcePath, '--dpi', '200', '--out-dir', pagesDir, '--out', manifestPath], {
+        timeout: 60000,
+      });
+    }
+
     if (existsSync(manifestPath)) {
       manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
     }
