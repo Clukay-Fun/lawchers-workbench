@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { deleteHistory, downloadHistoryFile, getHistory } from '../api';
+import { deleteHistory, downloadHistoryFile, downloadHistoryMap, getHistory } from '../api';
 import { Button } from '@/components/ui/button';
 
 function formatDate(value) {
@@ -72,6 +72,26 @@ export default function DownloadPage() {
     }
   };
 
+  const handleDownloadMap = async (task) => {
+    setDownloadingId(task.id);
+    try {
+      const response = await downloadHistoryMap(task.id);
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = (task.filename || 'document').replace(/\.[^.]+$/, '') + '_脱敏.map.json';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      showToast(err.message || '下载 map.json 失败');
+    } finally {
+      setDownloadingId(null);
+    }
+  };
+
   const handleDelete = async (id) => {
     if (!window.confirm('确认删除这条下载记录及关联文件？')) return;
     try {
@@ -99,6 +119,7 @@ export default function DownloadPage() {
               const stats = parseStats(task.entity_stats);
               const statStr = Object.entries(stats).map(([key, count]) => `${key}×${count}`).join(' ') || '—';
               const canDownload = task.residual_passed && task.export_path;
+              const hasMap = !!task.map_path;
               return (
                 <div key={task.id} className="download-row">
                   <span className="history-filename">{redactedFilename(task.filename)}</span>
@@ -116,6 +137,17 @@ export default function DownloadPage() {
                     >
                       {downloadingId === task.id ? '下载中' : '下载'}
                     </Button>
+                    {hasMap && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={downloadingId === task.id}
+                        onClick={() => handleDownloadMap(task)}
+                        title="下载 map.json（占位模式可还原）"
+                      >
+                        map
+                      </Button>
+                    )}
                     <Button variant="ghost" size="icon" aria-label="删除" onClick={() => handleDelete(task.id)}>×</Button>
                   </span>
                 </div>

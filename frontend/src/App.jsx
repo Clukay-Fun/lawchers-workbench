@@ -40,6 +40,7 @@ const VIEW_TITLES = {
 
 export default function App() {
   const [currentView, setCurrentView] = useState('desensitize');
+  const [resumeTaskId, setResumeTaskId] = useState(null);
   const [settings, setSettings] = useState({
     maskChar: '*',
     defaultView: 'redacted',
@@ -48,14 +49,21 @@ export default function App() {
     rulesConfig: defaultRules,
   });
 
+  const handleResumeDone = () => setResumeTaskId(null);
+
+  const handleResumeTask = (taskId) => {
+    setResumeTaskId(taskId);
+    setCurrentView('desensitize');
+  };
+
   const renderPage = () => {
     switch (currentView) {
       case 'desensitize':
-        return <VisualMaskPage settings={settings} />;
+        return <VisualMaskPage settings={settings} resumeTaskId={resumeTaskId} onResumeDone={handleResumeDone} />;
       case 'restore':
         return <RestorePage />;
       case 'history':
-        return <HistoryPage />;
+        return <HistoryPage onResumeTask={handleResumeTask} />;
       case 'rules':
         return <RulesPage settings={settings} onSettingsChange={setSettings} />;
       case 'settings':

@@ -63,6 +63,16 @@ export async function downloadHistoryFile(id) {
   return response;
 }
 
+/** 下载占位导出的 map.json */
+export async function downloadHistoryMap(id) {
+  const response = await fetch(`${API_BASE}/history/${id}/download-map`, { method: 'GET' });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.message || '下载 map.json 失败');
+  }
+  return response;
+}
+
 /** 还原脱敏文件 */
 export async function restoreFile(redactedFile, mapFile) {
   const formData = new FormData();
@@ -143,6 +153,18 @@ export async function analyzeTask(taskId) {
   }
   const result = await response.json();
   if (!result.success) throw new Error(result.message || '分析异常');
+  return result.data;
+}
+
+/** 恢复任务会话（不重跑 analyze，从 work_dir 回读） */
+export async function getTaskSession(taskId) {
+  const response = await fetch(`${API_BASE}/tasks/${taskId}/session`, { method: 'GET' });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.message || '恢复会话失败');
+  }
+  const result = await response.json();
+  if (!result.success) throw new Error(result.message || '恢复会话异常');
   return result.data;
 }
 

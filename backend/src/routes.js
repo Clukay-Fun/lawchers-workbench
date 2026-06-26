@@ -12,7 +12,7 @@ import express from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs/promises';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, createWriteStream } from 'fs';
 import { fileURLToPath } from 'url';
 import { execFile as execFileCb } from 'child_process';
 import { createHash } from 'crypto';
@@ -2319,9 +2319,14 @@ router.post('/tasks/:id/analyze', async (req, res) => {
 
     // ── Run rule-based text entity detection on OCR text ──
     // This produces precise start/end entities for text mode (star/placeholder)
-    let textEntities = [];
+    const ocrText = (analyzeData.ocrBoxes || []).map(b => b.text || '').join('\n');
+    let regexEntities = [];
+    let nerEntities = [];
+    let nerEnabled = false;
+    let nerWarning = null;
+
+    // 1) Regex detection (always runs)
     try {
-      const ocrText = (analyzeData.ocrBoxes || []).map(b => b.text || '').join('\n');
       if (ocrText && mergedRulesPath) {
         const rulesRaw = JSON.parse(await fs.readFile(mergedRulesPath, 'utf-8'));
         for (const rule of rulesRaw) {
@@ -2331,33 +2336,104 @@ router.post('/tasks/:id/analyze', async (req, res) => {
             let match;
             while ((match = re.exec(ocrText)) !== null) {
               if (match[0].length >= 2) {
-                textEntities.push({
+                regexEntities.push({
                   original: match[0],
                   entity_type: rule.entity_type || 'CUSTOM',
                   start: match.index,
                   end: match.index + match[0].length,
                   rule_id: rule.id,
+                  source: 'regex',
                 });
               }
-              if (!match[0]) break; // prevent infinite loop on zero-width match
+              if (!match[0]) break;
             }
           } catch { /* skip invalid regex */ }
         }
-        // Deduplicate overlapping entities (keep longer match)
-        textEntities.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
-        const deduped = [];
-        let lastEnd = -1;
-        for (const ent of textEntities) {
-          if (ent.start >= lastEnd) {
-            deduped.push(ent);
-            lastEnd = ent.end;
-          }
-        }
-        textEntities = deduped;
       }
     } catch (detectErr) {
-      console.warn('[WARN] Text entity detection failed (non-fatal):', detectErr.message);
+      console.warn('[WARN] Regex entity detection failed (non-fatal):', detectErr.message);
     }
+
+    // 2) NER detection (best-effort, degrade gracefully)
+    const { getIsNerEnabled } = await import('./services/redactService.js');
+    nerEnabled = getIsNerEnabled();
+
+    if (nerEnabled && ocrText.trim().length > 0) {
+      try {
+        const nerTextPath = path.join(workDir, 'ner-input.txt');
+        const nerOutPath = path.join(workDir, 'ner-spans.json');
+        await fs.writeFile(nerTextPath, ocrText, 'utf-8');
+
+        const nerArgs = ['ner-spans', nerTextPath, '--out', nerOutPath];
+        const modelDir = process.env.LEGAL_DESENS_MODEL_DIR;
+        if (modelDir) nerArgs.push('--model-dir', modelDir);
+
+        await execFileAsync(bin, nerArgs, {
+          timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '60000', 10),
+        });
+
+        const nerData = JSON.parse(await fs.readFile(nerOutPath, 'utf-8'));
+        for (const span of (nerData.spans || [])) {
+          if (span.text && span.text.length >= 2 && span.start != null && span.end != null) {
+            nerEntities.push({
+              original: span.text,
+              entity_type: span.entity_type || 'PERSON',
+              start: span.start,
+              end: span.end,
+              source: 'ner',
+              engine: span.engine || 'ner',
+              priority: span.priority || 0,
+            });
+          }
+        }
+      } catch (nerErr) {
+        console.warn('[WARN] NER detection failed, degrading to regex-only:', nerErr.message);
+        nerWarning = 'NER 模型不可用，已降级为仅正则识别';
+        nerEnabled = false;
+      }
+    } else if (!nerEnabled) {
+      nerWarning = '扫描件当前仅正则识别，姓名/机构/地址可能不会自动脱敏';
+    }
+
+    // 3) Merge: regex + NER + denylist, deduplicate overlapping (keep longer/higher-priority)
+    // Priority: denylist > regex > NER
+    let textEntities = [];
+    const denylistEntities = []; // denylist is already in regex via rules, but track source
+
+    // Combine all sources
+    const allEntities = [...regexEntities, ...nerEntities];
+
+    // Sort by start, then by length descending (prefer longer match)
+    allEntities.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
+
+    // Greedy dedup: keep non-overlapping, prefer longer
+    let lastEnd = -1;
+    for (const ent of allEntities) {
+      if (ent.start >= lastEnd) {
+        textEntities.push(ent);
+        lastEnd = ent.end;
+      }
+    }
+
+    // ── P9-4: Filter false positives ──
+    // Layer 1: Drop NER_MISC (position/book/game/movie → "律师/负责人/《…标准》")
+    // Layer 2: Drop exact-match generic legal terms (full text == generic term)
+    //          but NOT entities that contain generic terms as part of longer names
+    const GENERIC_LEGAL_TERMS = new Set([
+      '法院', '司法部门', '行政机关', '合同', '甲方', '乙方',
+      '签约时间', '签约地点', '律师', '律师事务所', '事务所',
+      '委托代理合同', '委托代理', '代理合同',
+    ]);
+
+    const preFilterCount = textEntities.length;
+    textEntities = textEntities.filter(ent => {
+      // Layer 1: NER_MISC never enters redaction
+      if (ent.entity_type === 'NER_MISC') return false;
+      // Layer 2: exact-match generic terms only
+      if (ent.source === 'ner' && GENERIC_LEGAL_TERMS.has(ent.original)) return false;
+      return true;
+    });
+    const filteredCount = preFilterCount - textEntities.length;
 
     // Run seal detection (best-effort, don't fail if it errors)
     let sealBoxes = [];
@@ -2378,19 +2454,143 @@ router.post('/tasks/:id/analyze', async (req, res) => {
       console.warn('Seal detection failed (non-fatal):', sealErr.message);
     }
 
+    const refinedBoxes = refineToEntityBoxes(analyzeData.ocrBoxes || [], textEntities);
+    const diagData = {
+      ocrLines: (analyzeData.ocrBoxes || []).length,
+      regexHits: regexEntities.length,
+      nerHits: nerEntities.length,
+      sealHits: sealBoxes.length,
+      totalEntities: textEntities.length,
+      filteredOut: filteredCount,
+      nerEnabled,
+      nerWarning: nerWarning || null,
+    };
+
+    // ── Persist session data for recovery (P9-1) ──
+    const sessionPath = path.join(workDir, 'session.json');
+    try {
+      await fs.writeFile(sessionPath, JSON.stringify({
+        ocrBoxes: analyzeData.ocrBoxes || [],
+        textEntities,
+        refinedBoxes,
+        sealBoxes,
+        manifest: analyzeData.manifest || {},
+        diagnostics: diagData,
+        ocrText,
+      }, null, 2), 'utf-8');
+    } catch (sessionErr) {
+      console.warn('[WARN] Failed to write session.json:', sessionErr.message);
+    }
+
     res.json({
       success: true,
       data: {
         ocrBoxes: analyzeData.ocrBoxes || [],
-        refinedBoxes: refineToEntityBoxes(analyzeData.ocrBoxes || [], textEntities),
+        refinedBoxes,
         textEntities,
         sealBoxes,
         manifest: analyzeData.manifest || {},
+        diagnostics: diagData,
       },
     });
   } catch (error) {
     console.error('Analyze Error:', error);
     res.status(500).json({ success: false, message: 'OCR 分析失败', error: error.message });
+  }
+});
+
+/**
+ * GET /api/tasks/:id/session - 恢复任务会话（不重跑 analyze）
+ * 优先从 session.json 读取增强数据，降级到 analyze.json。
+ * boxes.json 存在则用它，否则用 refinedBoxes + sealBoxes 作为初始框。
+ */
+router.get('/tasks/:id/session', async (req, res) => {
+  try {
+    const taskId = parseInt(req.params.id, 10);
+    const task = getTaskById(taskId);
+    if (!task) return res.status(404).json({ success: false, message: '任务不存在' });
+
+    const workDir = task.work_dir;
+    const sourcePath = task.source_path;
+
+    if (!workDir || !existsSync(workDir)) {
+      return res.status(404).json({ success: false, message: '工作目录不存在，无法恢复会话' });
+    }
+    if (!sourcePath || !existsSync(sourcePath)) {
+      return res.status(404).json({ success: false, message: '源文件已清理，仅可下载已导出结果' });
+    }
+
+    // Priority: session.json > analyze.json
+    const sessionPath = path.join(workDir, 'session.json');
+    const analyzePath = path.join(workDir, 'analyze.json');
+    const boxesPath = path.join(workDir, 'boxes.json');
+
+    let sessionData = null;
+    if (existsSync(sessionPath)) {
+      sessionData = JSON.parse(await fs.readFile(sessionPath, 'utf-8'));
+    } else if (existsSync(analyzePath)) {
+      // Legacy: analyze.json doesn't have enhanced fields, but try anyway
+      const raw = JSON.parse(await fs.readFile(analyzePath, 'utf-8'));
+      sessionData = {
+        ocrBoxes: raw.ocrBoxes || [],
+        textEntities: raw.textEntities || [],
+        refinedBoxes: [],
+        sealBoxes: raw.sealBoxes || [],
+        manifest: raw.manifest || {},
+        diagnostics: raw.diagnostics || null,
+        ocrText: (raw.ocrBoxes || []).map(b => b.text || '').join('\n'),
+      };
+    }
+
+    if (!sessionData) {
+      return res.status(404).json({ success: false, message: '分析数据不存在，请重新上传' });
+    }
+
+    // Read render manifest if exists
+    const manifestPath = path.join(workDir, 'render-manifest.json');
+    let manifest = sessionData.manifest || {};
+    if (existsSync(manifestPath)) {
+      manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
+    }
+
+    // Read saved boxes; if none, use refinedBoxes + sealBoxes as initial
+    let boxes = [];
+    if (existsSync(boxesPath)) {
+      boxes = JSON.parse(await fs.readFile(boxesPath, 'utf-8'));
+    } else {
+      // Fallback: use auto-detected boxes as initial
+      boxes = [...(sessionData.refinedBoxes || []), ...(sessionData.sealBoxes || [])];
+    }
+
+    const textEntities = sessionData.textEntities || [];
+    const ocrBoxes = sessionData.ocrBoxes || [];
+
+    res.json({
+      success: true,
+      data: {
+        task: {
+          id: task.id,
+          filename: task.filename,
+          ext: task.ext,
+          document_kind: task.document_kind,
+          source_path: task.source_path,
+          work_dir: task.work_dir,
+          export_path: task.export_path,
+          created_at: task.created_at,
+        },
+        ocrBoxes,
+        textEntities,
+        sealBoxes: sessionData.sealBoxes || [],
+        refinedBoxes: refineToEntityBoxes(ocrBoxes, textEntities),
+        boxes,
+        manifest,
+        ocrText: sessionData.ocrText || ocrBoxes.map(b => b.text || '').join('\n'),
+        diagnostics: sessionData.diagnostics || null,
+      },
+    });
+  } catch (error) {
+    console.error('Session Restore Error:', error);
+    res.status(500).json({ success: false, message: '恢复会话失败', error: error.message });
   }
 });
 
@@ -2537,7 +2737,7 @@ router.post('/tasks/:id/mask-export', async (req, res) => {
       return res.status(409).json({ success: false, message: '遮蔽验证未通过' });
     }
 
-    // Update task record
+    // Update task record — mask export is irreversible, clear any map_path
     const entityStats = {};
     for (const box of boxes) {
       const src = box.source || 'manual';
@@ -2546,6 +2746,7 @@ router.post('/tasks/:id/mask-export', async (req, res) => {
     updateTask(taskId, {
       entity_stats: entityStats,
       export_path: path.relative(path.join(__dirname, '..'), exportPath),
+      map_path: null,
       residual_passed: true,
     });
 
@@ -2587,7 +2788,12 @@ router.get('/tasks/:id/page-image/:pageNum', async (req, res) => {
     try {
       manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
     } catch {
-      // Need to render
+      // Need to render: first clean pagesDir to avoid FzErrorSystem (File exists)
+      try {
+        await fs.rm(pagesDir, { recursive: true, force: true });
+      } catch {}
+      await fs.mkdir(pagesDir, { recursive: true });
+
       await execFileAsync(bin, ['render-pages', sourcePath, '--dpi', '200', '--out-dir', pagesDir, '--out', manifestPath], {
         timeout: 60000,
       });
@@ -2720,13 +2926,93 @@ router.post('/tasks/:id/text-export', async (req, res) => {
       return res.status(500).json({ success: false, message: '导出文件未生成' });
     }
 
+    // P9-2: baseName must be declared before map generation
+    const baseName = (task.filename || 'document').replace(/\.[^.]+$/, '');
+
+    // P9-2: Generate map.json for placeholder mode (reversible)
+    // Only TXT/MD — DOCX restore not yet verified.
+    // Uses regex to find placeholder tokens in exported text, not positional slicing.
+    let mapPath = null;
+    if (mode === 'placeholder') {
+      // Block DOCX: restore path not verified
+      if (format === 'docx') {
+        // Still export, just without map — clear any previous map_path
+        updateTask(taskId, {
+          export_path: path.relative(path.join(__dirname, '..'), exportPath),
+          map_path: null,
+          residual_passed: true,
+        });
+        const downloadName = `${baseName}_脱敏.${format}`;
+        return res.download(exportPath, downloadName);
+      }
+
+      try {
+        const ocrTextContent = (await fs.readFile(path.join(workDir, 'ocr-text.txt'), 'utf-8').catch(() => '')) || '';
+        const sourceSha = createHash('sha256').update(ocrTextContent).digest('hex');
+        const exportedContent = await fs.readFile(exportPath, 'utf-8');
+        const redactedSha = createHash('sha256').update(exportedContent).digest('hex');
+
+        // Find placeholder tokens in exported text via regex
+        // Engine produces: <姓名1>, <手机2>, <单位1>, etc.
+        const placeholderRe = /<([^<>\n\r]{1,30}?\d+)>/g;
+        const placeholders = [];
+        let match;
+        while ((match = placeholderRe.exec(exportedContent)) !== null) {
+          placeholders.push({ text: match[0], index: match.index });
+        }
+
+        // Validate: placeholders found must equal entities count
+        if (placeholders.length !== entities.length) {
+          throw new Error(
+            `placeholder count ${placeholders.length} ≠ entities count ${entities.length}`
+          );
+        }
+
+        // Build engine-compatible map: match each entity to its placeholder by order
+        // Sort entities by start to ensure stable ordering regardless of frontend array order
+        const sortedEntities = [...entities].sort((a, b) => (a.start || 0) - (b.start || 0));
+        const engineEntities = [];
+        const occurrences = [];
+        for (let i = 0; i < sortedEntities.length; i++) {
+          const ent = sortedEntities[i];
+          const ph = placeholders[i];
+          const eid = `ent_${i}`;
+          engineEntities.push({ id: eid, entity_type: ent.entity_type, original: ent.original });
+          occurrences.push({
+            entity_id: eid,
+            redacted_start: ph.index,
+            redacted_end: ph.index + ph.text.length,
+          });
+        }
+
+        const mapData = {
+          schema_version: '1.0',
+          pipeline: 'text-placeholder',
+          source_file: task.filename,
+          source_sha256: sourceSha,
+          redacted_sha256: redactedSha,
+          entities: engineEntities,
+          occurrences,
+          mode: 'placeholder',
+          created_at: new Date().toISOString(),
+        };
+
+        mapPath = path.join(workDir, `${baseName}_脱敏.map.json`);
+        await fs.writeFile(mapPath, JSON.stringify(mapData, null, 2), 'utf-8');
+      } catch (mapErr) {
+        // Fail-closed
+        if (existsSync(exportPath)) await fs.unlink(exportPath).catch(() => {});
+        return res.status(500).json({ success: false, message: `占位 map.json 生成失败，导出已阻断: ${mapErr.message}` });
+      }
+    }
+
     // Update task
     updateTask(taskId, {
       export_path: path.relative(path.join(__dirname, '..'), exportPath),
+      map_path: mapPath ? path.relative(path.join(__dirname, '..'), mapPath) : null,
       residual_passed: true,
     });
 
-    const baseName = (task.filename || 'document').replace(/\.[^.]+$/, '');
     const downloadName = `${baseName}_脱敏.${format}`;
     res.download(exportPath, downloadName);
   } catch (error) {
@@ -3035,6 +3321,37 @@ router.get('/history/:id/download', (req, res) => {
     res.download(exportPath, downloadName);
   } catch (error) {
     console.error('History Download Error:', error);
+    res.status(500).json({ success: false, message: '下载失败', error: error.message });
+  }
+});
+
+/**
+ * GET /api/history/:id/download-map - 下载占位导出的 map.json
+ */
+router.get('/history/:id/download-map', (req, res) => {
+  try {
+    const task = getTaskById(parseInt(req.params.id, 10));
+    if (!task) return res.status(404).json({ success: false, message: '任务不存在' });
+    if (!task.map_path) {
+      return res.status(404).json({ success: false, message: '此任务没有 map.json（仅占位模式导出生成）' });
+    }
+
+    const backendRoot = path.resolve(__dirname, '..');
+    const mapPath = path.isAbsolute(task.map_path)
+      ? path.resolve(task.map_path)
+      : path.resolve(backendRoot, task.map_path);
+
+    if (!mapPath.startsWith(`${backendRoot}${path.sep}`)) {
+      return res.status(403).json({ success: false, message: '文件路径非法' });
+    }
+    if (!existsSync(mapPath)) {
+      return res.status(404).json({ success: false, message: 'map.json 不存在，可能已被清理' });
+    }
+
+    const downloadName = (task.filename || 'document').replace(/\.[^.]+$/, '') + '_脱敏.map.json';
+    res.download(mapPath, downloadName);
+  } catch (error) {
+    console.error('Map Download Error:', error);
     res.status(500).json({ success: false, message: '下载失败', error: error.message });
   }
 });
