@@ -352,19 +352,24 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const hasLoadedRef = useRef(false);
   const [containerWidth, setContainerWidth] = useState(560);
 
-  // Track container width for adaptive layout
+  // Track container width for adaptive layout — rebind when mask mode renders
   useEffect(() => {
+    if (mode !== 'mask' || !task || pageImages.length === 0) return;
     const el = scrollRef.current;
     if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      const w = entries[0]?.contentRect?.width || 560;
-      // available = container - padding(32) - gap(16), split for two columns
+
+    const update = () => {
+      const w = el.getBoundingClientRect().width || 560;
       const pageW = Math.min(Math.floor((w - 48) / 2), 720);
       setContainerWidth(Math.max(pageW, 280));
-    });
+    };
+
+    update();
+
+    const ro = new ResizeObserver(update);
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [mode, task, pageImages.length]);
 
   const showToast = useCallback((msg) => { setToast(msg); setTimeout(() => setToast(''), 2400); }, []);
 
