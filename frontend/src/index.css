@@ -445,15 +445,14 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .export-menu-item { display: block; width: 100%; padding: 8px 14px; border: 0; background: transparent; text-align: left; font-size: 13px; color: var(--base02); cursor: pointer; transition: background 80ms; }
 .export-menu-item:hover { background: rgba(59,130,246,.08); }
 
-/* #3: Continuous vertical scroll dual-column */
-.mask-scroll-container { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 0 16px 16px; }
-.mask-col-header-row { display: flex; gap: 16px; justify-content: center; position: sticky; top: 0; z-index: 10; background: rgba(247,244,238,.95); padding: 12px 0 8px; margin-bottom: 0; }
-.mask-page-row { display: flex; gap: 16px; margin-bottom: 24px; justify-content: center; flex-wrap: nowrap; }
+.mask-scroll-container { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 0 0 16px; }
+.mask-col-header-row { display: flex; gap: 16px; justify-content: center; position: sticky; top: 0; z-index: 10; background: rgba(247,244,238,.95); padding: 12px 16px 0px; margin-bottom: 0; box-sizing: border-box; width: 100%; }
+.mask-page-row { display: flex; gap: 16px; margin-bottom: 24px; justify-content: center; flex-wrap: nowrap; padding: 0 16px; box-sizing: border-box; width: 100%; }
 .mask-page-col { flex: 0 1 auto; min-width: 0; display: flex; flex-direction: column; }
-.mask-col-header { flex: 0 0 auto; height: 42px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; background: var(--card); border: 1px solid var(--line); border-bottom: none; border-radius: var(--radius) var(--radius) 0 0; box-shadow: var(--shadow-sm); }
+.mask-col-header { flex: 0 0 auto; height: 42px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; background: var(--card); border: 1px solid var(--line); border-bottom: none; border-radius: var(--radius) var(--radius) 0 0; box-shadow: var(--shadow-sm); box-sizing: border-box; }
 .mask-col-header-title { font-weight: 600; font-size: 13px; color: var(--base02); }
-.page-canvas { box-shadow: var(--shadow-sm); border: 1px solid var(--line); border-radius: 0 0 2px 2px; overflow: visible; max-width: 100%; }
-.mask-preview { border-radius: 0 0 2px 2px; box-shadow: var(--shadow-sm); border: 1px solid var(--line); overflow: hidden; border-top: none; max-width: 100%; }
+.page-canvas { box-shadow: var(--shadow-sm); border: 1px solid var(--line); border-radius: 0 0 2px 2px; overflow: visible; max-width: 100%; box-sizing: border-box; }
+.mask-preview { border-radius: 0 0 2px 2px; box-shadow: var(--shadow-sm); border: 1px solid var(--line); overflow: hidden; border-top: none; max-width: 100%; box-sizing: border-box; }
 
 /* #4: Text dual-column (star/placeholder) */
 .text-mode-container { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; padding: 0 16px 16px; }
@@ -469,7 +468,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 
 /* #1: Horizontal progress bar */
 .progress-container { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 16px; padding: 0 40px; }
-.progress-bar-wrapper { width: 100%; max-width: 400px; height: 4px; background: rgba(0,0,0,.08); border-radius: 2px; overflow: hidden; }
+.progress-bar-wrapper { width: min(720px, 64vw); max-width: none; height: 4px; background: rgba(0,0,0,.08); border-radius: 2px; overflow: hidden; }
 .progress-bar-fill { height: 100%; border-radius: 2px; background: var(--blue); transition: width 200ms ease; }
 .progress-bar-fill.determinate { background: var(--blue); }
 .progress-bar-fill.indeterminate { width: 30%; background: var(--blue); animation: indeterminate 1.4s ease-in-out infinite; }
@@ -477,8 +476,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .progress-step-text { font-size: 13px; color: var(--base01); }
 
 /* P9-3: Text entity highlight */
-.text-entity-highlight { background: rgba(250, 204, 21, .25); border-radius: 2px; cursor: pointer; transition: background 120ms; }
-.text-entity-highlight:hover, .text-entity-highlight.active { background: rgba(250, 204, 21, .5); }
+.text-entity-highlight { background: rgba(59, 130, 246, .12); border-radius: 2px; cursor: pointer; transition: background 120ms; }
+.text-entity-highlight:hover, .text-entity-highlight.active { background: rgba(59, 130, 246, .25); }
 .text-entity-highlight.replaced { background: rgba(59, 130, 246, .15); }
 .text-entity-highlight.replaced:hover, .text-entity-highlight.replaced.active { background: rgba(59, 130, 246, .35); }
 
@@ -499,17 +498,19 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 
 /* #5: Multilateral Case Workspace Layout & Sidebars */
 .workspace-container { display: flex; width: 100%; height: 100%; overflow: hidden; background: var(--background); }
-.workspace-sidebar { flex: 0 0 260px; border-right: 1px solid var(--border); background: var(--card); display: flex; flex-direction: column; padding: 16px; overflow-y: auto; height: 100%; box-sizing: border-box; }
+.workspace-sidebar { flex: 0 0 220px; border-right: 1px solid var(--border); background: var(--card); display: flex; flex-direction: column; padding: 16px; overflow-y: auto; height: 100%; box-sizing: border-box; }
 .workspace-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; position: relative; }
 
 .sidebar-title { font-size: 11px; font-weight: 700; color: var(--base01); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px; margin-top: 8px; }
 .file-list { display: flex; flex-direction: column; gap: 8px; flex: 1; overflow-y: auto; margin-bottom: 16px; }
 
-.file-card { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); cursor: pointer; transition: all 150ms ease; }
+.file-card { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); cursor: pointer; transition: all 150ms ease; position: relative; min-width: 0; overflow: hidden; }
 .file-card:hover { border-color: var(--primary); background: rgba(74, 107, 138, 0.04); }
-.file-card.active { border-color: var(--primary); background: rgba(74, 107, 138, 0.08); box-shadow: var(--shadow-sm); }
-.file-card-title { font-size: 13px; font-weight: 500; color: var(--foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-card.active { border-color: var(--primary); background: rgba(74, 107, 138, 0.06); box-shadow: 0 0 0 1px var(--primary) inset, var(--shadow-sm); }
+.file-card-title { font-size: 13px; font-weight: 500; color: var(--foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 0; min-width: 0; width: 100%; box-sizing: border-box; }
 .file-card-meta { font-size: 11px; color: var(--base01); display: flex; justify-content: space-between; align-items: center; }
+.file-card-delete-btn { position: absolute !important; top: 50% !important; transform: translateY(-50%); right: 6px; height: 20px !important; width: 20px !important; padding: 0 !important; border-radius: 50% !important; display: flex !important; align-items: center; justify-content: center; opacity: 0.3; transition: opacity 120ms ease, background-color 120ms ease, color 120ms ease; z-index: 2; background: var(--card); }
+.file-card:hover .file-card-delete-btn { opacity: 1; }
 
 .sidebar-upload-btn { margin-top: 8px; border: 1.5px dashed rgba(74, 107, 138, 0.3); background: rgba(74, 107, 138, 0.02); border-radius: 8px; padding: 12px; text-align: center; cursor: pointer; font-size: 13px; color: var(--primary); font-weight: 500; transition: all 150ms ease; }
 .sidebar-upload-btn:hover { border-color: var(--primary); background: rgba(74, 107, 138, 0.08); }

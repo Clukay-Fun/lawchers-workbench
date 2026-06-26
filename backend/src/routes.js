@@ -2890,10 +2890,11 @@ router.get('/tasks/:id/page-image/:pageNum', async (req, res) => {
       manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
     } catch {}
 
+    const retry = req.query.retry === '1';
     const pageMeta = manifest?.pages?.[pageNum - 1];
     const imageReady = pageMeta?.imagePath && existsSync(pageMeta.imagePath);
 
-    if (!imageReady) {
+    if (!imageReady || retry) {
       // Need to render — use lock so concurrent requests share one render
       await getOrCreateRender(taskId, async () => {
         console.log(`[page-image] Rendering pages for task ${taskId}...`);
@@ -2927,6 +2928,43 @@ router.get('/tasks/:id/page-image/:pageNum', async (req, res) => {
   } catch (error) {
     console.error('Page Image Error:', error);
     res.status(500).json({ success: false, message: '获取页面图像失败', error: error.message });
+  }
+});
+
+/**
+ * POST /api/tasks/:id/render-pages - 重新渲染全部页面
+ */
+router.post('/tasks/:id/render-pages', async (req, res) => {
+  try {
+    const taskId = parseInt(req.params.id, 10);
+    const task = getTaskById(taskId);
+    if (!task) return res.status(404).json({ success: false, message: '任务不存在' });
+
+    const sourcePath = task.source_path;
+    if (!sourcePath || !existsSync(sourcePath)) {
+      return res.status(409).json({ success: false, message: '源文件已丢失' });
+    }
+
+    const workDir = task.work_dir || path.join(uploadsDir, 'tasks', `.work_${taskId}`);
+    const pagesDir = path.join(workDir, 'pages');
+    const manifestPath = path.join(workDir, 'render-manifest.json');
+
+    await getOrCreateRender(taskId, async () => {
+      console.log(`[render-pages] Explicit re-rendering pages for task ${taskId}...`);
+      try { await fs.rm(pagesDir, { recursive: true, force: true }); } catch {}
+      await fs.mkdir(pagesDir, { recursive: true });
+
+      const { resolveLegalDesensBin } = await import('./services/cliResolver.js');
+      const bin = resolveLegalDesensBin();
+      await execFileAsync(bin, ['render-pages', sourcePath, '--dpi', '200', '--out-dir', pagesDir, '--out', manifestPath], {
+        timeout: 60000,
+      });
+    });
+
+    res.json({ success: true, message: '重新渲染完成' });
+  } catch (error) {
+    console.error('Explicit render-pages failed:', error);
+    res.status(500).json({ success: false, message: '重新渲染失败', error: error.message });
   }
 });
 
