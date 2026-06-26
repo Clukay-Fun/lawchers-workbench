@@ -2929,56 +2929,71 @@ router.post('/tasks/:id/text-export', async (req, res) => {
     const baseName = (task.filename || 'document').replace(/\.[^.]+$/, '');
 
     // P9-2: Generate map.json for placeholder mode (reversible)
-    // Engine restore requires: entities[{id,original}], occurrences[{entity_id,redacted_start,redacted_end}],
-    // source_sha256, redacted_sha256
+    // Reads actual exported text to locate masked values — no engine logic replication.
     let mapPath = null;
     if (mode === 'placeholder') {
       try {
-        // Read source (ocrText) and compute sha256
         const ocrTextContent = (await fs.readFile(path.join(workDir, 'ocr-text.txt'), 'utf-8').catch(() => '')) || '';
         const sourceSha = createHash('sha256').update(ocrTextContent).digest('hex');
-
-        // Read exported file and compute sha256
         const exportedContent = await fs.readFile(exportPath, 'utf-8');
         const redactedSha = createHash('sha256').update(exportedContent).digest('hex');
 
-        // Build engine-compatible map format
-        const entityMap = {};
-        let entityIdCounter = 0;
+        // Engine replaces entities sorted by start, from end to start.
+        // To find masked values in exported text, track cumulative offset drift.
+        const sortedAsc = [...entities].sort((a, b) => (a.start || 0) - (b.start || 0));
         const engineEntities = [];
         const occurrences = [];
+        let entityIdCounter = 0;
+        let cumulativeDrift = 0; // tracks how much length has changed
 
-        // Sort entities by start descending to compute redacted positions
-        const sorted = [...entities].sort((a, b) => (b.start || 0) - (a.start || 0));
-        let redactedText = ocrTextContent;
-        for (const ent of sorted) {
-          if (!ent.original) continue;
-          const masked = mode === 'star' ? starMask(ent.original, ent.entity_type) : placeholderMask(ent.entity_type);
-          redactedText = redactedText.substring(0, ent.start) + masked + redactedText.substring(ent.end);
-        }
-
-        // Now build occurrences by finding each masked text in redactedText
-        const sortedAsc = [...entities].sort((a, b) => (a.start || 0) - (b.start || 0));
-        let searchFrom = 0;
         for (const ent of sortedAsc) {
-          if (!ent.original) continue;
-          const masked = mode === 'star' ? starMask(ent.original, ent.entity_type) : placeholderMask(ent.entity_type);
-          const idx = redactedText.indexOf(masked, searchFrom);
-          if (idx < 0) continue;
+          if (!ent.original || ent.start == null || ent.end == null) continue;
+
+          // The entity's masked value starts at (ent.start + cumulativeDrift) in exported text
+          const expectedStart = ent.start + cumulativeDrift;
+          const originalLen = ent.end - ent.start;
+
+          // Read a generous window from exported text to find the masked value
+          const windowStart = expectedStart;
+          const windowEnd = Math.min(exportedContent.length, expectedStart + originalLen * 3 + 20);
+          const window = exportedContent.substring(windowStart, windowEnd);
+
+          if (!window) continue;
+
+          // For star mode: masked value length is deterministic
+          // For placeholder mode: masked value is like <单位1> (variable length)
+          // We don't know exact length, so find the masked value by looking for
+          // the entity boundary: the text between this entity's expected start
+          // and the next entity's expected start (or end of text)
+          const nextEnt = sortedAsc[sortedAsc.indexOf(ent) + 1];
+          const expectedEnd = nextEnt
+            ? nextEnt.start + cumulativeDrift
+            : exportedContent.length;
+
+          const maskedValue = exportedContent.substring(expectedStart, expectedEnd);
+
+          if (!maskedValue) continue;
 
           const eid = `ent_${entityIdCounter++}`;
-          entityMap[eid] = ent.original;
           engineEntities.push({ id: eid, entity_type: ent.entity_type, original: ent.original });
           occurrences.push({
             entity_id: eid,
-            redacted_start: idx,
-            redacted_end: idx + masked.length,
+            redacted_start: expectedStart,
+            redacted_end: expectedStart + maskedValue.length,
           });
-          searchFrom = idx + masked.length;
+
+          // Update drift: new length - original length
+          cumulativeDrift += maskedValue.length - originalLen;
+        }
+
+        // Validate: occurrences count must equal entities count
+        if (occurrences.length !== entities.length) {
+          throw new Error(
+            `occurrences count ${occurrences.length} ≠ entities count ${entities.length}`
+          );
         }
 
         const mapData = {
-          version: '1.0',
           schema_version: '1.0',
           pipeline: 'text-placeholder',
           source_file: task.filename,
@@ -2993,7 +3008,7 @@ router.post('/tasks/:id/text-export', async (req, res) => {
         mapPath = path.join(workDir, `${baseName}_脱敏.map.json`);
         await fs.writeFile(mapPath, JSON.stringify(mapData, null, 2), 'utf-8');
       } catch (mapErr) {
-        // P9-2: Fail-closed — map generation failure blocks export
+        // Fail-closed
         if (existsSync(exportPath)) await fs.unlink(exportPath).catch(() => {});
         return res.status(500).json({ success: false, message: `占位 map.json 生成失败，导出已阻断: ${mapErr.message}` });
       }
