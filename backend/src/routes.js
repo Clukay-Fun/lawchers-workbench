@@ -2929,68 +2929,56 @@ router.post('/tasks/:id/text-export', async (req, res) => {
     const baseName = (task.filename || 'document').replace(/\.[^.]+$/, '');
 
     // P9-2: Generate map.json for placeholder mode (reversible)
-    // Reads actual exported text to locate masked values — no engine logic replication.
+    // Only TXT/MD — DOCX restore not yet verified.
+    // Uses regex to find placeholder tokens in exported text, not positional slicing.
     let mapPath = null;
     if (mode === 'placeholder') {
+      // Block DOCX: restore path not verified
+      if (format === 'docx') {
+        // Still export, just without map
+        updateTask(taskId, {
+          export_path: path.relative(path.join(__dirname, '..'), exportPath),
+          residual_passed: true,
+        });
+        const downloadName = `${baseName}_脱敏.${format}`;
+        return res.download(exportPath, downloadName);
+      }
+
       try {
         const ocrTextContent = (await fs.readFile(path.join(workDir, 'ocr-text.txt'), 'utf-8').catch(() => '')) || '';
         const sourceSha = createHash('sha256').update(ocrTextContent).digest('hex');
         const exportedContent = await fs.readFile(exportPath, 'utf-8');
         const redactedSha = createHash('sha256').update(exportedContent).digest('hex');
 
-        // Engine replaces entities sorted by start, from end to start.
-        // To find masked values in exported text, track cumulative offset drift.
-        const sortedAsc = [...entities].sort((a, b) => (a.start || 0) - (b.start || 0));
+        // Find placeholder tokens in exported text via regex
+        // Engine produces: <姓名1>, <手机2>, <单位1>, etc.
+        const placeholderRe = /<([^<>\n\r]{1,30}?\d+)>/g;
+        const placeholders = [];
+        let match;
+        while ((match = placeholderRe.exec(exportedContent)) !== null) {
+          placeholders.push({ text: match[0], index: match.index });
+        }
+
+        // Validate: placeholders found must equal entities count
+        if (placeholders.length !== entities.length) {
+          throw new Error(
+            `placeholder count ${placeholders.length} ≠ entities count ${entities.length}`
+          );
+        }
+
+        // Build engine-compatible map: match each entity to its placeholder by order
         const engineEntities = [];
         const occurrences = [];
-        let entityIdCounter = 0;
-        let cumulativeDrift = 0; // tracks how much length has changed
-
-        for (const ent of sortedAsc) {
-          if (!ent.original || ent.start == null || ent.end == null) continue;
-
-          // The entity's masked value starts at (ent.start + cumulativeDrift) in exported text
-          const expectedStart = ent.start + cumulativeDrift;
-          const originalLen = ent.end - ent.start;
-
-          // Read a generous window from exported text to find the masked value
-          const windowStart = expectedStart;
-          const windowEnd = Math.min(exportedContent.length, expectedStart + originalLen * 3 + 20);
-          const window = exportedContent.substring(windowStart, windowEnd);
-
-          if (!window) continue;
-
-          // For star mode: masked value length is deterministic
-          // For placeholder mode: masked value is like <单位1> (variable length)
-          // We don't know exact length, so find the masked value by looking for
-          // the entity boundary: the text between this entity's expected start
-          // and the next entity's expected start (or end of text)
-          const nextEnt = sortedAsc[sortedAsc.indexOf(ent) + 1];
-          const expectedEnd = nextEnt
-            ? nextEnt.start + cumulativeDrift
-            : exportedContent.length;
-
-          const maskedValue = exportedContent.substring(expectedStart, expectedEnd);
-
-          if (!maskedValue) continue;
-
-          const eid = `ent_${entityIdCounter++}`;
+        for (let i = 0; i < entities.length; i++) {
+          const ent = entities[i];
+          const ph = placeholders[i];
+          const eid = `ent_${i}`;
           engineEntities.push({ id: eid, entity_type: ent.entity_type, original: ent.original });
           occurrences.push({
             entity_id: eid,
-            redacted_start: expectedStart,
-            redacted_end: expectedStart + maskedValue.length,
+            redacted_start: ph.index,
+            redacted_end: ph.index + ph.text.length,
           });
-
-          // Update drift: new length - original length
-          cumulativeDrift += maskedValue.length - originalLen;
-        }
-
-        // Validate: occurrences count must equal entities count
-        if (occurrences.length !== entities.length) {
-          throw new Error(
-            `occurrences count ${occurrences.length} ≠ entities count ${entities.length}`
-          );
         }
 
         const mapData = {
