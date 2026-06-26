@@ -12,10 +12,18 @@ const MODES = [
   { key: 'placeholder', label: '占位', desc: '类型标签 → TXT/MD/DOCX' },
 ];
 
-// P0: normalize task id — upload returns taskId, session returns id
+// P0: normalize task — upload returns taskId/documentKind, session returns id/document_kind
 function normalizeTask(raw) {
   if (!raw) return null;
-  return { ...raw, taskId: raw.taskId ?? raw.id, id: raw.id ?? raw.taskId };
+  const taskId = raw.taskId ?? raw.id;
+  const documentKind = raw.document_kind ?? raw.documentKind ?? '';
+  return {
+    ...raw,
+    taskId,
+    id: raw.id ?? taskId,
+    document_kind: documentKind,
+    documentKind,
+  };
 }
 
 // P1: available modes by document kind
@@ -441,7 +449,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   // Only reset when taskId or pageImages length changes (not on every render)
   useEffect(() => {
     if (!task || !pageImages.length) {
-      setPageStatus({});
+      setPageStatus({}); // eslint-disable-line react-hooks/set-state-in-effect
       setImageUrls({});
       return;
     }
@@ -656,23 +664,23 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
 
   // 挂载时拉取任务列表
   useEffect(() => {
-    loadTasksList();
+    loadTasksList(); // eslint-disable-line react-hooks/set-state-in-effect
   }, [loadTasksList]);
 
   // #endregion
 
   // ─── S2: Auto-restore from localStorage on mount ───────────
   useEffect(() => {
-    if (resumeTaskId) return; // handled by resumeTaskId effect
+    if (resumeTaskId) return;
     const storedId = localStorage.getItem('activeTaskId');
     if (!storedId) return;
-    loadTaskSession(parseInt(storedId, 10));
+    loadTaskSession(parseInt(storedId, 10)); // eslint-disable-line react-hooks/set-state-in-effect
   }, [resumeTaskId, loadTaskSession]);
 
   // ─── Hydrate from session (P9-1) ──────────────────────────
   useEffect(() => {
     if (!resumeTaskId) return;
-    loadTaskSession(resumeTaskId);
+    loadTaskSession(resumeTaskId); // eslint-disable-line react-hooks/set-state-in-effect
     onResumeDone?.();
   }, [resumeTaskId, loadTaskSession, onResumeDone]);
 
