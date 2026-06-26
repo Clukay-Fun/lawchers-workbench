@@ -2652,7 +2652,12 @@ router.get('/tasks/:id/page-image/:pageNum', async (req, res) => {
     try {
       manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
     } catch {
-      // Need to render
+      // Need to render: first clean pagesDir to avoid FzErrorSystem (File exists)
+      try {
+        await fs.rm(pagesDir, { recursive: true, force: true });
+      } catch {}
+      await fs.mkdir(pagesDir, { recursive: true });
+
       await execFileAsync(bin, ['render-pages', sourcePath, '--dpi', '200', '--out-dir', pagesDir, '--out', manifestPath], {
         timeout: 60000,
       });
