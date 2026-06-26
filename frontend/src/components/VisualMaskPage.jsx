@@ -255,21 +255,11 @@ function MaskPreview({ pageInfo, boxes, containerWidth, selectedBox, hoveredBox 
 
 function TextDualColumn({ ocrText, entities, mode }) {
   const [hoveredEntity, setHoveredEntity] = useState(null);
-  const scrollRef = useRef(null);
+  const leftRef = useRef(null);
+  const rightRef = useRef(null);
+  const syncingRef = useRef(false);
 
-  const replaced = useMemo(() => {
-    if (!ocrText) return '';
-    let result = ocrText;
-    const sorted = [...entities].sort((a, b) => (b.start || 0) - (a.start || 0));
-    for (const ent of sorted) {
-      if (!ent.original) continue;
-      const masked = mode === 'star' ? starMask(ent.original, ent.entity_type) : placeholderMask(ent.entity_type);
-      result = result.substring(0, ent.start) + masked + result.substring(ent.end);
-    }
-    return result;
-  }, [ocrText, entities, mode]);
-
-  // Build highlighted original text
+  // Build highlighted original text (sequential, left-to-right)
   const highlightedOriginal = useMemo(() => {
     if (!ocrText || !entities.length) return ocrText || '';
     const parts = [];
@@ -284,21 +274,40 @@ function TextDualColumn({ ocrText, entities, mode }) {
     return parts;
   }, [ocrText, entities]);
 
-  // Build highlighted replaced text
+  // Build highlighted replaced text (sequential, left-to-right, no offset drift)
   const highlightedReplaced = useMemo(() => {
-    if (!ocrText || !entities.length) return replaced || '';
+    if (!ocrText || !entities.length) return ocrText || '';
     const parts = [];
     let last = 0;
     const sorted = [...entities].sort((a, b) => (a.start || 0) - (b.start || 0));
     for (const ent of sorted) {
-      if (ent.start > last) parts.push({ text: replaced.substring(last, ent.start), type: 'normal' });
+      if (ent.start > last) parts.push({ text: ocrText.substring(last, ent.start), type: 'normal' });
       const masked = mode === 'star' ? starMask(ent.original, ent.entity_type) : placeholderMask(ent.entity_type);
       parts.push({ text: masked, type: 'entity', entity: ent });
-      last = ent.start + masked.length;
+      last = ent.end;
     }
-    if (last < replaced.length) parts.push({ text: replaced.substring(last), type: 'normal' });
+    if (last < ocrText.length) parts.push({ text: ocrText.substring(last), type: 'normal' });
     return parts;
-  }, [ocrText, entities, replaced, mode]);
+  }, [ocrText, entities, mode]);
+
+  // Sync scroll between left and right panels
+  const handleLeftScroll = useCallback(() => {
+    if (syncingRef.current) return;
+    syncingRef.current = true;
+    if (rightRef.current && leftRef.current) {
+      rightRef.current.scrollTop = leftRef.current.scrollTop;
+    }
+    syncingRef.current = false;
+  }, []);
+
+  const handleRightScroll = useCallback(() => {
+    if (syncingRef.current) return;
+    syncingRef.current = true;
+    if (leftRef.current && rightRef.current) {
+      leftRef.current.scrollTop = rightRef.current.scrollTop;
+    }
+    syncingRef.current = false;
+  }, []);
 
   const isHighlighted = useCallback((ent) => {
     if (!hoveredEntity) return false;
@@ -306,10 +315,10 @@ function TextDualColumn({ ocrText, entities, mode }) {
   }, [hoveredEntity]);
 
   return (
-    <div className="text-dual-column" ref={scrollRef}>
+    <div className="text-dual-column">
       <div className="text-panel">
         <div className="text-panel-header">OCR 抽取原文（{entities.length} 个敏感实体命中）</div>
-        <div className="text-panel-body">
+        <div className="text-panel-body" ref={leftRef} onScroll={handleLeftScroll}>
           <pre className="text-content">
             {Array.isArray(highlightedOriginal)
               ? highlightedOriginal.map((part, i) => part.type === 'entity'
@@ -323,7 +332,7 @@ function TextDualColumn({ ocrText, entities, mode }) {
       </div>
       <div className="text-panel">
         <div className="text-panel-header">{mode === 'star' ? '星号替换预览' : '占位替换预览'}</div>
-        <div className="text-panel-body">
+        <div className="text-panel-body" ref={rightRef} onScroll={handleRightScroll}>
           <pre className="text-content">
             {Array.isArray(highlightedReplaced)
               ? highlightedReplaced.map((part, i) => part.type === 'entity'

@@ -2925,28 +2925,77 @@ router.post('/tasks/:id/text-export', async (req, res) => {
       return res.status(500).json({ success: false, message: '导出文件未生成' });
     }
 
+    // P9-2: baseName must be declared before map generation
+    const baseName = (task.filename || 'document').replace(/\.[^.]+$/, '');
+
     // P9-2: Generate map.json for placeholder mode (reversible)
+    // Engine restore requires: entities[{id,original}], occurrences[{entity_id,redacted_start,redacted_end}],
+    // source_sha256, redacted_sha256
     let mapPath = null;
     if (mode === 'placeholder') {
       try {
+        // Read source (ocrText) and compute sha256
         const ocrTextContent = (await fs.readFile(path.join(workDir, 'ocr-text.txt'), 'utf-8').catch(() => '')) || '';
+        const sourceSha = createHash('sha256').update(ocrTextContent).digest('hex');
+
+        // Read exported file and compute sha256
+        const exportedContent = await fs.readFile(exportPath, 'utf-8');
+        const redactedSha = createHash('sha256').update(exportedContent).digest('hex');
+
+        // Build engine-compatible map format
+        const entityMap = {};
+        let entityIdCounter = 0;
+        const engineEntities = [];
+        const occurrences = [];
+
+        // Sort entities by start descending to compute redacted positions
+        const sorted = [...entities].sort((a, b) => (b.start || 0) - (a.start || 0));
+        let redactedText = ocrTextContent;
+        for (const ent of sorted) {
+          if (!ent.original) continue;
+          const masked = mode === 'star' ? starMask(ent.original, ent.entity_type) : placeholderMask(ent.entity_type);
+          redactedText = redactedText.substring(0, ent.start) + masked + redactedText.substring(ent.end);
+        }
+
+        // Now build occurrences by finding each masked text in redactedText
+        const sortedAsc = [...entities].sort((a, b) => (a.start || 0) - (b.start || 0));
+        let searchFrom = 0;
+        for (const ent of sortedAsc) {
+          if (!ent.original) continue;
+          const masked = mode === 'star' ? starMask(ent.original, ent.entity_type) : placeholderMask(ent.entity_type);
+          const idx = redactedText.indexOf(masked, searchFrom);
+          if (idx < 0) continue;
+
+          const eid = `ent_${entityIdCounter++}`;
+          entityMap[eid] = ent.original;
+          engineEntities.push({ id: eid, entity_type: ent.entity_type, original: ent.original });
+          occurrences.push({
+            entity_id: eid,
+            redacted_start: idx,
+            redacted_end: idx + masked.length,
+          });
+          searchFrom = idx + masked.length;
+        }
+
         const mapData = {
           version: '1.0',
-          mode: 'placeholder',
+          schema_version: '1.0',
+          pipeline: 'text-placeholder',
           source_file: task.filename,
-          entities: entities.map(e => ({
-            original: e.original,
-            entity_type: e.entity_type,
-            start: e.start,
-            end: e.end,
-          })),
-          ocr_text_hash: ocrTextContent ? createHash('sha256').update(ocrTextContent).digest('hex') : null,
+          source_sha256: sourceSha,
+          redacted_sha256: redactedSha,
+          entities: engineEntities,
+          occurrences,
+          mode: 'placeholder',
           created_at: new Date().toISOString(),
         };
+
         mapPath = path.join(workDir, `${baseName}_脱敏.map.json`);
         await fs.writeFile(mapPath, JSON.stringify(mapData, null, 2), 'utf-8');
       } catch (mapErr) {
-        console.warn('[WARN] Failed to generate map.json:', mapErr.message);
+        // P9-2: Fail-closed — map generation failure blocks export
+        if (existsSync(exportPath)) await fs.unlink(exportPath).catch(() => {});
+        return res.status(500).json({ success: false, message: `占位 map.json 生成失败，导出已阻断: ${mapErr.message}` });
       }
     }
 
@@ -2957,7 +3006,6 @@ router.post('/tasks/:id/text-export', async (req, res) => {
       residual_passed: true,
     });
 
-    const baseName = (task.filename || 'document').replace(/\.[^.]+$/, '');
     const downloadName = `${baseName}_脱敏.${format}`;
     res.download(exportPath, downloadName);
   } catch (error) {
