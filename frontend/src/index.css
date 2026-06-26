@@ -450,7 +450,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .mask-panel { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius-card); overflow: hidden; box-shadow: var(--shadow-sm); }
 .mask-panel-header { flex: 0 0 auto; height: 42px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; background: rgba(247,244,238,.5); border-bottom: 1px solid var(--line); box-sizing: border-box; }
 .mask-panel-header-left { justify-content: flex-start; }
-.mask-panel-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 0; background: var(--base3); }
+.mask-panel-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 0; background: var(--base3); position: relative; }
 .mask-page-row { display: flex; margin-bottom: 24px; justify-content: center; flex-wrap: nowrap; box-sizing: border-box; width: 100%; }
 .mask-page-row:last-child { margin-bottom: 0; }
 .mask-page-col { flex: 0 1 auto; min-width: 0; display: flex; flex-direction: column; }
