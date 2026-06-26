@@ -167,7 +167,6 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
           return (
             <div key={box.id} style={{ position: 'absolute', left: css.left, top: css.top, width: css.width, height: css.height }}>
               <div data-box-id={box.id} style={{ width: '100%', height: '100%', border: `2px solid ${isActive ? '#3b82f6' : 'rgba(59,130,246,0.6)'}`, background: isActive ? 'rgba(59,130,246,0.12)' : 'rgba(59,130,246,0.06)', cursor: 'move', transition: 'border-color 0.12s, background 0.12s' }} onMouseDown={(e) => handleBoxMouseDown(e, box)} onContextMenu={(e) => { e.preventDefault(); onRightClickBox?.(box); }} onMouseEnter={() => onHoverBox?.(box.id)} onMouseLeave={() => onHoverBox?.(null)} />
-              {box.source === 'seal' && <span style={{ position: 'absolute', top: -16, left: 0, fontSize: 10, color: '#3b82f6', whiteSpace: 'nowrap' }}>公章</span>}
               {isActive && <button style={{ position: 'absolute', top: -12, right: -12, width: 22, height: 22, borderRadius: '50%', background: '#ef4444', color: '#fff', border: '2px solid #fff', cursor: 'pointer', fontSize: 13, lineHeight: '18px', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 20, boxShadow: '0 1px 4px rgba(0,0,0,0.2)' }} onMouseDown={(e) => e.stopPropagation()} onClick={(e) => handleDeleteBox(e, box.id)} title="删除">×</button>}
               {isActive && ['nw', 'ne', 'sw', 'se'].map(h => <div key={h} data-handle={h} style={{ position: 'absolute', width: 8, height: 8, background: '#3b82f6', border: '1px solid #fff', borderRadius: 2, zIndex: 10, ...(h.includes('n') ? { top: -4 } : { bottom: -4 }), ...(h.includes('w') ? { left: -4 } : { right: -4 }), cursor: h === 'nw' || h === 'se' ? 'nwse-resize' : 'nesw-resize' }} onMouseDown={(e) => handleResizeStart(e, box.id, h)} />)}
             </div>
@@ -200,7 +199,6 @@ function MaskPreview({ pageInfo, boxes, containerWidth, selectedBox, hoveredBox,
           );
         })}
       </svg>
-      <div style={{ position: 'absolute', bottom: 8, right: 8, color: 'rgba(0,0,0,0.45)', fontSize: 11, background: 'rgba(255,255,255,0.75)', padding: '2px 6px', borderRadius: 4 }}>遮蔽预览 · {pageBoxes.length} 个区域</div>
     </div>
   );
 }
@@ -343,7 +341,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const scrollRef = useRef(null);
   const pageRowRefs = useRef({});
 
-  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 2400); };
+  const showToast = useCallback((msg) => { setToast(msg); setTimeout(() => setToast(''), 2400); }, []);
 
   // ─── S2: Auto-restore from localStorage on mount ───────────
   useEffect(() => {
@@ -427,28 +425,36 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   }, [showToast]);
 
   const handleRightClickEntity = useCallback((entity) => {
-    // Remove the entity from textEntities
-    setTextEntities(prev => prev.filter(e =>
-      !(e.start === entity.start && e.end === entity.end && e.entity_type === entity.entity_type)
-    ));
+    // Remove the entity from textEntities by stable id
+    setTextEntities(prev => prev.filter(e => e.id !== entity.id));
     // Remove any box that was generated from this entity (has matching entityId)
     setBoxes(prev => prev.filter(b => !(b.entityId && b.entityId === entity.id)));
     showToast('已取消该实体脱敏');
   }, [showToast]);
 
-  // Persist boxes on change (debounced)
+  // Persist boxes on change (debounced) — allow empty array to clear
+  const [hasLoadedTask, setHasLoadedTask] = useState(false);
+
   useEffect(() => {
-    if (!task || boxes.length === 0) return;
+    if (!task) return;
+    // Mark that we've loaded a task so subsequent changes are intentional
+    const timer = setTimeout(() => setHasLoadedTask(true), 500);
+    return () => clearTimeout(timer);
+  }, [task]);
+
+  useEffect(() => {
+    if (!task || !hasLoadedTask) return;
     const timer = setTimeout(() => {
       updateTaskBoxes(task.taskId, boxes).catch(() => {});
     }, 1000);
     return () => clearTimeout(timer);
-  }, [task, boxes]);
+  }, [task, boxes, hasLoadedTask]);
 
   // ─── Upload + Analyze ────────────────────────────────────────
 
   const handleFile = async (file) => {
     if (!file) return;
+    localStorage.removeItem('activeTaskId'); // S4: clear before new upload
     setLoading(true); setError(null); setBoxes([]); setTextEntities([]); setOcrText(''); setPageImages([]); setUploadPercent(0); setProcessingStep('上传中…');
     try {
       const taskData = await uploadWithProgress(file, _settings?.rulesConfig, setUploadPercent);
@@ -460,24 +466,38 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
 
       setProcessingStep('正在规则匹配…');
 
-      const backendTextEntities = (analyzeData.textEntities || []).map(e => ({
-        original: e.original || '',
-        entity_type: e.entity_type || 'CUSTOM',
-        start: e.start ?? 0,
-        end: e.end ?? 0,
-      }));
+      const backendTextEntities = (analyzeData.textEntities || []).map(e => {
+        const entityType = e.entity_type || 'CUSTOM';
+        const start = e.start ?? 0;
+        const end = e.end ?? 0;
+        return {
+          id: `${entityType}:${start}:${end}`,
+          original: e.original || '',
+          entity_type: entityType,
+          start,
+          end,
+        };
+      });
       const fullText = (analyzeData.ocrBoxes || []).map(b => b.text || '').join('\n');
       setTextEntities(backendTextEntities);
       setOcrText(fullText);
 
-      const refined = (analyzeData.refinedBoxes || []).map((b, i) => createNormalizedBox({
-        id: `cand_${i}`, page: b.page,
-        x: b.x, y: b.y, width: b.width, height: b.height,
-        pageWidth: analyzeData.manifest?.pages?.[b.page - 1]?.pageWidth || 595,
-        pageHeight: analyzeData.manifest?.pages?.[b.page - 1]?.pageHeight || 842,
-        source: 'ocr', entityType: b.entityType || 'CUSTOM',
-        text: b.text || '', confidence: b.confidence ?? null,
-      }));
+      const refined = (analyzeData.refinedBoxes || []).map((b, i) => {
+        // Try to match this box to a text entity by overlap
+        const boxEntityType = b.entityType || 'CUSTOM';
+        const matchedEntity = backendTextEntities.find(e =>
+          e.entity_type === boxEntityType && Math.abs(e.start - (b.charStart ?? -1)) < 5
+        );
+        return createNormalizedBox({
+          id: `cand_${i}`, page: b.page,
+          x: b.x, y: b.y, width: b.width, height: b.height,
+          pageWidth: analyzeData.manifest?.pages?.[b.page - 1]?.pageWidth || 595,
+          pageHeight: analyzeData.manifest?.pages?.[b.page - 1]?.pageHeight || 842,
+          source: 'ocr', entityType: boxEntityType,
+          text: b.text || '', confidence: b.confidence ?? null,
+          entityId: matchedEntity?.id || null,
+        });
+      });
 
       const sealBoxes = (analyzeData.sealBoxes || []).map((b, i) => createNormalizedBox({
         id: b.id || `seal_${i}`, page: b.page,
@@ -492,7 +512,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
       setCurrentPage(1);
 
       setProcessingStep('生成预览…');
-      showToast(`识别到 ${refined.length} 个敏感区域、${backendTextEntities.length} 个文本实体${sealBoxes.length > 0 ? `、${sealBoxes.length} 个公章候选` : ''}`);
+      showToast('文档分析完成');
     } catch (err) {
       setError(err.message);
     } finally {
