@@ -1936,6 +1936,9 @@ function refineToEntityBoxes(ocrBoxes, textEntities) {
 
       refined.push({
         text: entity.original,
+        entityId: entity.id || `${entity.entity_type}:${entity.start}:${entity.end}`,
+        entityStart: entStart,
+        entityEnd: entEnd,
         page: box.page,
         x: Math.round(subX * 1e6) / 1e6,
         y: box.y,
@@ -2410,6 +2413,8 @@ router.post('/tasks/:id/analyze', async (req, res) => {
     let lastEnd = -1;
     for (const ent of allEntities) {
       if (ent.start >= lastEnd) {
+        // Add stable id for cross-mode linking
+        ent.id = `${ent.entity_type || 'CUSTOM'}:${ent.start}:${ent.end}`;
         textEntities.push(ent);
         lastEnd = ent.end;
       }
@@ -2804,8 +2809,24 @@ router.get('/tasks/:id/page-image/:pageNum', async (req, res) => {
     if (!pageMeta) return res.status(404).json({ success: false, message: `页面 ${pageNum} 不存在` });
 
     const imagePath = pageMeta.imagePath;
+
+    // S1: If image file missing but manifest exists, re-render pages
     if (!imagePath || !existsSync(imagePath)) {
-      return res.status(404).json({ success: false, message: '页面图像未生成' });
+      console.log(`[S1] Page ${pageNum} image missing, re-rendering pages...`);
+      try {
+        await fs.rm(pagesDir, { recursive: true, force: true });
+      } catch {}
+      await fs.mkdir(pagesDir, { recursive: true });
+
+      await execFileAsync(bin, ['render-pages', sourcePath, '--dpi', '200', '--out-dir', pagesDir, '--out', manifestPath], {
+        timeout: 60000,
+      });
+      manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
+      const refreshedMeta = manifest.pages?.[pageNum - 1];
+      if (!refreshedMeta?.imagePath || !existsSync(refreshedMeta.imagePath)) {
+        return res.status(404).json({ success: false, message: '页面图像重渲染失败' });
+      }
+      return res.sendFile(refreshedMeta.imagePath);
     }
 
     res.sendFile(imagePath);
