@@ -2737,7 +2737,7 @@ router.post('/tasks/:id/mask-export', async (req, res) => {
       return res.status(409).json({ success: false, message: '遮蔽验证未通过' });
     }
 
-    // Update task record
+    // Update task record — mask export is irreversible, clear any map_path
     const entityStats = {};
     for (const box of boxes) {
       const src = box.source || 'manual';
@@ -2746,6 +2746,7 @@ router.post('/tasks/:id/mask-export', async (req, res) => {
     updateTask(taskId, {
       entity_stats: entityStats,
       export_path: path.relative(path.join(__dirname, '..'), exportPath),
+      map_path: null,
       residual_passed: true,
     });
 
@@ -2935,9 +2936,10 @@ router.post('/tasks/:id/text-export', async (req, res) => {
     if (mode === 'placeholder') {
       // Block DOCX: restore path not verified
       if (format === 'docx') {
-        // Still export, just without map
+        // Still export, just without map — clear any previous map_path
         updateTask(taskId, {
           export_path: path.relative(path.join(__dirname, '..'), exportPath),
+          map_path: null,
           residual_passed: true,
         });
         const downloadName = `${baseName}_脱敏.${format}`;
@@ -2967,10 +2969,12 @@ router.post('/tasks/:id/text-export', async (req, res) => {
         }
 
         // Build engine-compatible map: match each entity to its placeholder by order
+        // Sort entities by start to ensure stable ordering regardless of frontend array order
+        const sortedEntities = [...entities].sort((a, b) => (a.start || 0) - (b.start || 0));
         const engineEntities = [];
         const occurrences = [];
-        for (let i = 0; i < entities.length; i++) {
-          const ent = entities[i];
+        for (let i = 0; i < sortedEntities.length; i++) {
+          const ent = sortedEntities[i];
           const ph = placeholders[i];
           const eid = `ent_${i}`;
           engineEntities.push({ id: eid, entity_type: ent.entity_type, original: ent.original });
