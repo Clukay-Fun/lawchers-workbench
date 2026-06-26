@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { analyzeTask, updateTaskBoxes, maskExportTask, textExportTask, getTaskSession, updateCancelledEntities } from '../api';
+import { analyzeTask, updateTaskBoxes, maskExportTask, textExportTask, getTaskSession, updateCancelledEntities, getHistory, deleteHistory } from '../api';
 import { Button } from '@/components/ui/button';
 import { normalizedToCSS, computeDisplaySize, createNormalizedBox } from '../services/coords';
 
@@ -328,6 +328,8 @@ function ExportDropdown({ mode, onExport, exporting, disabled }) {
 
 export default function VisualMaskPage({ settings: _settings, resumeTaskId, onResumeDone }) {
   const [task, setTask] = useState(null);
+  const [tasks, setTasks] = useState([]);
+  const [tasksLoading, setTasksLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [processingStep, setProcessingStep] = useState('');
   const [uploadPercent, setUploadPercent] = useState(0);
@@ -373,62 +375,98 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
 
   const showToast = useCallback((msg) => { setToast(msg); setTimeout(() => setToast(''), 2400); }, []);
 
+  // #region 任务列表与会话管理
+
+  /**
+   * 加载历史任务列表
+   * 用途: 从后端获取历史上传材料列表
+   */
+  const loadTasksList = useCallback(async () => {
+    setTasksLoading(true);
+    try {
+      const list = await getHistory();
+      setTasks(list || []);
+    } catch (err) {
+      showToast(err.message || '加载历史任务失败');
+    } finally {
+      setTasksLoading(false);
+    }
+  }, [showToast]);
+
+  /**
+   * 加载特定的任务会话
+   * 用途: 恢复任务会话，更新所有分析和脱敏状态
+   * 参数: taskId - 任务 ID
+   */
+  const loadTaskSession = useCallback(async (taskId) => {
+    setLoading(true); setProcessingStep('正在加载任务会话…'); setError(null);
+    try {
+      const session = await getTaskSession(taskId);
+      setTask(session.task);
+      setBoxes(session.boxes || []);
+      setTextEntities(session.textEntities || []);
+      setOcrText(session.ocrText || '');
+      setPageImages(session.manifest?.pages || []);
+      cancelledRef.current = new Set(session.cancelledEntities || []);
+      setCurrentPage(1);
+      hasLoadedRef.current = true;
+      localStorage.setItem('activeTaskId', String(taskId));
+    } catch (err) {
+      setError(err.message || '加载任务会话失败');
+      localStorage.removeItem('activeTaskId');
+    } finally {
+      setLoading(false); setProcessingStep('');
+    }
+  }, []);
+
+  /**
+   * 删除材料
+   * 用途: 删除特定的历史文档记录及分析缓存
+   * 参数: taskId - 任务 ID, e - 点击事件
+   */
+  const handleDeleteTask = useCallback(async (taskId, e) => {
+    e.stopPropagation();
+    if (!window.confirm('确认删除此材料？这将清除该文档的脱敏记录及所有分析缓存。')) return;
+    try {
+      await deleteHistory(taskId);
+      setTasks(prev => prev.filter(t => t.id !== taskId));
+      showToast('材料已删除');
+      
+      // 如果删除的是当前活动任务，重置工作区
+      if (task && task.taskId === taskId) {
+        setTask(null);
+        setBoxes([]);
+        setTextEntities([]);
+        setOcrText('');
+        setPageImages([]);
+        localStorage.removeItem('activeTaskId');
+      }
+    } catch (err) {
+      showToast(err.message || '删除失败');
+    }
+  }, [task, showToast]);
+
+  // 挂载时拉取任务列表
+  useEffect(() => {
+    loadTasksList();
+  }, [loadTasksList]);
+
+  // #endregion
+
   // ─── S2: Auto-restore from localStorage on mount ───────────
   useEffect(() => {
     if (resumeTaskId) return; // handled by resumeTaskId effect
     const storedId = localStorage.getItem('activeTaskId');
     if (!storedId) return;
-    let cancelled = false;
-    (async () => {
-      setLoading(true); setProcessingStep('正在恢复任务…'); setError(null);
-      try {
-        const session = await getTaskSession(parseInt(storedId, 10));
-        if (cancelled) return;
-        setTask(session.task);
-        setBoxes(session.boxes || []);
-        setTextEntities(session.textEntities || []);
-        setOcrText(session.ocrText || '');
-        setPageImages(session.manifest?.pages || []);
-        cancelledRef.current = new Set(session.cancelledEntities || []);
-        setCurrentPage(1);
-        hasLoadedRef.current = true;
-      } catch {
-        localStorage.removeItem('activeTaskId');
-      } finally {
-        if (!cancelled) { setLoading(false); setProcessingStep(''); }
-      }
-    })();
-    return () => { cancelled = true; };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    loadTaskSession(parseInt(storedId, 10));
+  }, [resumeTaskId, loadTaskSession]);
 
   // ─── Hydrate from session (P9-1) ──────────────────────────
   useEffect(() => {
     if (!resumeTaskId) return;
-    let cancelled = false;
-    (async () => {
-      setLoading(true); setProcessingStep('正在恢复任务…'); setError(null);
-      try {
-        const session = await getTaskSession(resumeTaskId);
-        if (cancelled) return;
-        setTask(session.task);
-        setBoxes(session.boxes || []);
-        setTextEntities(session.textEntities || []);
-        setOcrText(session.ocrText || '');
-        setPageImages(session.manifest?.pages || []);
-        cancelledRef.current = new Set(session.cancelledEntities || []);
-        setCurrentPage(1);
-        hasLoadedRef.current = true;
-        localStorage.setItem('activeTaskId', String(resumeTaskId));
-        showToast('已恢复上次编辑');
-      } catch (err) {
-        if (!cancelled) setError(err.message);
-      } finally {
-        if (!cancelled) { setLoading(false); setProcessingStep(''); }
-      }
-    })();
+    loadTaskSession(resumeTaskId);
     onResumeDone?.();
-    return () => { cancelled = true; };
-  }, [resumeTaskId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [resumeTaskId, loadTaskSession, onResumeDone]);
 
   // ─── Scroll → update currentPage ──────────────────────────
   const scrollIgnoreRef = useRef(false);
@@ -555,6 +593,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
 
       setProcessingStep('生成预览…');
       showToast('文档分析完成');
+      loadTasksList();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -578,14 +617,22 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
         const response = await maskExportTask(task.taskId, boxes);
         downloadBlob(await response.blob(), `${baseName}_脱敏${ext}`);
       } else {
-        if (textEntities.length === 0) { showToast('没有检测到可替换的文本实体'); return; }
-        const response = await textExportTask(task.taskId, textEntities, mode === 'mask' ? 'star' : mode, exportFormat);
-        downloadBlob(await response.blob(), `${baseName}_脱敏.${exportFormat}`);
+        const payloadEntities = textEntities.map(e => ({
+          original: e.original,
+          entity_type: e.entity_type,
+          start: e.start,
+          end: e.end,
+        }));
+        const response = await textExportTask(task.taskId, payloadEntities, mode, exportFormat);
+        const exportExt = exportFormat === 'pdf' ? 'txt' : exportFormat;
+        downloadBlob(await response.blob(), `${baseName}_脱敏.${exportExt}`);
       }
       showToast('导出成功');
     } catch (err) {
       showToast(err.message || '导出失败');
-    } finally { setExporting(false); }
+    } finally {
+      setExporting(false);
+    }
   };
 
   function downloadBlob(blob, filename) { const url = window.URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); window.URL.revokeObjectURL(url); }
@@ -594,99 +641,151 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const totalPages = pageImages.length;
   const isMaskMode = mode === 'mask';
 
-  // ─── Empty state ───────────────────────────────────────────
-
-  if (!task && !loading) {
-    return (
-      <div className="tool-empty">
-        <strong>上传 PDF 开始脱敏</strong>
-        <p>支持文本 PDF 和扫描 PDF</p>
-        <Button variant="default" onClick={() => fileInputRef.current?.click()}>选择文件</Button>
-        <input ref={fileInputRef} className="visually-hidden" type="file" accept=".pdf" onChange={(e) => handleFile(e.target.files?.[0])} />
-      </div>
-    );
-  }
-
-  if (loading) {
-    return <ProgressBar percent={uploadPercent} step={processingStep || '正在恢复任务…'} />;
-  }
-
-  if (error) {
-    return (
-      <div className="tool-error">
-        <strong>处理失败</strong>
-        <p>{error}</p>
-        <Button variant="outline" onClick={() => { setError(null); setTask(null); }}>重试</Button>
-      </div>
-    );
-  }
-
   // ─── Main render ──────────────────────────────────────────
 
   return (
-    <div className="visual-mask-page" ref={containerRef}>
-      {/* S4: Top bar — left=filename, center=modes, right=upload+export */}
-      <div className="mask-topbar">
-        <div className="mask-topbar-left">
-          <span className="mask-filename">{task?.filename}</span>
-        </div>
-        <div className="mask-topbar-center">
-          <div className="mode-switch">
-            {MODES.map(m => <button key={m.key} className={`mode-btn ${mode === m.key ? 'active' : ''}`} onClick={() => setMode(m.key)} title={m.desc}>{m.label}</button>)}
+    <div className="workspace-container">
+      {/* 左栏：本案材料列表 */}
+      <div className="workspace-sidebar">
+        <h4 className="sidebar-title">本案材料</h4>
+        
+        {tasksLoading && tasks.length === 0 ? (
+          <div className="text-xs text-muted-foreground py-4 text-center">加载中…</div>
+        ) : (
+          <div className="file-list">
+            {tasks.length === 0 ? (
+              <div className="text-xs text-muted-foreground py-8 text-center italic">暂无材料，请在下方追加</div>
+            ) : (
+              tasks.map(t => {
+                const isActive = task && task.taskId === t.id;
+                const stats = (() => { try { return JSON.parse(t.entity_stats || '{}'); } catch { return {}; } })();
+                const totalEntities = Object.values(stats).reduce((acc, curr) => acc + curr, 0);
+                
+                return (
+                  <div
+                    key={t.id}
+                    className={`file-card ${isActive ? 'active' : ''}`}
+                    onClick={() => { if (!isActive) loadTaskSession(t.id); }}
+                  >
+                    <div className="file-card-title" title={t.filename}>{t.filename}</div>
+                    <div className="file-card-meta">
+                      <span>{(t.ext || '').toUpperCase().replace('.', '') || 'PDF'} 格式</span>
+                      <span>
+                        {totalEntities > 0 ? `命中 ${totalEntities} 处` : '待分析'}
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '4px' }}>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                        onClick={(e) => handleDeleteTask(t.id, e)}
+                        title="删除材料"
+                      >
+                        ×
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
           </div>
+        )}
+
+        <div className="sidebar-upload-btn" onClick={() => fileInputRef.current?.click()}>
+          ＋ 追加上传本地材料
         </div>
-        <div className="mask-topbar-right">
-          <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>上传</Button>
-          <ExportDropdown mode={mode} onExport={doExport} exporting={exporting} disabled={isMaskMode ? redactionCount === 0 : textEntities.length === 0} />
+
+        <h4 className="sidebar-title" style={{ marginTop: '24px' }}>操作提示</h4>
+        <div className="sidebar-hint">
+          可在“遮蔽”模式下通过<strong>鼠标拖拽划词</strong>手动高亮脱敏；在文本模式下对高亮词汇<strong>右键</strong>可取消脱敏。
         </div>
       </div>
 
-      {isMaskMode ? (
-        /* Mask mode: shared header + continuous scroll pages */
-        <div className="mask-scroll-container" ref={scrollRef}>
-          {/* S2: Shared header — renders once, sticky */}
-          <div className="mask-col-header-row">
-            <div className="mask-col-header">
-              <div className="page-nav">
-                <Button variant="ghost" size="sm" disabled={currentPage <= 1} onClick={() => scrollToPage(currentPage - 1)}>←</Button>
-                <span>{currentPage} / {totalPages}</span>
-                <Button variant="ghost" size="sm" disabled={currentPage >= totalPages} onClick={() => scrollToPage(currentPage + 1)}>→</Button>
-              </div>
-            </div>
-            <div className="mask-col-header">
-              <span className="mask-col-header-title">脱敏预览</span>
-            </div>
+      {/* 右栏：主编辑区 */}
+      <div className="workspace-main" ref={containerRef}>
+        {loading ? (
+          <ProgressBar percent={uploadPercent} step={processingStep || '正在加载任务…'} />
+        ) : error ? (
+          <div className="tool-error">
+            <strong>处理失败</strong>
+            <p>{error}</p>
+            <Button variant="outline" onClick={() => { setError(null); setTask(null); }}>返回列表</Button>
           </div>
-          {/* Page rows — no headers, just content */}
-          {pageImages.map((pg) => {
-            const pgInfo = { ...pg, taskId: task?.taskId };
-            return (
-              <div key={pg.pageNumber} className="mask-page-row" data-page={pg.pageNumber} ref={el => { pageRowRefs.current[pg.pageNumber] = el; }}>
-                <div className="mask-page-col">
-                  <PageCanvas
-                    pageInfo={pgInfo} boxes={boxes} onBoxesChange={setBoxes} containerWidth={containerWidth}
-                    selectedBox={selectedBox} onSelectBox={setSelectedBox}
-                    hoveredBox={hoveredBox} onHoverBox={setHoveredBox}
-                    onRightClickBox={handleRightClickBox}
-                  />
-                </div>
-                <div className="mask-page-col">
-                  <MaskPreview
-                    pageInfo={pgInfo} boxes={boxes} containerWidth={containerWidth}
-                    selectedBox={selectedBox} hoveredBox={hoveredBox}
-                    onRightClickBox={handleRightClickBox}
-                  />
+        ) : !task ? (
+          <div className="tool-empty">
+            <strong>请在左侧选择或上传文档</strong>
+            <p>支持文本 PDF 和扫描 PDF 两种文件格式</p>
+            <Button variant="default" onClick={() => fileInputRef.current?.click()}>上传新文件</Button>
+          </div>
+        ) : (
+          /* 核心编辑器渲染内容 */
+          <>
+            {/* S4: Top bar — left=filename, center=modes, right=upload+export */}
+            <div className="mask-topbar">
+              <div className="mask-topbar-left">
+                <span className="mask-filename">{task?.filename}</span>
+              </div>
+              <div className="mask-topbar-center">
+                <div className="mode-switch">
+                  {MODES.map(m => <button key={m.key} className={`mode-btn ${mode === m.key ? 'active' : ''}`} onClick={() => setMode(m.key)} title={m.desc}>{m.label}</button>)}
                 </div>
               </div>
-            );
-          })}
-        </div>
-      ) : (
-        /* Star/Placeholder mode: text dual-column */
-        <div className="text-mode-container">
-          <TextDualColumn ocrText={ocrText} entities={textEntities} mode={mode} onRightClickEntity={handleRightClickEntity} />
-        </div>
-      )}
+              <div className="mask-topbar-right" style={{ display: 'flex', gap: '8px' }}>
+                <ExportDropdown mode={mode} onExport={doExport} exporting={exporting} disabled={isMaskMode ? redactionCount === 0 : textEntities.length === 0} />
+              </div>
+            </div>
+
+            {isMaskMode ? (
+              /* Mask mode: shared header + continuous scroll pages */
+              <div className="mask-scroll-container" ref={scrollRef}>
+                {/* S2: Shared header — renders once, sticky */}
+                <div className="mask-col-header-row">
+                  <div className="mask-col-header" style={{ width: containerWidth ? `${containerWidth}px` : 'auto' }}>
+                    <span className="mask-col-header-title">OCR 抽取原文</span>
+                    <div className="page-nav">
+                      <Button variant="ghost" size="sm" disabled={currentPage <= 1} onClick={() => scrollToPage(currentPage - 1)}>←</Button>
+                      <span>{currentPage} / {totalPages}</span>
+                      <Button variant="ghost" size="sm" disabled={currentPage >= totalPages} onClick={() => scrollToPage(currentPage + 1)}>→</Button>
+                    </div>
+                  </div>
+                  <div className="mask-col-header" style={{ width: containerWidth ? `${containerWidth}px` : 'auto', justifyContent: 'center' }}>
+                    <span className="mask-col-header-title">高保真脱敏预览</span>
+                  </div>
+                </div>
+                {/* Page rows — no headers, just content */}
+                {pageImages.map((pg) => {
+                  const pgInfo = { ...pg, taskId: task?.taskId };
+                  return (
+                    <div key={pg.pageNumber} className="mask-page-row" data-page={pg.pageNumber} ref={el => { pageRowRefs.current[pg.pageNumber] = el; }}>
+                      <div className="mask-page-col">
+                        <PageCanvas
+                          pageInfo={pgInfo} boxes={boxes} onBoxesChange={setBoxes} containerWidth={containerWidth}
+                          selectedBox={selectedBox} onSelectBox={setSelectedBox}
+                          hoveredBox={hoveredBox} onHoverBox={setHoveredBox}
+                          onRightClickBox={handleRightClickBox}
+                        />
+                      </div>
+                      <div className="mask-page-col">
+                        <MaskPreview
+                          pageInfo={pgInfo} boxes={boxes} containerWidth={containerWidth}
+                          selectedBox={selectedBox} hoveredBox={hoveredBox}
+                          onRightClickBox={handleRightClickBox}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              /* Star/Placeholder mode: text dual-column */
+              <div className="text-mode-container">
+                <TextDualColumn ocrText={ocrText} entities={textEntities} mode={mode} onRightClickEntity={handleRightClickEntity} />
+              </div>
+            )}
+          </>
+        )}
+      </div>
 
       <input ref={fileInputRef} className="visually-hidden" type="file" accept=".pdf" onChange={(e) => handleFile(e.target.files?.[0])} />
       <div className={`toast ${toast ? 'show' : ''}`}>{toast}</div>
