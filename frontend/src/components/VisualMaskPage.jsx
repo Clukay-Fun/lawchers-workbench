@@ -517,6 +517,8 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const containerRef = useRef(null);
   const fileInputRef = useRef(null);
   const scrollRef = useRef(null);
+  const maskPreviewScrollRef = useRef(null);
+  const maskScrollSyncRef = useRef(false);
   const pageRowRefs = useRef({});
   const hasLoadedRef = useRef(false);
   const [containerWidth, setContainerWidth] = useState(560);
@@ -771,16 +773,39 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const scrollToPage = useCallback((n) => {
     if (n < 1 || n > pageImages.length) return;
     setCurrentPage(n);
-    scrollIgnoreRef.current = true;
+    // Wait for refs to be available
     requestAnimationFrame(() => {
       const container = scrollRef.current;
       const el = pageRowRefs.current[n];
       if (!container || !el) return;
-      container.scrollTo({ top: Math.max(0, el.offsetTop - 8), behavior: 'smooth' });
+      scrollIgnoreRef.current = true;
+      // Calculate position: element top relative to container's scroll position
+      const elTop = el.offsetTop;
+      container.scrollTo({ top: Math.max(0, elTop - 8), behavior: 'smooth' });
+      if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
+      scrollTimeoutRef.current = setTimeout(() => {
+        scrollIgnoreRef.current = false;
+      }, 800);
     });
-    if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
-    scrollTimeoutRef.current = setTimeout(() => { scrollIgnoreRef.current = false; }, 900);
   }, [pageImages.length]);
+
+  const handleMaskLeftScroll = useCallback(() => {
+    if (maskScrollSyncRef.current) return;
+    maskScrollSyncRef.current = true;
+    if (maskPreviewScrollRef.current && scrollRef.current) {
+      maskPreviewScrollRef.current.scrollTop = scrollRef.current.scrollTop;
+    }
+    maskScrollSyncRef.current = false;
+  }, []);
+
+  const handleMaskRightScroll = useCallback(() => {
+    if (maskScrollSyncRef.current) return;
+    maskScrollSyncRef.current = true;
+    if (scrollRef.current && maskPreviewScrollRef.current) {
+      scrollRef.current.scrollTop = maskPreviewScrollRef.current.scrollTop;
+    }
+    maskScrollSyncRef.current = false;
+  }, []);
 
   // ─── S5: Right-click cancel handler (Slice 2: persist to backend) ──
   const persistCancelled = useCallback((newSet) => {
@@ -1095,11 +1120,10 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
         </div>
 
         {isMaskMode ? (
-          /* Mask mode: single scroll container with paired rows */
-          <div className="mask-scroll-container" ref={scrollRef}>
-            {/* Sticky header row */}
-            <div className="mask-header-row">
-              <div className="mask-header-cell">
+          /* Mask mode: panel/header/body layout like text mode */
+          <div className="mask-dual-column">
+            <div className="mask-panel">
+              <div className="mask-panel-header">
                 <span className="mask-col-header-title">OCR 抽取原文</span>
                 <div className="page-nav">
                   <Button variant="ghost" size="sm" disabled={currentPage <= 1} onClick={() => scrollToPage(currentPage - 1)}>←</Button>
@@ -1107,41 +1131,49 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
                   <Button variant="ghost" size="sm" disabled={currentPage >= totalPages} onClick={() => scrollToPage(currentPage + 1)}>→</Button>
                 </div>
               </div>
-              <div className="mask-header-cell">
-                <span className="mask-col-header-title">脱敏预览</span>
+              <div className="mask-panel-body" ref={scrollRef} onScroll={handleMaskLeftScroll}>
+                {pageImages.map((pg) => {
+                  const pgInfo = { ...pg, taskId: task?.taskId };
+                  return (
+                    <div key={pg.pageNumber} className="mask-page-row" data-page={pg.pageNumber} ref={el => { pageRowRefs.current[pg.pageNumber] = el; }}>
+                      <PageCanvas
+                        pageInfo={pgInfo} boxes={boxes} onBoxesChange={setBoxes} containerWidth={containerWidth}
+                        selectedBox={selectedBox} onSelectBox={setSelectedBox}
+                        hoveredBox={hoveredBox} onHoverBox={setHoveredBox}
+                        onRightClickBox={handleRightClickBox}
+                        status={pageStatus[pg.pageNumber]}
+                        imageUrl={imageUrls[pg.pageNumber]}
+                        onLoadSuccess={handlePageLoadSuccess}
+                        onLoadError={handlePageLoadError}
+                        onReloadPage={handleReloadPage}
+                        onRerenderAll={handleRerenderAll}
+                      />
+                    </div>
+                  );
+                })}
               </div>
             </div>
-            {/* Page rows: each row has left canvas + right preview */}
-            {pageImages.map((pg) => {
-              const pgInfo = { ...pg, taskId: task?.taskId };
-              return (
-                <div key={pg.pageNumber} className="mask-page-row" data-page={pg.pageNumber} ref={el => { pageRowRefs.current[pg.pageNumber] = el; }}>
-                  <div className="mask-page-col">
-                    <PageCanvas
-                      pageInfo={pgInfo} boxes={boxes} onBoxesChange={setBoxes} containerWidth={containerWidth}
-                      selectedBox={selectedBox} onSelectBox={setSelectedBox}
-                      hoveredBox={hoveredBox} onHoverBox={setHoveredBox}
-                      onRightClickBox={handleRightClickBox}
-                      status={pageStatus[pg.pageNumber]}
-                      imageUrl={imageUrls[pg.pageNumber]}
-                      onLoadSuccess={handlePageLoadSuccess}
-                      onLoadError={handlePageLoadError}
-                      onReloadPage={handleReloadPage}
-                      onRerenderAll={handleRerenderAll}
-                    />
-                  </div>
-                  <div className="mask-page-col">
-                    <MaskPreview
-                      pageInfo={pgInfo} boxes={boxes} containerWidth={containerWidth}
-                      selectedBox={selectedBox} hoveredBox={hoveredBox}
-                      onRightClickBox={handleRightClickBox}
-                      status={pageStatus[pg.pageNumber]}
-                      imageUrl={imageUrls[pg.pageNumber]}
-                    />
-                  </div>
-                </div>
-              );
-            })}
+            <div className="mask-panel">
+              <div className="mask-panel-header mask-panel-header-left">
+                <span className="mask-col-header-title">脱敏预览</span>
+              </div>
+              <div className="mask-panel-body" ref={maskPreviewScrollRef} onScroll={handleMaskRightScroll}>
+                {pageImages.map((pg) => {
+                  const pgInfo = { ...pg, taskId: task?.taskId };
+                  return (
+                    <div key={pg.pageNumber} className="mask-page-row" data-page={pg.pageNumber}>
+                      <MaskPreview
+                        pageInfo={pgInfo} boxes={boxes} containerWidth={containerWidth}
+                        selectedBox={selectedBox} hoveredBox={hoveredBox}
+                        onRightClickBox={handleRightClickBox}
+                        status={pageStatus[pg.pageNumber]}
+                        imageUrl={imageUrls[pg.pageNumber]}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         ) : (
           /* Star/Placeholder mode: text dual-column */
