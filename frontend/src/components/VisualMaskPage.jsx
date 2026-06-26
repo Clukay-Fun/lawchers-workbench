@@ -773,20 +773,27 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const scrollToPage = useCallback((n) => {
     if (n < 1 || n > pageImages.length) return;
     setCurrentPage(n);
-    // Wait for refs to be available
-    requestAnimationFrame(() => {
-      const container = scrollRef.current;
-      const el = pageRowRefs.current[n];
-      if (!container || !el) return;
-      scrollIgnoreRef.current = true;
-      // Calculate position: element top relative to container's scroll position
-      const elTop = el.offsetTop;
-      container.scrollTo({ top: Math.max(0, elTop - 8), behavior: 'smooth' });
-      if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
-      scrollTimeoutRef.current = setTimeout(() => {
-        scrollIgnoreRef.current = false;
-      }, 800);
-    });
+    scrollIgnoreRef.current = true;
+    maskScrollSyncRef.current = true;
+
+    const scrollPanelToPage = (container) => {
+      if (!container) return;
+      const el = container.querySelector(`[data-page="${n}"]`);
+      if (!el) return;
+      const containerRect = container.getBoundingClientRect();
+      const elRect = el.getBoundingClientRect();
+      const targetTop = container.scrollTop + (elRect.top - containerRect.top) - 8;
+      container.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' });
+    };
+
+    scrollPanelToPage(scrollRef.current);
+    scrollPanelToPage(maskPreviewScrollRef.current);
+
+    if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
+    scrollTimeoutRef.current = setTimeout(() => {
+      scrollIgnoreRef.current = false;
+      maskScrollSyncRef.current = false;
+    }, 900);
   }, [pageImages.length]);
 
   const handleMaskLeftScroll = useCallback(() => {
