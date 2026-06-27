@@ -30,7 +30,7 @@ export function getIsNerEnabled() {
   return isNerEnabled;
 }
 
-const REDACT_TIMEOUT_MS = parseInt(process.env.REDACT_TIMEOUT_MS || '60000', 10);
+const REDACT_TIMEOUT_MS = parseInt(process.env.REDACT_TIMEOUT_MS || '600000', 10);
 
 if (!process.env.REDACT_TIMEOUT_MS) {
   console.warn(`[WARN] 环境变量 REDACT_TIMEOUT_MS 未配置，使用默认值: ${REDACT_TIMEOUT_MS}ms`);
