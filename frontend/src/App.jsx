@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Sidebar from './components/Sidebar';
 import DesensitizePage from './components/DesensitizePage';
 import VisualMaskPage from './components/VisualMaskPage';
@@ -7,6 +7,7 @@ import HistoryPage from './components/HistoryPage';
 import RulesPage from './components/RulesPage';
 import SettingsPage from './components/SettingsPage';
 import DownloadPage from './components/DownloadPage';
+import { getSettings } from './api';
 
 const availableRules = [
   { key: 'PERSON', label: '姓名' },
@@ -46,8 +47,19 @@ export default function App() {
     defaultView: 'redacted',
     preserveFormat: true,
     verifyBeforeExport: true,
+    recognitionQuality: 'standard',
+    uploadMaxMB: 100,
     rulesConfig: defaultRules,
   });
+
+  // Load persisted settings from backend on mount
+  useEffect(() => {
+    getSettings().then((data) => {
+      if (data) {
+        setSettings(prev => ({ ...prev, ...data }));
+      }
+    }).catch(() => {});
+  }, []);
 
   const handleResumeDone = () => setResumeTaskId(null);
 

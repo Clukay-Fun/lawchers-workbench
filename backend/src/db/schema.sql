@@ -101,3 +101,9 @@ CREATE TABLE IF NOT EXISTS "rule" (
     "sample" TEXT,
     "created_at" DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 9. 设置表（key-value 持久化）
+CREATE TABLE IF NOT EXISTS "setting" (
+    "key" TEXT PRIMARY KEY,
+    "value" TEXT NOT NULL
+);

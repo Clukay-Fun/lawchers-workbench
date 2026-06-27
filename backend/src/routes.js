@@ -18,6 +18,7 @@ import { execFile as execFileCb } from 'child_process';
 import { createHash } from 'crypto';
 import { promisify } from 'util';
 import { resolveLegalDesensBin, getRulesPath } from './services/cliResolver.js';
+import { getDPI, getSetting, getAllSettings, setSetting, validateSetting } from './db/settingsRepo.js';
 
 const execFileAsync = promisify(execFileCb);
 
@@ -2014,6 +2015,14 @@ router.post('/tasks', upload.single('file'), async (req, res) => {
       return res.status(400).json({ success: false, message: '仅支持 DOCX、PDF、TXT、MD 文件' });
     }
 
+    // 检查文件大小限制（用户可配置）
+    const maxMB = getSetting('uploadMaxMB', 100);
+    const maxBytes = maxMB * 1024 * 1024;
+    if (req.file.size > maxBytes) {
+      await fs.unlink(tmpPath).catch(() => {});
+      return res.status(413).json({ success: false, message: `文件超过 ${maxMB}MB 限制` });
+    }
+
     // 验证文件签名
     const handle = await fs.open(tmpPath, 'r');
     const signature = Buffer.alloc(4);
@@ -2492,7 +2501,7 @@ router.post('/tasks/:id/analyze', async (req, res) => {
     const renderManifestPath = path.join(workDir, 'render-manifest.json');
     try {
       if (!existsSync(pagesDir)) mkdirSync(pagesDir, { recursive: true });
-      await execFileAsync(bin, ['render-pages', sourcePath, '--dpi', '200', '--out-dir', pagesDir, '--out', renderManifestPath], {
+      await execFileAsync(bin, ['render-pages', sourcePath, '--dpi', String(getDPI()), '--out-dir', pagesDir, '--out', renderManifestPath], {
         timeout: 60000,
       });
       console.log(`[analyze] Pages rendered for task ${taskId}`);
@@ -2912,7 +2921,7 @@ router.get('/tasks/:id/page-image/:pageNum', async (req, res) => {
 
         const { resolveLegalDesensBin } = await import('./services/cliResolver.js');
         const bin = resolveLegalDesensBin();
-        await execFileAsync(bin, ['render-pages', sourcePath, '--dpi', '200', '--out-dir', pagesDir, '--out', manifestPath], {
+        await execFileAsync(bin, ['render-pages', sourcePath, '--dpi', String(getDPI()), '--out-dir', pagesDir, '--out', manifestPath], {
           timeout: 60000,
         });
       });
@@ -2962,7 +2971,7 @@ router.post('/tasks/:id/render-pages', async (req, res) => {
 
       const { resolveLegalDesensBin } = await import('./services/cliResolver.js');
       const bin = resolveLegalDesensBin();
-      await execFileAsync(bin, ['render-pages', sourcePath, '--dpi', '200', '--out-dir', pagesDir, '--out', manifestPath], {
+      await execFileAsync(bin, ['render-pages', sourcePath, '--dpi', String(getDPI()), '--out-dir', pagesDir, '--out', manifestPath], {
         timeout: 60000,
       });
     });
@@ -3426,6 +3435,54 @@ router.post('/batch', upload.array('files', 20), async (req, res) => {
   } catch (error) {
     console.error('Batch Process Error:', error);
     res.status(500).json({ success: false, message: '批量处理失败', error: error.message });
+  }
+});
+
+// #endregion
+
+// #region 设置 API
+
+/**
+ * GET /api/settings - 获取所有设置
+ */
+router.get('/settings', (req, res) => {
+  try {
+    res.json({ success: true, data: getAllSettings() });
+  } catch (error) {
+    console.error('Settings Error:', error);
+    res.status(500).json({ success: false, message: '获取设置失败' });
+  }
+});
+
+/**
+ * PATCH /api/settings - 更新设置
+ */
+router.patch('/settings', async (req, res) => {
+  try {
+    const updates = req.body;
+    if (!updates || typeof updates !== 'object') {
+      return res.status(400).json({ success: false, message: '请求体必须是对象' });
+    }
+
+    const errors = [];
+    for (const [key, value] of Object.entries(updates)) {
+      const err = validateSetting(key, value);
+      if (err) {
+        errors.push(`${key}: ${err}`);
+      }
+    }
+    if (errors.length > 0) {
+      return res.status(400).json({ success: false, message: errors.join('; ') });
+    }
+
+    for (const [key, value] of Object.entries(updates)) {
+      setSetting(key, value);
+    }
+
+    res.json({ success: true, data: getAllSettings() });
+  } catch (error) {
+    console.error('Settings Update Error:', error);
+    res.status(500).json({ success: false, message: '更新设置失败' });
   }
 });
 
