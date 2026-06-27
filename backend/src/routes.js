@@ -83,8 +83,8 @@ const storage = multer.diskStorage({
 });
 
 const upload = multer({
-  storage: storage,
-  limits: { fileSize: 10 * 1024 * 1024 }
+  storage,
+  limits: { fileSize: parseInt(process.env.UPLOAD_MAX_MB || '100', 10) * 1024 * 1024 }
 });
 
 // #region 旧版 API 退役门控（默认关闭，设 LEGACY_API_ENABLED=true 可重新启用）
@@ -875,7 +875,7 @@ router.post('/materials/:id/prepare', async (req, res) => {
     const legalDesensBin = resolveLegalDesensBin();
 
     await execFileAsync(legalDesensBin, args, {
-      timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
+      timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '600000', 10),
     });
 
     const manifestRaw = await fs.readFile(tempManifest, 'utf-8');
@@ -1380,7 +1380,7 @@ router.post('/materials/:id/export', async (req, res) => {
 
     try {
       await execFileAsync(legalDesensBin, args, {
-        timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
+        timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '600000', 10),
       });
     } catch (cliErr) {
       await fs.unlink(exportPath).catch(() => {});
@@ -2086,7 +2086,7 @@ router.post('/tasks', upload.single('file'), async (req, res) => {
     }
 
     await execFileAsync(legalDesensBin, args, {
-      timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
+      timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '600000', 10),
     });
 
     const manifest = applyWhitelistToManifest(JSON.parse(await fs.readFile(tempManifest, 'utf-8')));
@@ -2211,7 +2211,7 @@ router.post('/tasks/:id/export', async (req, res) => {
 
     try {
       await execFileAsync(legalDesensBin, args, {
-        timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
+        timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '600000', 10),
       });
     } catch (cliErr) {
       await fs.unlink(exportPath).catch(() => {});
@@ -2300,7 +2300,7 @@ router.post('/tasks/:id/analyze', async (req, res) => {
 
     try {
       await execFileAsync(bin, analyzeArgs, {
-        timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
+        timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '600000', 10),
       });
     } catch (cliErr) {
       return res.status(500).json({
@@ -2809,7 +2809,7 @@ router.post('/tasks/:id/mask-export', async (req, res) => {
 
     try {
       await execFileAsync(bin, args, {
-        timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
+        timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '600000', 10),
       });
     } catch (cliErr) {
       await fs.unlink(exportPath).catch(() => {});
@@ -3024,22 +3024,27 @@ router.post('/tasks/:id/text-export', async (req, res) => {
       '--format', format,
     );
 
-    // For PDF sources, we need OCR text
+    // For PDF sources, we need OCR text — reuse existing if available
     const sourceExt = path.extname(sourcePath).toLowerCase();
     if (sourceExt === '.pdf') {
-      // Run analyze to get OCR text (with rules for entity type tagging)
-      const analyzeOut = path.join(workDir, 'analyze.json');
-      try {
-        const analyzeArgs = ['analyze', sourcePath, '--out', analyzeOut];
-        if (mergedRulesPath) analyzeArgs.push('--rules', mergedRulesPath);
-        await execFileAsync(bin, analyzeArgs, { timeout: 120000 });
-        const analyzeData = JSON.parse(await fs.readFile(analyzeOut, 'utf-8'));
-        const ocrText = (analyzeData.ocrBoxes || []).map(b => b.text).join('\n');
-        const ocrPath = path.join(workDir, 'ocr-text.txt');
-        await fs.writeFile(ocrPath, ocrText, 'utf-8');
-        args.push('--ocr-text', ocrPath);
-      } catch (analyzeErr) {
-        return res.status(500).json({ success: false, message: 'PDF OCR 分析失败', error: analyzeErr.message });
+      const existingOcrPath = path.join(workDir, 'ocr-text.txt');
+      if (existsSync(existingOcrPath)) {
+        // Reuse existing OCR text from previous analyze
+        args.push('--ocr-text', existingOcrPath);
+      } else {
+        // Run analyze to get OCR text
+        const analyzeOut = path.join(workDir, 'analyze.json');
+        try {
+          const analyzeArgs = ['analyze', sourcePath, '--out', analyzeOut];
+          if (mergedRulesPath) analyzeArgs.push('--rules', mergedRulesPath);
+          await execFileAsync(bin, analyzeArgs, { timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '600000', 10) });
+          const analyzeData = JSON.parse(await fs.readFile(analyzeOut, 'utf-8'));
+          const ocrText = (analyzeData.ocrBoxes || []).map(b => b.text).join('\n');
+          await fs.writeFile(existingOcrPath, ocrText, 'utf-8');
+          args.push('--ocr-text', existingOcrPath);
+        } catch (analyzeErr) {
+          return res.status(500).json({ success: false, message: 'PDF OCR 分析失败', error: analyzeErr.message });
+        }
       }
     }
 
@@ -3069,7 +3074,7 @@ router.post('/tasks/:id/text-export', async (req, res) => {
 
     try {
       await execFileAsync(bin, args, {
-        timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '120000', 10),
+        timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '600000', 10),
       });
     } catch (cliErr) {
       return res.status(500).json({ success: false, message: '文本替换导出失败', error: cliErr.message });
