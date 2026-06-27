@@ -2776,6 +2776,12 @@ router.post('/tasks/:id/mask-export', async (req, res) => {
     const auditPath = path.join(workDir, 'mask-audit.json');
 
     const docKind = task.document_kind || 'pdf-text';
+    // P0: pdf-text masking uses rasterization (pdf-scan) to avoid text-layer
+    // residual verification failures. Text-layer redaction has char-boundary
+    // alignment issues that cause fail-closed. Rasterization = visual black
+    // blocks on rendered page images, which is what mask mode needs.
+    const engineDocKind = docKind === 'pdf-text' ? 'pdf-scan' : docKind;
+
     // Add merged rules file (system + custom + blacklist)
     let mergedRulesPath = null;
     const args = [];
@@ -2790,7 +2796,7 @@ router.post('/tasks/:id/mask-export', async (req, res) => {
       'mask-export', sourcePath,
       '--boxes', boxesPath,
       '--out', exportPath,
-      '--document-kind', docKind,
+      '--document-kind', engineDocKind,
       '--audit', auditPath,
     );
 
