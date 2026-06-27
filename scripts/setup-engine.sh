@@ -21,9 +21,16 @@ source "$VENV_DIR/bin/activate"
 
 echo ""
 echo "=== Installing legal-desens engine (pdf,ocr extras) ==="
-echo "This may take several minutes on first run..."
-pip install --upgrade pip -q
-pip install -r "$REQUIREMENTS" -q
+WHEELS_DIR="$REPO_ROOT/vendor/wheels"
+if [ -d "$WHEELS_DIR" ] && ls "$WHEELS_DIR"/legal_desens-*.whl &>/dev/null; then
+  echo "检测到 vendor/wheels —— 离线安装（无需联网）..."
+  pip install --no-index --find-links "$WHEELS_DIR" pip setuptools wheel -q || true
+  pip install --no-index --find-links "$WHEELS_DIR" "legal-desens[pdf,ocr]" -q
+else
+  echo "This may take several minutes on first run..."
+  pip install --upgrade pip -q
+  pip install -r "$REQUIREMENTS" -q
+fi
 
 echo ""
 echo "=== legal-desens self-check ==="
