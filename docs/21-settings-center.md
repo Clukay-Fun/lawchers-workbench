@@ -16,24 +16,25 @@
 - verify:PATCH 写入后 GET 读回一致;重启后仍在。
 
 ## P2 · 接上调用点（改了真生效）
-逐项把硬编码/env 换成 `getSetting`:
-1. **上传大小上限**(`uploadMaxMB`,默认 100):multer 设一个高天花板(如 500MB),在上传 handler 里按 `uploadMaxMB` 校验真实大小,超出返回 **413 + 明确文案**。(multer 模块级 limit 改不了 per-request,故 handler 校验。)
-2. **OCR DPI / 识别精度**(`ocrDpi`,默认 200,可选 150/200/300):render-pages 3 处 `--dpi` 读 `ocrDpi`。**改 DPI 后已缓存 render-manifest 失效 → 需重渲染**(缓存按 dpi 分键或改值时清 pages 重渲)。
-3. **处理超时**(`processTimeoutMs`,默认 600000):各 execFile timeout 读它。
-4. **NER 模式**(`nerMode`: auto/regex-only,默认 auto):regex-only 时引擎传 `--regex-only`、analyze 跳过 ner-spans。
-5. **掩码字符 / 保留格式 / 导出前校验**:从前端 props 改为落库持久化。
+只接这 5 项用户友好设置,逐项把硬编码/env 换成 `getSetting`:
+1. **识别质量**(`recognitionQuality`: fast/standard/fine → DPI 150/200/300,默认 standard):render-pages 3 处 `--dpi` 读它。**UI 不露 "DPI" 字样**。改质量后已缓存 render-manifest 失效 → 需重渲染(缓存按 dpi 分键或改值时清 pages 重渲)。
+2. **单个文件大小上限**(`uploadMaxMB`,默认 100):multer 设高天花板(如 500MB),上传 handler 按 `uploadMaxMB` 校验真实大小,超出返回 **413 + 明确文案**。(multer 模块级 limit 改不了 per-request,故 handler 校验。)
+3. **脱敏符号**(`maskChar`,默认 ﹡):从前端 props 改为落库。
+4. **保留原文档格式**(`preserveFormat`,开关):落库。
+5. **导出前残留检查**(`verifyBeforeExport`,开关,默认开):落库。
 
-每项 verify:改设置 → 重新处理 → 行为按设置变(贴证据:大文件超上限被拒、DPI 改 150 渲染更快/字更糊、regex-only 时无 NER 命中)。
+每项 verify:改设置 → 重新处理 → 行为按设置变(贴证据:识别质量改"快速"渲染更快/字更糊、超上限文件被拒 413、脱敏符号换成 × 后预览变)。
 
-## P3 · 设置页 UI（可编辑、分组）
-分组:**上传**(大小上限) / **识别**(DPI、NER 模式) / **性能**(处理超时) / **脱敏**(掩码字符、保留格式、导出前校验)。引擎状态那块保持只读诊断不动。
-- 控件:数字输入 / 下拉 / 开关;改动即 `PATCH /api/settings`;给"已保存"反馈。
-- verify:每个控件改值→落库→相应行为变;非法值(如上限 0、DPI 非档位)被拒。
+## P3 · 设置页 UI（可编辑、分组,大白话）
+分组:**识别**(识别质量:快速/标准/精细) / **上传**(单个文件大小上限 MB) / **脱敏**(脱敏符号、保留原文档格式、导出前残留检查)。引擎状态那块保持只读诊断不动。
+- 控件:下拉 / 数字 / 开关;改动即 `PATCH /api/settings`;给"已保存"反馈。
+- **文案大白话,不出现 DPI / NER / 正则 / 超时 等技术词。**
+- verify:每个控件改值→落库→相应行为变;非法值(上限 0、质量非档位)被拒。
 
 ---
 
-## 不做（留 env / 高级,不进 UI）
-端口、引擎 pin/commit、model_dir、binPath(只读诊断已显示)、脱敏 level(引擎语义,风险大)、OCR 置信度阈值(高级)、OMP 线程数(高级,可后续作"性能"补充项)。
+## 不做（太专业,留 env / 高级,不进 UI）
+处理超时(秒)、NER 模式/强制仅正则、OMP 线程数、OCR 置信度阈值、端口、引擎 pin/commit、model_dir、脱敏 level。这些律师看不懂,保持 env 配置即可。
 
 ## 执行约束
 - 先 P1 持久化层,再 P2 接线,再 P3 UI。读取一律"库 → env → 默认"回退,不破坏现有行为。
