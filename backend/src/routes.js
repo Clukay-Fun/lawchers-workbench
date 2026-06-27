@@ -85,7 +85,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: parseInt(process.env.UPLOAD_MAX_MB || '100', 10) * 1024 * 1024 }
+  limits: { fileSize: 500 * 1024 * 1024 } // 500MB ceiling; per-request check in handler
 });
 
 // #region 旧版 API 退役门控（默认关闭，设 LEGACY_API_ENABLED=true 可重新启用）
@@ -2502,7 +2502,7 @@ router.post('/tasks/:id/analyze', async (req, res) => {
     try {
       if (!existsSync(pagesDir)) mkdirSync(pagesDir, { recursive: true });
       await execFileAsync(bin, ['render-pages', sourcePath, '--dpi', String(getDPI()), '--out-dir', pagesDir, '--out', renderManifestPath], {
-        timeout: 60000,
+        timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '600000', 10),
       });
       console.log(`[analyze] Pages rendered for task ${taskId}`);
     } catch (renderErr) {
@@ -2922,7 +2922,7 @@ router.get('/tasks/:id/page-image/:pageNum', async (req, res) => {
         const { resolveLegalDesensBin } = await import('./services/cliResolver.js');
         const bin = resolveLegalDesensBin();
         await execFileAsync(bin, ['render-pages', sourcePath, '--dpi', String(getDPI()), '--out-dir', pagesDir, '--out', manifestPath], {
-          timeout: 60000,
+          timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '600000', 10),
         });
       });
 
@@ -2972,7 +2972,7 @@ router.post('/tasks/:id/render-pages', async (req, res) => {
       const { resolveLegalDesensBin } = await import('./services/cliResolver.js');
       const bin = resolveLegalDesensBin();
       await execFileAsync(bin, ['render-pages', sourcePath, '--dpi', String(getDPI()), '--out-dir', pagesDir, '--out', manifestPath], {
-        timeout: 60000,
+        timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '600000', 10),
       });
     });
 
@@ -3477,6 +3477,32 @@ router.patch('/settings', async (req, res) => {
 
     for (const [key, value] of Object.entries(updates)) {
       setSetting(key, value);
+    }
+
+    // If recognitionQuality changed, clear all render caches
+    // (pages were rendered at old DPI, need re-render at new DPI)
+    if ('recognitionQuality' in updates) {
+      try {
+        const tasksDir = path.join(uploadsDir, 'tasks');
+        if (existsSync(tasksDir)) {
+          const entries = await fs.readdir(tasksDir, { withFileTypes: true });
+          for (const entry of entries) {
+            if (entry.isDirectory() && entry.name.startsWith('.work_')) {
+              const pagesDir = path.join(tasksDir, entry.name, 'pages');
+              const manifestPath = path.join(tasksDir, entry.name, 'render-manifest.json');
+              if (existsSync(pagesDir)) {
+                await fs.rm(pagesDir, { recursive: true, force: true });
+              }
+              if (existsSync(manifestPath)) {
+                await fs.unlink(manifestPath);
+              }
+            }
+          }
+        }
+        console.log('[SETTINGS] Cleared render caches after recognitionQuality change');
+      } catch (cacheErr) {
+        console.warn('[WARN] Failed to clear render caches:', cacheErr.message);
+      }
     }
 
     res.json({ success: true, data: getAllSettings() });
