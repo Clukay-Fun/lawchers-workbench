@@ -14,6 +14,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import routes from './routes.js';
+import { getSetting } from './db/settingsRepo.js';
 
 // #region 初始化与全局配置
 
@@ -66,7 +67,7 @@ app.get('/health', (req, res) => {
 app.use((err, req, res, next) => {
   // Multer file size limit
   if (err.code === 'LIMIT_FILE_SIZE') {
-    const maxMB = parseInt(process.env.UPLOAD_MAX_MB || '100', 10);
+    const maxMB = getSetting('uploadMaxMB', 100);
     return res.status(413).json({
       success: false,
       message: `文件超过 ${maxMB}MB 限制`,
