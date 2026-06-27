@@ -31,8 +31,8 @@ if (!fs.existsSync(uploadDir)) {
 
 // 全局中间件
 app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // API 路由挂载
 app.use('/api', routes);
@@ -64,6 +64,21 @@ app.get('/health', (req, res) => {
 
 // 全局错误捕获中间件
 app.use((err, req, res, next) => {
+  // Multer file size limit
+  if (err.code === 'LIMIT_FILE_SIZE') {
+    const maxMB = parseInt(process.env.UPLOAD_MAX_MB || '100', 10);
+    return res.status(413).json({
+      success: false,
+      message: `文件超过 ${maxMB}MB 限制`,
+    });
+  }
+  // Multer other errors
+  if (err.code && err.code.startsWith('LIMIT_')) {
+    return res.status(413).json({
+      success: false,
+      message: `上传限制: ${err.message}`,
+    });
+  }
   console.error('Server Error:', err);
   res.status(500).json({
     success: false,
