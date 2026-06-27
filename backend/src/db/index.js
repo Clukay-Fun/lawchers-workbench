@@ -186,6 +186,20 @@ try {
       console.log('[MIGRATE] 已创建 rule 表');
     }
 
+    // 10. 设置表（key-value 持久化）
+    const settingTableCheck = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='setting';"
+    ).get();
+    if (!settingTableCheck) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS "setting" (
+          "key" TEXT PRIMARY KEY,
+          "value" TEXT NOT NULL
+        )
+      `);
+      console.log('[MIGRATE] 已创建 setting 表');
+    }
+
     // 9. 为 task 表添加工具模式所需的新列
     try {
       const taskCols = db.prepare(`PRAGMA table_info("task")`).all().map(c => c.name);

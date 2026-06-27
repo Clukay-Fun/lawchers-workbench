@@ -127,6 +127,29 @@ export async function deleteRule(id) {
   return response.json();
 }
 
+/** 获取所有设置 */
+export async function getSettings() {
+  const response = await fetch(`${API_BASE}/settings`, { method: 'GET' });
+  if (!response.ok) throw new Error('获取设置失败');
+  const result = await response.json();
+  if (!result.success) throw new Error(result.message || '获取设置异常');
+  return result.data;
+}
+
+/** 更新设置 */
+export async function updateSettings(updates) {
+  const response = await fetch(`${API_BASE}/settings`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.message || '更新设置失败');
+  }
+  return response.json();
+}
+
 /** 测试正则样例 */
 export async function testRegex(regex, sample) {
   const response = await fetch(`${API_BASE}/rules/test`, {
