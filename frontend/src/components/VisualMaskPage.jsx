@@ -3,6 +3,7 @@ import { analyzeTask, updateTaskBoxes, maskExportTask, textExportTask, getTaskSe
 import { Button } from '@/components/ui/button';
 import { normalizedToCSS, computeDisplaySize, createNormalizedBox } from '../services/coords';
 import { findOcrSpansForBox } from '../services/ocrBoxLinking';
+import { multiDiff, mapEntities } from '../services/diff';
 
 // ─── Constants ───────────────────────────────────────────────
 
@@ -1040,40 +1041,11 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
       return;
     }
 
-    // Longest common prefix
-    const minLen = Math.min(prevText.length, nextText.length);
-    let prefixLen = 0;
-    while (prefixLen < minLen && prevText[prefixLen] === nextText[prefixLen]) prefixLen++;
+    // Multi-segment diff (S1): LCS-based extract changes → map entities
+    const changes = multiDiff(prevText, nextText);
 
-    // Longest common suffix (after prefix)
-    const maxSuffix = Math.min(prevText.length - prefixLen, nextText.length - prefixLen);
-    let suffixLen = 0;
-    while (suffixLen < maxSuffix &&
-           prevText[prevText.length - 1 - suffixLen] === nextText[nextText.length - 1 - suffixLen]) {
-      suffixLen++;
-    }
-
-    const oldChangeStart = prefixLen;
-    const oldChangeEnd = prevText.length - suffixLen;
-    const newChangeEnd = nextText.length - suffixLen;
-    const delta = (newChangeEnd - prefixLen) - (oldChangeEnd - oldChangeStart);
-
-    const keptEntities = [];
-    const toCancel = [];
-
-    for (const entity of prevEntities) {
-      const { start, end, id } = entity;
-      if (end <= oldChangeStart) {
-        // Entity entirely before change region — keep as-is
-        keptEntities.push(entity);
-      } else if (start >= oldChangeEnd) {
-        // Entity entirely after change region — shift offsets
-        keptEntities.push({ ...entity, start: start + delta, end: end + delta });
-      } else {
-        // Entity overlaps change region — cancel
-        toCancel.push(id);
-      }
-    }
+    const { kept: keptEntities, cancelled: toCancel } = mapEntities(prevEntities, changes);
+    const cancelIds = toCancel.map(e => e.id);
 
     setTextEntities(keptEntities);
     textEntitiesRef.current = keptEntities;
@@ -1081,14 +1053,14 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     // affect PDF/scan visual positions, so kept entities keep their existing boxes.
     setBoxes(prev => prev.filter(b => {
       const linkedIds = b.entityIds?.length ? b.entityIds : [b.entityId].filter(Boolean);
-      return !linkedIds.some(id => toCancel.includes(id));
+      return !linkedIds.some(id => cancelIds.includes(id));
     }));
 
     // Update cancelled set
-    for (const id of toCancel) cancelledRef.current.add(id);
+    for (const id of cancelIds) cancelledRef.current.add(id);
     if (task?.taskId) updateCancelledEntities(task.taskId, [...cancelledRef.current]).catch(() => {});
-    showToast(toCancel.length > 0
-      ? `原文已更新，${toCancel.length} 个实体因位置变动已取消`
+    showToast(cancelIds.length > 0
+      ? `原文已更新，${cancelIds.length} 个实体因位置变动已取消`
       : '原文已更新，实体位置已自动调整');
   }, [showToast, task]);
 
