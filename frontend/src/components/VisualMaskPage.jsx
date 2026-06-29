@@ -980,12 +980,12 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
                   const globalStart = lineStart + charStart;
                   const globalEnd = lineStart + charEnd;
 
-                  const existing = textEntitiesRef.current.find(
-                    e => e.start === globalStart && e.end === globalEnd && e.original === coveredText
+                  const overlapping = textEntitiesRef.current.find(
+                    e => globalStart < e.end && globalEnd > e.start
                   );
 
-                  if (existing) {
-                    matchedEntities.push(existing);
+                  if (overlapping) {
+                    matchedEntities.push(overlapping);
                   } else {
                     matchedEntities.push({
                       id: `bbox_${++entityIdCounterRef.current}`,
@@ -1106,7 +1106,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   useEffect(() => {
     if (!task || !hasLoadedRef.current) return;
     const timer = setTimeout(() => {
-      updateEditedText(task.taskId, { text: ocrText, textEntities }).catch(() => {});
+      updateEditedText(task.taskId, { text: ocrText, textEntities }).catch(err => console.warn('[PERSIST] edited-text save failed:', err?.message));
     }, 1500);
     return () => clearTimeout(timer);
   }, [task, ocrText, textEntities]);
