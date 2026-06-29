@@ -2423,7 +2423,8 @@ router.post('/tasks/:id/analyze', async (req, res) => {
     let entitySeq = 0;
     for (const ent of allEntities) {
       if (ent.start >= lastEnd) {
-        // Add stable immutable id for cross-mode linking (position-independent)
+        // Session-stable id for cross-mode linking (position-independent within a session).
+        // NOT stable across re-analysis — entity order may change with different rules/NER.
         ent.id = `ent_${entitySeq++}`;
         textEntities.push(ent);
         lastEnd = ent.end;
@@ -2582,6 +2583,20 @@ router.get('/tasks/:id/session', async (req, res) => {
       return res.status(404).json({ success: false, message: '分析数据不存在，请重新上传' });
     }
 
+    // Check for edited text (persisted user edits override original session)
+    const editedPath = path.join(workDir, 'edited-text.json');
+    if (existsSync(editedPath)) {
+      try {
+        const edited = JSON.parse(await fs.readFile(editedPath, 'utf-8'));
+        if (edited.text) {
+          sessionData.ocrText = edited.text;
+          sessionData.textEntities = edited.textEntities || [];
+        }
+      } catch (e) {
+        console.warn('[WARN] Failed to load edited-text.json:', e.message);
+      }
+    }
+
     // Read render manifest (read-only, never re-render here)
     const manifestPath = path.join(workDir, 'render-manifest.json');
     let manifest = {};
@@ -2738,6 +2753,37 @@ router.patch('/tasks/:id/cancelled-entities', async (req, res) => {
   } catch (error) {
     console.error('Cancelled Entities Error:', error);
     res.status(500).json({ success: false, message: '更新取消列表失败', error: error.message });
+  }
+});
+
+/**
+ * PATCH /api/tasks/:id/edited-text - 保存编辑后的工作文本与实体位置
+ * Body: { text: string, textEntities: array }
+ */
+router.patch('/tasks/:id/edited-text', async (req, res) => {
+  try {
+    const taskId = parseInt(req.params.id, 10);
+    const task = getTaskById(taskId);
+    if (!task) return res.status(404).json({ success: false, message: '任务不存在' });
+
+    const { text, textEntities } = req.body;
+    if (typeof text !== 'string') {
+      return res.status(400).json({ success: false, message: '缺少 text' });
+    }
+    if (!Array.isArray(textEntities)) {
+      return res.status(400).json({ success: false, message: '缺少 textEntities' });
+    }
+
+    const workDir = task.work_dir || path.join(uploadsDir, 'tasks', `.work_${taskId}`);
+    if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
+
+    const editedPath = path.join(workDir, 'edited-text.json');
+    await fs.writeFile(editedPath, JSON.stringify({ text, textEntities }, null, 2), 'utf-8');
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Save edited text error:', error);
+    res.status(500).json({ success: false, message: '保存编辑文本失败', error: error.message });
   }
 });
 
@@ -2998,7 +3044,7 @@ router.post('/tasks/:id/text-export', async (req, res) => {
       return res.status(409).json({ success: false, message: '源文件已丢失' });
     }
 
-    const { entities, mode, format } = req.body;
+    const { entities, mode, format, text } = req.body;
     if (!entities || !Array.isArray(entities)) {
       return res.status(400).json({ success: false, message: '缺少 entities' });
     }
@@ -3040,13 +3086,34 @@ router.post('/tasks/:id/text-export', async (req, res) => {
       '--format', format,
     );
 
-    // For PDF sources, we need OCR text — reuse existing if available
+    // Use edited text from frontend (if provided), then fall back to persisted edited text,
+    // then to original OCR text for PDF sources
     const sourceExt = path.extname(sourcePath).toLowerCase();
-    if (sourceExt === '.pdf') {
+    let ocrTextSource = null;
+    if (text) {
+      // Frontend sent the current edited text — use it directly
+      ocrTextSource = path.join(workDir, 'export-ocr-text.txt');
+      await fs.writeFile(ocrTextSource, text, 'utf-8');
+    } else {
+      // Fall back to persisted edited text
+      const editedPath = path.join(workDir, 'edited-text.json');
+      if (existsSync(editedPath)) {
+        try {
+          const edited = JSON.parse(await fs.readFile(editedPath, 'utf-8'));
+          if (edited.text) {
+            ocrTextSource = path.join(workDir, 'export-ocr-text.txt');
+            await fs.writeFile(ocrTextSource, edited.text, 'utf-8');
+          }
+        } catch (e) {
+          console.warn('[WARN] Failed to load edited text for export:', e.message);
+        }
+      }
+    }
+    // If no edited text and source is PDF, use original OCR text
+    if (!ocrTextSource && sourceExt === '.pdf') {
       const existingOcrPath = path.join(workDir, 'ocr-text.txt');
       if (existsSync(existingOcrPath)) {
-        // Reuse existing OCR text from previous analyze
-        args.push('--ocr-text', existingOcrPath);
+        ocrTextSource = existingOcrPath;
       } else {
         // Run analyze to get OCR text
         const analyzeOut = path.join(workDir, 'analyze.json');
@@ -3055,14 +3122,15 @@ router.post('/tasks/:id/text-export', async (req, res) => {
           if (mergedRulesPath) analyzeArgs.push('--rules', mergedRulesPath);
           await execFileAsync(bin, analyzeArgs, { timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '600000', 10) });
           const analyzeData = JSON.parse(await fs.readFile(analyzeOut, 'utf-8'));
-          const ocrText = (analyzeData.ocrBoxes || []).map(b => b.text).join('\n');
-          await fs.writeFile(existingOcrPath, ocrText, 'utf-8');
-          args.push('--ocr-text', existingOcrPath);
+          const ocrTxt = (analyzeData.ocrBoxes || []).map(b => b.text).join('\n');
+          await fs.writeFile(existingOcrPath, ocrTxt, 'utf-8');
+          ocrTextSource = existingOcrPath;
         } catch (analyzeErr) {
           return res.status(500).json({ success: false, message: 'PDF OCR 分析失败', error: analyzeErr.message });
         }
       }
     }
+    if (ocrTextSource) args.push('--ocr-text', ocrTextSource);
 
     // Add denylist (forced redaction words)
     try {

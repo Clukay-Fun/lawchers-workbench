@@ -245,17 +245,29 @@ export async function maskExportTask(taskId, boxes) {
 }
 
 /** 文本替换导出（星号/占位） */
-export async function textExportTask(taskId, entities, mode, format) {
+export async function textExportTask(taskId, entities, mode, format, text) {
   const response = await fetch(`${API_BASE}/tasks/${taskId}/text-export`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ entities, mode, format }),
+    body: JSON.stringify({ entities, mode, format, text }),
   });
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
     throw new Error(err.message || '文本替换导出失败');
   }
   return response;
+}
+
+/** 保存编辑后的工作文本与实体位置 */
+export async function updateEditedText(taskId, data) {
+  const response = await fetch(`${API_BASE}/tasks/${taskId}/edited-text`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  const j = await response.json();
+  if (!j.success) throw new Error(j.message || '保存编辑文本失败');
+  return j;
 }
 
 /** 批量上传文件 */

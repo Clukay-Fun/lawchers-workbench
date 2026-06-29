@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { analyzeTask, updateTaskBoxes, maskExportTask, textExportTask, getTaskSession, updateCancelledEntities, getHistory, deleteHistory, renderTasksPages } from '../api';
+import { analyzeTask, updateTaskBoxes, maskExportTask, textExportTask, getTaskSession, updateCancelledEntities, updateEditedText, getHistory, deleteHistory, renderTasksPages } from '../api';
 import { Button } from '@/components/ui/button';
 import { normalizedToCSS, computeDisplaySize, createNormalizedBox } from '../services/coords';
 
@@ -669,8 +669,11 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
       setTextEntities(restoredEntities);
       textEntitiesRef.current = restoredEntities;
       // Initialize manual entity counter past existing manual IDs
-      const maxManual = restoredEntities.reduce((max, e) => {
-        const m = (e.id || '').match(/^manual_(\d+)$/);
+      // Must scan both active AND cancelled entities to avoid ID reuse
+      const cancelledEntities = session.cancelledEntities || [];
+      const allKnownIds = [...restoredEntities.map(e => e.id), ...cancelledEntities];
+      const maxManual = allKnownIds.reduce((max, id) => {
+        const m = (id || '').match(/^manual_(\d+)$/);
         return m ? Math.max(max, parseInt(m[1], 10)) : max;
       }, 0);
       entityIdCounterRef.current = maxManual;
@@ -953,22 +956,9 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
 
     setTextEntities(keptEntities);
     textEntitiesRef.current = keptEntities;
-    // Remove boxes for cancelled entities and rebuild boxes for shifted entities
-    setBoxes(prev => {
-      let updated = prev.filter(b => !b.entityId || !toCancel.includes(b.entityId));
-      // Rebuild boxes for shifted entities (their positions changed)
-      const shiftedIds = new Set(keptEntities.filter(e => e.start !== prevEntities.find(p => p.id === e.id)?.start).map(e => e.id));
-      if (shiftedIds.size > 0) {
-        updated = updated.filter(b => !shiftedIds.has(b.entityId));
-        for (const entity of keptEntities) {
-          if (shiftedIds.has(entity.id)) {
-            const box = createBoxForTextEntity(entity);
-            if (box) updated.push(box);
-          }
-        }
-      }
-      return updated;
-    });
+    // Only remove boxes for cancelled entities — text offset changes do not
+    // affect PDF/scan visual positions, so kept entities keep their existing boxes.
+    setBoxes(prev => prev.filter(b => !b.entityId || !toCancel.includes(b.entityId)));
 
     // Update cancelled set
     for (const id of toCancel) cancelledRef.current.add(id);
@@ -976,7 +966,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     showToast(toCancel.length > 0
       ? `原文已更新，${toCancel.length} 个实体因位置变动已取消`
       : '原文已更新，实体位置已自动调整');
-  }, [showToast, task, createBoxForTextEntity]);
+  }, [showToast, task]);
 
   // Persist boxes on change (debounced) — allow empty array to clear
   useEffect(() => {
@@ -994,6 +984,15 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   // Keep refs in sync with state for handleTextChange
   useEffect(() => { ocrTextRef.current = ocrText; }, [ocrText]);
   useEffect(() => { textEntitiesRef.current = textEntities; }, [textEntities]);
+
+  // Debounced save of edited text + entities (P0: persist edits across refresh)
+  useEffect(() => {
+    if (!task || !hasLoadedRef.current) return;
+    const timer = setTimeout(() => {
+      updateEditedText(task.taskId, { text: ocrText, textEntities }).catch(() => {});
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [task, ocrText, textEntities]);
 
   // ─── Upload + Analyze ────────────────────────────────────────
 
@@ -1095,7 +1094,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
           start: e.start,
           end: e.end,
         }));
-        const response = await textExportTask(task.taskId, payloadEntities, mode, exportFormat);
+        const response = await textExportTask(task.taskId, payloadEntities, mode, exportFormat, ocrText);
         const exportExt = exportFormat === 'pdf' ? 'txt' : exportFormat;
         downloadBlob(await response.blob(), `${baseName}_脱敏.${exportExt}`);
       }
