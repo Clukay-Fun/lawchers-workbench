@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { normalizedToCSS, computeDisplaySize, createNormalizedBox } from '../services/coords';
 import { findOcrSpansForBox } from '../services/ocrBoxLinking';
 import { multiDiff, mapEntities, detectAmbiguous, projectEntities } from '../services/diff';
+import { choosePendingReselect } from '../services/reselection';
 
 // ─── Constants ───────────────────────────────────────────────
 
@@ -333,7 +334,7 @@ function MaskPreview({ pageInfo, boxes, containerWidth, selectedBox, hoveredBox,
 
 // ─── Text Dual-Column (P9-3: sync scroll + hover highlight) ─
 
-function TextDualColumn({ ocrText, entities, mode, onRightClickEntity, onAddManualEntity, onTextChange, pendingReselect }) {
+function TextDualColumn({ ocrText, entities, mode, onRightClickEntity, onAddManualEntity, onTextChange, pendingReselect, selectedPendingId, onSelectPending }) {
   const [hoveredEntity, setHoveredEntity] = useState(null);
   const [editing, setEditing] = useState(false);
   const [draftText, setDraftText] = useState(ocrText || '');
@@ -443,9 +444,14 @@ function TextDualColumn({ ocrText, entities, mode, onRightClickEntity, onAddManu
     const start = getSelectionOffset(range.startContainer, range.startOffset);
     const end = getSelectionOffset(range.endContainer, range.endOffset);
     if (start === null || end === null) return;
-    const s = Math.min(start, end);
-    const e = Math.max(start, end);
-    const original = ocrText.substring(s, e).trim();
+    let s = Math.min(start, end);
+    let e = Math.max(start, end);
+    const selectedText = ocrText.substring(s, e);
+    const leadingWhitespace = selectedText.length - selectedText.trimStart().length;
+    const trailingWhitespace = selectedText.length - selectedText.trimEnd().length;
+    s += leadingWhitespace;
+    e -= trailingWhitespace;
+    const original = ocrText.substring(s, e);
     if (!original) return;
     onAddManualEntity?.({ start: s, end: e, original });
     selection.removeAllRanges();
@@ -459,7 +465,8 @@ function TextDualColumn({ ocrText, entities, mode, onRightClickEntity, onAddManu
   const reselectCount = pendingReselect?.length || 0;
 
   return (
-    <div className="text-dual-column">
+    <>
+      <div className="text-dual-column">
       <div className="text-panel">
         <div className="text-panel-header">
           <span>OCR 抽取原文（{entities.length} 个敏感实体{reselectCount > 0 ? `，${reselectCount} 个待重新选择` : ''}）</span>
@@ -514,19 +521,25 @@ function TextDualColumn({ ocrText, entities, mode, onRightClickEntity, onAddManu
           <div className="text-preview-note">预览仅供参考，以实际导出为准</div>
         </div>
       </div>
+      </div>
       {pendingReselect?.length > 0 && (
         <div className="pending-reselect-bar">
           <span className="pending-reselect-label">待重新选择</span>
           {pendingReselect.map(p => (
-            <span key={p.id} className="pending-reselect-item">
+            <button
+              key={p.id}
+              type="button"
+              className={`pending-reselect-item ${selectedPendingId === p.id ? 'active' : ''}`}
+              onClick={() => onSelectPending?.(selectedPendingId === p.id ? null : p.id)}
+            >
               <span className="pending-reselect-type">{p.entity_type}</span>
               <span className="pending-reselect-text">{p.original}</span>
               <span className="pending-reselect-hint">请滑选原文中对应文字</span>
-            </span>
+            </button>
           ))}
         </div>
       )}
-    </div>
+    </>
   );
 }
 
@@ -563,6 +576,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const [pageImages, setPageImages] = useState([]);
   const cancelledRef = useRef(new Set());
   const [pendingReselect, setPendingReselect] = useState([]);
+  const [selectedPendingId, setSelectedPendingId] = useState(null);
   const pendingReselectRef = useRef([]);
   const entityIdCounterRef = useRef(0);
   const ocrTextRef = useRef('');
@@ -754,6 +768,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
       textEntitiesRef.current = restoredEntities;
       const restoredPending = session.pendingReselect || [];
       setPendingReselect(restoredPending);
+      setSelectedPendingId(null);
       pendingReselectRef.current = restoredPending;
       // Initialize manual entity counter past existing manual IDs
       // Must scan both active AND cancelled entities to avoid ID reuse
@@ -974,17 +989,32 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const handleAddManualEntity = useCallback(({ start, end, original }) => {
     const cleanOriginal = original.trim();
     if (!cleanOriginal) return;
+    const overlapsActiveEntity = textEntitiesRef.current.some(
+      entity => start < entity.end && end > entity.start,
+    );
+    if (overlapsActiveEntity) {
+      showToast('所选文字与现有脱敏项重叠，请先取消原脱敏项');
+      return;
+    }
 
-    // If there are pendingReselect items, resolve the first one
     const pending = pendingReselectRef.current;
-    if (pending.length > 0) {
-      const target = pending[0];
+    const choice = choosePendingReselect(pending, selectedPendingId, cleanOriginal);
+    if (choice.status === 'ambiguous') {
+      showToast('有多个相同待重选项，请先点击待重选项再滑选');
+      return;
+    }
+    if (choice.status === 'resolve') {
+      const target = choice.target;
       const resolved = { ...target, start, end, original: cleanOriginal };
-      setPendingReselect(prev => prev.filter(p => p.id !== target.id));
-      pendingReselectRef.current = pending.filter(p => p.id !== target.id);
+      const remaining = pending.filter(p => p.id !== target.id);
+      setPendingReselect(remaining);
+      pendingReselectRef.current = remaining;
+      setSelectedPendingId(null);
       setTextEntities(prev => {
         if (prev.some(e => e.start === start && e.end === end && e.original === cleanOriginal)) return prev;
-        return [...prev, resolved].sort((a, b) => a.start - b.start);
+        const next = [...prev, resolved].sort((a, b) => a.start - b.start);
+        textEntitiesRef.current = next;
+        return next;
       });
       showToast('已重新选择');
       return;
@@ -1000,12 +1030,14 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     };
     setTextEntities(prev => {
       if (prev.some(e => e.start === start && e.end === end && e.original === cleanOriginal)) return prev;
-      return [...prev, entity].sort((a, b) => a.start - b.start);
+      const next = [...prev, entity].sort((a, b) => a.start - b.start);
+      textEntitiesRef.current = next;
+      return next;
     });
     const box = createBoxForTextEntity(entity);
     if (box) setBoxes(prev => prev.some(b => b.entityId === entity.id) ? prev : [...prev, box]);
     showToast(box ? '已新增脱敏' : '已新增文本脱敏，遮蔽框需手动补充');
-  }, [createBoxForTextEntity, showToast]);
+  }, [createBoxForTextEntity, selectedPendingId, showToast]);
 
   // P1.5/P1.6: OCR 反查；新增、移动、缩放统一走这一条关联链路。
   const syncBoxEntities = useCallback((box) => {
@@ -1100,6 +1132,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     setTextEntities(finalEntities);
     textEntitiesRef.current = finalEntities;
     setPendingReselect(pending);
+    setSelectedPendingId(null);
     pendingReselectRef.current = pending;
     // Only remove boxes for cancelled entities — text offset changes do not
     // affect PDF/scan visual positions, so kept entities keep their existing boxes.
@@ -1154,7 +1187,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     if (!file) return;
     localStorage.removeItem('activeTaskId');
     renderCacheRef.current = 'unknown';
-    setLoading(true); setError(null); setBoxes([]); setTextEntities([]); textEntitiesRef.current = []; setOcrBoxes([]); setOcrText(''); ocrTextRef.current = ''; setPageImages([]); cancelledRef.current = new Set(); setPendingReselect([]); pendingReselectRef.current = []; setUploadPercent(0); setProcessingStep('上传中…');
+    setLoading(true); setError(null); setBoxes([]); setTextEntities([]); textEntitiesRef.current = []; setOcrBoxes([]); setOcrText(''); ocrTextRef.current = ''; setPageImages([]); cancelledRef.current = new Set(); setPendingReselect([]); setSelectedPendingId(null); pendingReselectRef.current = []; setUploadPercent(0); setProcessingStep('上传中…');
     try {
       const taskData = await uploadWithProgress(file, _settings?.rulesConfig, setUploadPercent);
       const normalized = normalizeTask(taskData);
@@ -1428,6 +1461,8 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
               entities={textEntities}
               mode={mode}
               pendingReselect={pendingReselect}
+              selectedPendingId={selectedPendingId}
+              onSelectPending={setSelectedPendingId}
               onRightClickEntity={handleRightClickEntity}
               onAddManualEntity={handleAddManualEntity}
               onTextChange={handleTextChange}

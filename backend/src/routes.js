@@ -2775,6 +2775,10 @@ router.patch('/tasks/:id/edited-text', async (req, res) => {
     if (!Array.isArray(textEntities)) {
       return res.status(400).json({ success: false, message: '缺少 textEntities' });
     }
+    const pending = pendingReselect ?? [];
+    if (!Array.isArray(pending)) {
+      return res.status(400).json({ success: false, message: 'pendingReselect 必须是数组' });
+    }
 
     // Validate entity boundaries, original match, unique IDs, and no overlap
     const seenIds = new Set();
@@ -2796,6 +2800,18 @@ router.patch('/tasks/:id/edited-text', async (req, res) => {
       seenIds.add(ent.id);
       intervals.push({ start: ent.start, end: ent.end });
     }
+    const pendingIds = new Set();
+    for (let i = 0; i < pending.length; i++) {
+      const item = pending[i];
+      if (!item || typeof item.id !== 'string' || !item.id
+        || typeof item.original !== 'string' || typeof item.entity_type !== 'string') {
+        return res.status(400).json({ success: false, message: `待重选实体 ${i} 无效` });
+      }
+      if (seenIds.has(item.id) || pendingIds.has(item.id)) {
+        return res.status(400).json({ success: false, message: `待重选实体 ${i} 的 id 重复` });
+      }
+      pendingIds.add(item.id);
+    }
     // Check for overlaps
     intervals.sort((a, b) => a.start - b.start);
     for (let i = 1; i < intervals.length; i++) {
@@ -2808,7 +2824,7 @@ router.patch('/tasks/:id/edited-text', async (req, res) => {
     if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
 
     const editedPath = path.join(workDir, 'edited-text.json');
-    await fs.writeFile(editedPath, JSON.stringify({ text, textEntities, pendingReselect: pendingReselect || [] }, null, 2), 'utf-8');
+    await fs.writeFile(editedPath, JSON.stringify({ text, textEntities, pendingReselect: pending }, null, 2), 'utf-8');
 
     res.json({ success: true });
   } catch (error) {

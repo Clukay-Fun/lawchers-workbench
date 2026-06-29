@@ -493,9 +493,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .text-entity-highlight.replaced:hover, .text-entity-highlight.replaced.active { background: rgba(59, 130, 246, .35); }
 
 /* P2: Pending reselect bar */
-.pending-reselect-bar { padding: 8px 16px; border-top: 1px solid var(--base03); display: flex; flex-wrap: wrap; gap: 8px; align-items: center; background: #fffbe6; font-size: 12px; }
+.pending-reselect-bar { width: 100%; max-width: 1136px; margin: 8px auto 0; padding: 8px 16px; border: 1px solid rgba(184,134,11,.2); border-radius: var(--radius-control); box-sizing: border-box; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; background: #fffbe6; font-size: 12px; }
 .pending-reselect-label { font-weight: 600; color: #b8860b; }
-.pending-reselect-item { display: inline-flex; align-items: center; gap: 4px; background: rgba(234, 179, 8, .12); padding: 2px 8px; border-radius: 4px; }
+.pending-reselect-item { display: inline-flex; align-items: center; gap: 4px; background: rgba(234, 179, 8, .12); padding: 3px 8px; border: 1px solid transparent; border-radius: 4px; font: inherit; cursor: pointer; }
+.pending-reselect-item:hover, .pending-reselect-item.active { border-color: #b8860b; background: rgba(234, 179, 8, .22); }
 .pending-reselect-type { font-weight: 600; color: #92400e; }
 .pending-reselect-text { color: #78350f; }
 .pending-reselect-hint { color: #b8860b; font-style: italic; }
