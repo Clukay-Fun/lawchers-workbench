@@ -73,6 +73,16 @@ async function patchEditedText(text, textEntities) {
   return j;
 }
 
+async function patchEditedTextRaw(text, textEntities) {
+  const r = await fetch(`${API}/tasks/${taskId}/edited-text`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, textEntities }),
+  });
+  const j = await r.json();
+  return { status: r.status, ...j };
+}
+
 async function patchCancelled(cancelled) {
   const r = await fetch(`${API}/tasks/${taskId}/cancelled-entities`, {
     method: 'PATCH',
@@ -112,22 +122,6 @@ async function deleteTask() {
   if (!j.success) throw new Error(`Delete failed: ${j.message}`);
 }
 
-function allStarChars(str) {
-  // Star mode masks with '*' (and possibly other non-alphanumeric chars).
-  // At minimum, the content at an entity position should not contain
-  // any of the original entity characters that are not digits/dates.
-  return !/[^\x21-\x7e\u4e00-\u9fff]/.test(str);
-}
-
-function countMaskChars(str) {
-  // Count how many chars are masked (non-Chinese, non-alphanumeric masking chars)
-  let masked = 0;
-  for (const ch of str) {
-    if (ch === '*' || ch === '\u2588') masked++;
-  }
-  return masked;
-}
-
 async function main() {
   console.log('=== P1 实体回归测试 ===\n');
 
@@ -164,8 +158,10 @@ async function main() {
   console.log('\n4. 验证 edited-text 持久化与 session restore');
   const ocrText = analyzeData.ocrText || session1.ocrText || '';
   if (ocrText && entities.length > 0) {
+    // Prepend a char so shifting start/end by 1 keeps original matching text.slice
+    const prefixedText = ' ' + ocrText;
     const shiftedEntities = entities.map(e => ({ ...e, start: e.start + 1, end: e.end + 1 }));
-    await patchEditedText(ocrText, shiftedEntities);
+    await patchEditedText(prefixedText, shiftedEntities);
     const session2 = await getSession();
     assert(session2.textEntities[0]?.start === shiftedEntities[0]?.start, `实体 offset 已持久化`);
     // Restore original
@@ -234,23 +230,23 @@ async function main() {
     assert(content2.startsWith(marker), `导出文本以 "${marker}" 开头，证明引擎使用发送的 text`);
     assert(!content2.includes(firstEnt.original), `调整位置后实体原文仍不在导出中`);
 
-    // 7c: 合成纯字母实体(原文本中不存在)，验证通用类型被等长 *
-    const fakeOriginal = 'ABCDEFGHIJ';
-    const fakeText = ocrText + fakeOriginal;
+    // 7c: 合成手机号实体验证 PHONE 类型预期模式
+    const fakePhone = '13812348000';
+    const fakeText = ocrText + fakePhone;
     const fakeEntities = [{
       start: ocrText.length,
-      end: ocrText.length + fakeOriginal.length,
-      original: fakeOriginal,
-      entity_type: 'CUSTOM',
+      end: ocrText.length + fakePhone.length,
+      original: fakePhone,
+      entity_type: 'PHONE',
       id: 'ent_9999',
     }];
     const r3 = await textExport(fakeEntities, 'star', 'txt', fakeText);
     const buf3 = Buffer.from(await r3.arrayBuffer());
     const content3 = buf3.toString('utf-8');
-    assert(r3.status === 200, `合成实体 star 导出 200`);
-    assert(!content3.includes(fakeOriginal), `合成实体原文不存在`);
-    const fakeSlice = content3.slice(fakeEntities[0].start, fakeEntities[0].end);
-    assert(fakeSlice === '*'.repeat(fakeOriginal.length), `合成实体被等长星号替换 (got ${fakeSlice.length}, expected ${fakeOriginal.length})`);
+    assert(r3.status === 200, `合成手机号 star 导出 200`);
+    assert(!content3.includes(fakePhone), `合成手机号原文不存在`);
+    const phoneSlice = content3.slice(fakeEntities[0].start, fakeEntities[0].end);
+    assert(phoneSlice === '138****8000', `手机号被掩码为 138****8000 (got "${phoneSlice}")`);
   } else {
     console.log('  ⚠ 无文本或实体，跳过 text-export 测试');
   }
@@ -266,12 +262,8 @@ async function main() {
     { text: 'hello', textEntities: [{ start: 0, end: 3, id: 'e1' }], desc: '缺少 original 字段' },
   ];
   for (const { text, textEntities: badEntities, desc } of badBodyCases) {
-    try {
-      await patchEditedText(text, badEntities);
-      assert(false, `应拒绝 ${desc}`);
-    } catch (e) {
-      assert(e.message && !e.message.includes('PATCH edited-text failed'), `拒绝 ${desc}: ${e.message.slice(0, 60)}`);
-    }
+    const res = await patchEditedTextRaw(text, badEntities);
+    assert(res.status === 400, `${desc} → 返回 400 (got ${res.status})`);
   }
 
   // ── 9. 验证 text-export placeholder 模式 map.json hash + restore ──
