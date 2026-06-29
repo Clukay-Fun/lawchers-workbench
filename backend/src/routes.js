@@ -2785,7 +2785,7 @@ router.patch('/tasks/:id/edited-text', async (req, res) => {
       if (ent.end > text.length) {
         return res.status(400).json({ success: false, message: `实体 ${i} 的 end 超出文本长度` });
       }
-      if (typeof ent.original === 'string' && text.slice(ent.start, ent.end) !== ent.original) {
+      if (typeof ent.original !== 'string' || text.slice(ent.start, ent.end) !== ent.original) {
         return res.status(400).json({ success: false, message: `实体 ${i} 的 original 与文本不匹配` });
       }
       if (!ent.id || seenIds.has(ent.id)) {

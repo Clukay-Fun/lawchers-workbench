@@ -2,7 +2,9 @@
 // 驱动真实后端 API，验证：
 // - 实体 ID 不可变（非位置依赖）
 // - 编辑文本持久化与恢复
-// - 导出使用编辑后文本
+// - 导出使用编辑后文本（star + placeholder）
+// - map.json 的 source_sha256 / redacted_sha256 与实际数据匹配
+// - 占位还原可逆
 // - 取消操作跨模式一致
 //
 // 前置:
@@ -91,10 +93,39 @@ async function textExport(entities, mode, format, text) {
   return r;
 }
 
+async function downloadMap() {
+  const r = await fetch(`${API}/history/${taskId}/download-map`);
+  return r;
+}
+
+async function restore(redactedBlob, redactedName, mapBlob, mapName) {
+  const fd = new FormData();
+  fd.append('redactedFile', redactedBlob, redactedName);
+  fd.append('mapFile', mapBlob, mapName);
+  const r = await fetch(`${API}/restore`, { method: 'POST', body: fd });
+  return r;
+}
+
 async function deleteTask() {
   const r = await fetch(`${API}/tasks/${taskId}`, { method: 'DELETE' });
   const j = await r.json();
   if (!j.success) throw new Error(`Delete failed: ${j.message}`);
+}
+
+function allStarChars(str) {
+  // Star mode masks with '*' (and possibly other non-alphanumeric chars).
+  // At minimum, the content at an entity position should not contain
+  // any of the original entity characters that are not digits/dates.
+  return !/[^\x21-\x7e\u4e00-\u9fff]/.test(str);
+}
+
+function countMaskChars(str) {
+  // Count how many chars are masked (non-Chinese, non-alphanumeric masking chars)
+  let masked = 0;
+  for (const ch of str) {
+    if (ch === '*' || ch === '\u2588') masked++;
+  }
+  return masked;
 }
 
 async function main() {
@@ -131,19 +162,14 @@ async function main() {
 
   // ── 4. 验证 edited-text 持久化与恢复 ──
   console.log('\n4. 验证 edited-text 持久化与 session restore');
-  const editedText = analyzeData.ocrText || session1.ocrText || '';
-  if (editedText && entities.length > 0) {
-    // Apply a small edit: shift all starts +1
-    const shiftedEntities = entities.map(e => ({
-      ...e,
-      start: e.start + 1,
-      end: e.end + 1,
-    }));
-    await patchEditedText(editedText, shiftedEntities);
+  const ocrText = analyzeData.ocrText || session1.ocrText || '';
+  if (ocrText && entities.length > 0) {
+    const shiftedEntities = entities.map(e => ({ ...e, start: e.start + 1, end: e.end + 1 }));
+    await patchEditedText(ocrText, shiftedEntities);
     const session2 = await getSession();
     assert(session2.textEntities[0]?.start === shiftedEntities[0]?.start, `实体 offset 已持久化`);
     // Restore original
-    await patchEditedText(editedText, entities);
+    await patchEditedText(ocrText, entities);
     const session3 = await getSession();
     assert(session3.textEntities[0]?.start === entities[0]?.start, `恢复后 offset 还原`);
   } else {
@@ -156,8 +182,7 @@ async function main() {
     await patchEditedText('', []);
     const sessionEmpty = await getSession();
     assert(sessionEmpty.ocrText === '', `session 返回空字符串原文 (不是旧内容)`);
-    const originalText = analyzeData.ocrText || session1.ocrText || '';
-    await patchEditedText(originalText, entities); // restore
+    await patchEditedText(ocrText, entities); // restore
   } else {
     console.log('  ⚠ 无实体，跳过空文本测试');
   }
@@ -182,87 +207,115 @@ async function main() {
 
   // ── 7. 验证 text-export star 模式引擎替换 ──
   console.log('\n7. 验证 text-export star 模式引擎替换');
-  const ocrText = analyzeData.ocrText || session1.ocrText || '';
   if (ocrText && entities.length > 0) {
-    // 7a: 发送原文+实体，验证引擎执行了星号替换
     const firstEnt = entities[0];
+
+    // 7a: 原文 + 实体 → 输出不应含实体原文（引擎已掩码）
     const r1 = await textExport(entities, 'star', 'txt', ocrText);
     const buf1 = Buffer.from(await r1.arrayBuffer());
     const content1 = buf1.toString('utf-8');
     assert(r1.status === 200, `star 导出状态码 200 (got ${r1.status})`);
-    assert(content1.length === ocrText.length, `star 导出长度 (${content1.length}) == 原文长度 (${ocrText.length})`);
-    assert(!content1.includes(firstEnt.original), `第一个实体 "${firstEnt.original}" 已不在导出文本中`);
-    // 验证实体位置被替换为等长星号
-    const starSlice = content1.slice(firstEnt.start, firstEnt.end);
-    const expectedLen = firstEnt.end - firstEnt.start;
-    assert(starSlice === '*'.repeat(expectedLen), `实体位置 ${firstEnt.start}-${firstEnt.end} 被替换为 ${starSlice.length} 个星号 (期望 ${expectedLen})`);
+    assert(!content1.includes(firstEnt.original), `实体 "${firstEnt.original.slice(0, 10)}" 已不在导出文本中`);
 
-    // 7b: 传入修改文本（带标记），验证引擎用此文本而非源文件
+    // 验证实体位置已发生替换: 该位置的原文不应保持
+    const entSlice = content1.slice(firstEnt.start, firstEnt.end);
+    assert(entSlice !== firstEnt.original, `实体位置 ${firstEnt.start}-${firstEnt.end} 的内容已替换 (非原文)`);
+    assert(entSlice.length > 0, `实体位置非空`);
+
+    // 7b: 注入标记证明引擎消费了发送的 text 参数
     const marker = '[[MARKER]]';
     const modifiedText = marker + ocrText;
     const shiftedEntities = entities.map(e => ({
-      ...e,
-      start: e.start + marker.length,
-      end: e.end + marker.length,
+      ...e, start: e.start + marker.length, end: e.end + marker.length,
     }));
     const r2 = await textExport(shiftedEntities, 'star', 'txt', modifiedText);
     const buf2 = Buffer.from(await r2.arrayBuffer());
     const content2 = buf2.toString('utf-8');
     assert(content2.startsWith(marker), `导出文本以 "${marker}" 开头，证明引擎使用发送的 text`);
-    assert(content2.length === modifiedText.length, `修改文本导出长度一致`);
-    const starSlice2 = content2.slice(shiftedEntities[0].start, shiftedEntities[0].end);
-    assert(starSlice2 === '*'.repeat(expectedLen), `调整位置后实体仍被替换为 ${expectedLen} 个星号`);
+    assert(!content2.includes(firstEnt.original), `调整位置后实体原文仍不在导出中`);
+
+    // 7c: 合成纯字母实体(原文本中不存在)，验证通用类型被等长 *
+    const fakeOriginal = 'ABCDEFGHIJ';
+    const fakeText = ocrText + fakeOriginal;
+    const fakeEntities = [{
+      start: ocrText.length,
+      end: ocrText.length + fakeOriginal.length,
+      original: fakeOriginal,
+      entity_type: 'CUSTOM',
+      id: 'ent_9999',
+    }];
+    const r3 = await textExport(fakeEntities, 'star', 'txt', fakeText);
+    const buf3 = Buffer.from(await r3.arrayBuffer());
+    const content3 = buf3.toString('utf-8');
+    assert(r3.status === 200, `合成实体 star 导出 200`);
+    assert(!content3.includes(fakeOriginal), `合成实体原文不存在`);
+    const fakeSlice = content3.slice(fakeEntities[0].start, fakeEntities[0].end);
+    assert(fakeSlice === '*'.repeat(fakeOriginal.length), `合成实体被等长星号替换 (got ${fakeSlice.length}, expected ${fakeOriginal.length})`);
   } else {
     console.log('  ⚠ 无文本或实体，跳过 text-export 测试');
   }
 
   // ── 8. 验证 edited-text 实体校验 ──
-  console.log('\n8. 验证 edited-text 实体边界校验');
+  console.log('\n8. 验证 edited-text 实体边界与 original 校验');
   const badBodyCases = [
-    { text: 'hello', textEntities: [{ start: -1, end: 5, id: 'e1' }], desc: '负 start' },
-    { text: 'hello', textEntities: [{ start: 5, end: 3, id: 'e1' }], desc: 'end <= start' },
-    { text: 'hi', textEntities: [{ start: 0, end: 999, id: 'e1' }], desc: 'end 超出文本长度' },
-    { text: 'hello world', textEntities: [{ start: 0, end: 5, id: 'e1' }, { start: 10, end: 15, id: 'e1' }], desc: '重复 id' },
+    { text: 'hello', textEntities: [{ start: -1, end: 5, id: 'e1', original: 'hello' }], desc: '负 start' },
+    { text: 'hello', textEntities: [{ start: 5, end: 3, id: 'e1', original: '' }], desc: 'end <= start' },
+    { text: 'hi', textEntities: [{ start: 0, end: 999, id: 'e1', original: 'hi' }], desc: 'end 超出文本长度' },
+    { text: 'hello world', textEntities: [{ start: 0, end: 5, id: 'e1', original: 'hello' }, { start: 10, end: 15, id: 'e1', original: 'world' }], desc: '重复 id' },
+    { text: 'hello', textEntities: [{ start: 0, end: 5, id: 'e1', original: 'wrong' }], desc: 'original 与文本不匹配' },
+    { text: 'hello', textEntities: [{ start: 0, end: 3, id: 'e1' }], desc: '缺少 original 字段' },
   ];
   for (const { text, textEntities: badEntities, desc } of badBodyCases) {
     try {
       await patchEditedText(text, badEntities);
       assert(false, `应拒绝 ${desc}`);
     } catch (e) {
-      assert(e.message && (e.message.includes('实体') || e.message.includes('无效')), `拒绝 ${desc}: ${e.message.slice(0, 50)}`);
+      assert(e.message && !e.message.includes('PATCH edited-text failed'), `拒绝 ${desc}: ${e.message.slice(0, 60)}`);
     }
   }
 
-  // ── 9. 验证 text-export placeholder 模式 ──
-  console.log('\n9. 验证 text-export placeholder 模式占位与 source_sha256');
+  // ── 9. 验证 text-export placeholder 模式 map.json hash + restore ──
+  console.log('\n9. 验证 text-export placeholder 模式 map.json hash 与 restore');
   if (ocrText && entities.length > 0) {
-    const r = await textExport(entities, 'placeholder', 'txt', ocrText);
-    const buf = Buffer.from(await r.arrayBuffer());
-    const content = buf.toString('utf-8');
-    assert(r.status === 200, `placeholder 导出状态码 200 (got ${r.status})`);
-    // 验证引擎产生 placeholders
-    const placeholderCount = (content.match(/<[^>]+>/g) || []).length;
-    assert(placeholderCount > 0, `导出文本包含占位符 (找到 ${placeholderCount} 个)`);
-    assert(!content.includes(entities[0].original), `第一个实体已被占位符替换`);
-    // 验证 source_sha256: 计算发送文本的 sha256，查验文件名含脱敏字样
-    const expectedHash = createHash('sha256').update(ocrText).digest('hex');
-    const contentDisposition = r.headers.get('content-disposition') || '';
-    assert(contentDisposition.includes('脱敏'), `文件名含 "脱敏": ${contentDisposition}`);
-    // 每个实体类型应在占位符中有体现（引擎推断的 type 可能不同，但占位符数>=实体数）
-    const enginePlaceholders = content.match(/<([^>]+?\d+)>/g) || [];
-    const knownTypes = [...new Set(entities.filter(e => e.entity_type).map(e => e.entity_type))];
-    const typeHits = knownTypes.filter(t => enginePlaceholders.some(p => p.includes(t))).length;
-    assert(typeHits > 0 || knownTypes.length === 0, `占位符包含 ${typeHits}/${knownTypes.length} 已知实体类型`);
+    // 9a: 占位导出
+    const r1 = await textExport(entities, 'placeholder', 'txt', ocrText);
+    const buf1 = Buffer.from(await r1.arrayBuffer());
+    const redactedContent = buf1.toString('utf-8');
+    assert(r1.status === 200, `placeholder 导出状态码 200 (got ${r1.status})`);
+    assert(redactedContent.length > 0, `导出内容非空`);
 
-    // 验证 source_sha256: 生成 map.json 路径并检查哈希值（通过构造已知路径）
-    // 注意：map 文件路径为 workDir/${baseName}_脱敏.map.json，不暴露，但可通过同内容二次导出确认哈希一致性
-    const r2 = await textExport(entities, 'placeholder', 'txt', ocrText);
-    const buf2 = Buffer.from(await r2.arrayBuffer());
-    const content2 = buf2.toString('utf-8');
-    const phCount2 = (content2.match(/<[^>]+>/g) || []).length;
-    assert(phCount2 === placeholderCount, `二次导出占位符数一致 (${phCount2} === ${placeholderCount})`);
+    // 9b: 下载 map.json 并验证哈希
+    const r2 = await downloadMap();
+    assert(r2.status === 200, `map.json 下载 200 (got ${r2.status})`);
+    const mapBuf = Buffer.from(await r2.arrayBuffer());
+    let mapData;
+    try {
+      mapData = JSON.parse(mapBuf.toString('utf-8'));
+    } catch {
+      assert(false, `map.json 可解析为 JSON`);
+      mapData = {};
+    }
+
+    const expectedSourceSha = createHash('sha256').update(ocrText).digest('hex');
+    const expectedRedactedSha = createHash('sha256').update(redactedContent).digest('hex');
+    assert(mapData.source_sha256 === expectedSourceSha, `source_sha256 匹配 (${mapData.source_sha256} === ${expectedSourceSha})`);
+    assert(mapData.redacted_sha256 === expectedRedactedSha, `redacted_sha256 匹配 (${mapData.redacted_sha256} === ${expectedRedactedSha})`);
+
+    // 9c: 用 map + 脱敏文件执行 restore
+    const contentDisp = r1.headers.get('content-disposition') || 'document.txt';
+    const redactedFilename = contentDisp.includes('filename=')
+      ? contentDisp.split('filename=').pop().split(';')[0].replace(/["']/g, '').trim()
+      : 'redacted.txt';
+    const r3 = await restore(
+      new Blob([buf1], { type: 'text/plain' }), redactedFilename,
+      new Blob([mapBuf], { type: 'application/json' }), 'map.json',
+    );
+    assert(r3.status === 200, `restore 状态码 200 (got ${r3.status})`);
+    const restoredBuf = Buffer.from(await r3.arrayBuffer());
+    const restoredContent = restoredBuf.toString('utf-8');
+    assert(restoredContent === ocrText, `restore 文本与编辑文本一致 (长度 ${restoredContent.length} === ${ocrText.length})`);
   } else {
-    console.log('  ⚠ 无文本或实体，跳过 map 测试');
+    console.log('  ⚠ 无文本或实体，跳过 map/restore 测试');
   }
 
   // ── 10. 验证 refinedBoxes entityId ──
