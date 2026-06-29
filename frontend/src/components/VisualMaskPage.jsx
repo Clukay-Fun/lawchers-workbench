@@ -114,7 +114,7 @@ function ProgressBar({ percent, step }) {
 
 // ─── Page Image Component ────────────────────────────────────
 
-function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBox, onSelectBox, hoveredBox, onHoverBox, onRightClickBox, status, imageUrl, onLoadSuccess, onLoadError, onReloadPage, onRerenderAll }) {
+function PageCanvas({ pageInfo, boxes, onBoxesChange, onBoxCreated, containerWidth, selectedBox, onSelectBox, hoveredBox, onHoverBox, onRightClickBox, status, imageUrl, onLoadSuccess, onLoadError, onReloadPage, onRerenderAll }) {
   const overlayRef = useRef(null);
   const [drawing, setDrawing] = useState(null);
   const [dragging, setDragging] = useState(null);
@@ -161,15 +161,17 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, containerWidth, selectedBo
       const x = Math.min(drawing.startX, p.x), y = Math.min(drawing.startY, p.y);
       const w = Math.abs(p.x - drawing.startX), h = Math.abs(p.y - drawing.startY);
       if (w > BOX_MIN_SIZE && h > BOX_MIN_SIZE) {
-        onBoxesChange(prev => [...prev, createNormalizedBox({
+        const newBox = createNormalizedBox({
           id: `manual_${Date.now()}`, page: pageInfo.pageNumber, x, y, width: w, height: h,
           pageWidth: pageInfo.pageWidth, pageHeight: pageInfo.pageHeight, source: 'manual',
-        })]);
+        });
+        onBoxesChange(prev => [...prev, newBox]);
+        onBoxCreated?.(newBox);
       }
       setDrawing(null);
     }
     setDragging(null); setResizing(null);
-  }, [drawing, toNormalized, pageInfo, onBoxesChange]);
+  }, [drawing, toNormalized, pageInfo, onBoxesChange, onBoxCreated]);
 
   const handleBoxMouseDown = useCallback((e, box) => { e.stopPropagation(); if (e.button !== 0) return; onSelectBox?.(box.id); const p = toNormalized(e); setDragging({ boxId: box.id, offsetX: p.x - box.x, offsetY: p.y - box.y, boxW: box.width, boxH: box.height }); }, [toNormalized, onSelectBox]);
   const handleDeleteBox = useCallback((e, boxId) => { e.stopPropagation(); onBoxesChange(prev => prev.filter(b => b.id !== boxId)); }, [onBoxesChange]);
@@ -883,7 +885,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
 
   const handleRightClickBox = useCallback((box) => {
     setBoxes(prev => prev.filter(b => b.id !== box.id));
-    cancelEntity(box.entityId);
+    (box.entityIds?.length ? box.entityIds : [box.entityId].filter(Boolean)).forEach(cancelEntity);
   }, [cancelEntity]);
 
   const handleRightClickEntity = useCallback((entity) => {
@@ -939,6 +941,85 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     if (box) setBoxes(prev => prev.some(b => b.entityId === entity.id) ? prev : [...prev, box]);
     showToast(box ? '已新增脱敏' : '已新增文本脱敏，遮蔽框需手动补充');
   }, [createBoxForTextEntity, showToast]);
+
+  // P1.5: 画框后 OCR 反查 → 生成文本实体 → entityIds[]
+  const handleBoxCreated = useCallback((newBox) => {
+    if (!ocrBoxes?.length) return;
+    const matchedEntities = [];
+    let cumulativeOffset = 0;
+
+    for (const line of ocrBoxes) {
+      const bPage = line.page || line.pageNumber || 1;
+      const lineLen = (line.text || '').length;
+      const lineStart = cumulativeOffset;
+      const lineEnd = cumulativeOffset + lineLen;
+
+      if (bPage === newBox.page) {
+        if (lineLen > 0) {
+          // Vertical overlap check
+          const lineY = line.y || 0;
+          const lineH = line.height || 0;
+          if (lineY < newBox.y + newBox.height && newBox.y < lineY + lineH) {
+            const charWidth = (line.width || 0) / lineLen;
+
+            const lineRight = (line.x || 0) + (line.width || 0);
+            const boxRight = newBox.x + newBox.width;
+
+            // Horizontal overlap
+            if (lineRight > newBox.x && (line.x || 0) < boxRight) {
+              const relStart = Math.max(0, (newBox.x - (line.x || 0)) / charWidth);
+              const relEnd = Math.max(relStart, (boxRight - (line.x || 0)) / charWidth);
+              let charStart = Math.floor(relStart);
+              let charEnd = Math.ceil(relEnd);
+              charStart = Math.max(0, Math.min(lineLen, charStart));
+              charEnd = Math.max(charStart, Math.min(lineLen, charEnd));
+
+              if (charStart < charEnd) {
+                const coveredText = (line.text || '').substring(charStart, charEnd);
+                if (coveredText.trim()) {
+                  const globalStart = lineStart + charStart;
+                  const globalEnd = lineStart + charEnd;
+
+                  const existing = textEntitiesRef.current.find(
+                    e => e.start === globalStart && e.end === globalEnd && e.original === coveredText
+                  );
+
+                  if (existing) {
+                    matchedEntities.push(existing);
+                  } else {
+                    matchedEntities.push({
+                      id: `ent_${++entityIdCounterRef.current}`,
+                      original: coveredText,
+                      entity_type: 'OCR',
+                      start: globalStart,
+                      end: globalEnd,
+                      source: 'manual',
+                    });
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      cumulativeOffset = lineEnd + 1;
+    }
+
+    if (matchedEntities.length === 0) return;
+
+    const entityIds = matchedEntities.map(e => e.id);
+    setBoxes(prev => prev.map(b =>
+      b.id === newBox.id ? { ...b, entityIds } : b
+    ));
+
+    setTextEntities(prev => {
+      const existingIds = new Set(prev.map(e => e.id));
+      const toAdd = matchedEntities.filter(e => !existingIds.has(e.id));
+      if (toAdd.length === 0) return prev;
+      return [...prev, ...toAdd].sort((a, b) => a.start - b.start);
+    });
+  }, [ocrBoxes]);
 
   const handleTextChange = useCallback((nextText) => {
     const prevText = ocrTextRef.current;
@@ -1264,7 +1345,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
                   return (
                     <div key={pg.pageNumber} className="mask-page-row" data-page={pg.pageNumber} ref={el => { pageRowRefs.current[pg.pageNumber] = el; }}>
                       <PageCanvas
-                        pageInfo={pgInfo} boxes={boxes} onBoxesChange={setBoxes} containerWidth={containerWidth}
+                        pageInfo={pgInfo} boxes={boxes} onBoxesChange={setBoxes} onBoxCreated={handleBoxCreated} containerWidth={containerWidth}
                         selectedBox={selectedBox} onSelectBox={setSelectedBox}
                         hoveredBox={hoveredBox} onHoverBox={setHoveredBox}
                         onRightClickBox={handleRightClickBox}
