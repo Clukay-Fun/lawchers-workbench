@@ -3,7 +3,7 @@ import { analyzeTask, updateTaskBoxes, maskExportTask, textExportTask, getTaskSe
 import { Button } from '@/components/ui/button';
 import { normalizedToCSS, computeDisplaySize, createNormalizedBox } from '../services/coords';
 import { findOcrSpansForBox } from '../services/ocrBoxLinking';
-import { multiDiff, mapEntities } from '../services/diff';
+import { multiDiff, mapEntities, detectAmbiguous } from '../services/diff';
 
 // ─── Constants ───────────────────────────────────────────────
 
@@ -451,11 +451,13 @@ function TextDualColumn({ ocrText, entities, mode, onRightClickEntity, onAddManu
     setEditing(false);
   }, [draftText, onTextChange]);
 
+  const reselectCount = entities.filter(e => e.needsReselect).length;
+
   return (
     <div className="text-dual-column">
       <div className="text-panel">
         <div className="text-panel-header">
-          <span>OCR 抽取原文（{entities.length} 个敏感实体命中）</span>
+          <span>OCR 抽取原文（{entities.length} 个敏感实体{reselectCount > 0 ? `，${reselectCount} 个待重新选择` : ''}）</span>
           <div className="text-panel-actions">
             {editing ? (
               <>
@@ -483,7 +485,7 @@ function TextDualColumn({ ocrText, entities, mode, onRightClickEntity, onAddManu
             <pre className="text-content">
               {Array.isArray(highlightedOriginal)
                 ? highlightedOriginal.map((part, i) => part.type === 'entity'
-                  ? <span key={i} data-src-start={part.start} className={`text-entity-highlight ${isHighlighted(part.entity) ? 'active' : ''}`} onMouseEnter={() => setHoveredEntity(part.entity)} onMouseLeave={() => setHoveredEntity(null)} onContextMenu={(e) => { e.preventDefault(); onRightClickEntity?.(part.entity); }}>{part.text}</span>
+                  ? <span key={i} data-src-start={part.start} className={`text-entity-highlight ${isHighlighted(part.entity) ? 'active' : ''}${part.entity?.needsReselect ? ' needs-reselect' : ''}`} onMouseEnter={() => setHoveredEntity(part.entity)} onMouseLeave={() => setHoveredEntity(null)} onContextMenu={(e) => { e.preventDefault(); onRightClickEntity?.(part.entity); }}>{part.text}</span>
                   : <span key={i} data-src-start={part.start}>{part.text}</span>
                 )
                 : highlightedOriginal
@@ -497,8 +499,8 @@ function TextDualColumn({ ocrText, entities, mode, onRightClickEntity, onAddManu
         <div className="text-panel-body" ref={rightRef} onScroll={handleRightScroll}>
           <pre className="text-content">
             {Array.isArray(highlightedReplaced)
-              ? highlightedReplaced.map((part, i) => part.type === 'entity'
-                ? <span key={i} className={`text-entity-highlight replaced ${isHighlighted(part.entity) ? 'active' : ''}`} onMouseEnter={() => setHoveredEntity(part.entity)} onMouseLeave={() => setHoveredEntity(null)} onContextMenu={(e) => { e.preventDefault(); onRightClickEntity?.(part.entity); }}>{part.text}</span>
+                ? highlightedReplaced.map((part, i) => part.type === 'entity'
+                  ? <span key={i} className={`text-entity-highlight replaced ${isHighlighted(part.entity) ? 'active' : ''}${part.entity?.needsReselect ? ' needs-reselect' : ''}`} onMouseEnter={() => setHoveredEntity(part.entity)} onMouseLeave={() => setHoveredEntity(null)} onContextMenu={(e) => { e.preventDefault(); onRightClickEntity?.(part.entity); }}>{part.text}</span>
                 : <span key={i}>{part.text}</span>
               )
               : highlightedReplaced
@@ -1045,22 +1047,37 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     const changes = multiDiff(prevText, nextText);
 
     const { kept: keptEntities, cancelled: toCancel } = mapEntities(prevEntities, changes);
-    const cancelIds = toCancel.map(e => e.id);
 
-    setTextEntities(keptEntities);
-    textEntitiesRef.current = keptEntities;
+    // S2: split cancelled into remapped (text appears uniquely), needsReselect (duplicate),
+    // and truly cancelled (text disappeared)
+    const { remapped, needsReselect } = detectAmbiguous(toCancel, nextText);
+    const reselectIds = new Set(needsReselect.map(e => e.id));
+    const remapIds = new Set(remapped.map(e => e.id));
+    const trulyCancelled = toCancel.filter(e => !reselectIds.has(e.id) && !remapIds.has(e.id));
+    const finalEntities = [
+      ...keptEntities,
+      ...remapped,
+      ...needsReselect.map(e => ({ ...e, needsReselect: true })),
+    ];
+
+    setTextEntities(finalEntities);
+    textEntitiesRef.current = finalEntities;
     // Only remove boxes for cancelled entities — text offset changes do not
     // affect PDF/scan visual positions, so kept entities keep their existing boxes.
+    const cancelIds = new Set(trulyCancelled.map(e => e.id));
     setBoxes(prev => prev.filter(b => {
       const linkedIds = b.entityIds?.length ? b.entityIds : [b.entityId].filter(Boolean);
-      return !linkedIds.some(id => cancelIds.includes(id));
+      return !linkedIds.some(id => cancelIds.has(id));
     }));
 
     // Update cancelled set
     for (const id of cancelIds) cancelledRef.current.add(id);
     if (task?.taskId) updateCancelledEntities(task.taskId, [...cancelledRef.current]).catch(() => {});
-    showToast(cancelIds.length > 0
-      ? `原文已更新，${cancelIds.length} 个实体因位置变动已取消`
+    const msg = [];
+    if (trulyCancelled.length > 0) msg.push(`${trulyCancelled.length} 个已取消`);
+    if (needsReselect.length > 0) msg.push(`${needsReselect.length} 个需重新选择`);
+    showToast(msg.length > 0
+      ? `原文已更新，${msg.join('，')}`
       : '原文已更新，实体位置已自动调整');
   }, [showToast, task]);
 
