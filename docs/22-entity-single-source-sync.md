@@ -3,6 +3,13 @@
 > 目标:把"自动脱敏"的事实源统一到 `textEntities`,遮蔽框是它的坐标投影;编辑原文不再清空高亮;遮蔽画框反向生成文本实体。
 > 定性:收敛 + 小重构,不引新框架。按风险 **P1 → P1.5 → P2** 三段,先解用户现在真正撞到的问题。
 
+---
+## 验收状态（2026-06-29 更新）
+- **P1 ✅ 已完成并正式收口**。commits `c751fe1`→`25bc3ac`(含 0b60fed/deef6cd/bb4901d/4af9e4b/784e237 等修复轮)。真机回归 17/0 通过:编辑位置映射(前插平移/改内部只取消该实体/同文不串/边界语义)、不可变 id `ent_N`、refinedBox.entityId 全对得上、取消跨模式同步且 session 持久化、编辑工作文本持久化。证据为算法层 + API 层真测,非静态判定。
+- **P1.5 ✅ 已完成**。完整链路 = `e95f432`(画框 OCR 反查→textEntities+entityIds[]) + `a719499` + `feeaed1` + `25bc3ac`。(本轮未单独 e2e,代码落地。)
+- **P2 ⚠️ 部分完成**。已通过:编辑工作文本 + 实体位置持久化(刷新不丢,API 回归已验)。**仍需按下方 P2 剩余项验收**:完整多段 diff、contenteditable 高亮编辑区、重复文字"待重新选择"。
+---
+
 ## 现状（已核,含一处必须修的设计缺陷）
 - 跨模式取消**主体已接线且一致**:后端给 textEntity 赋 `ent.id`,refinedBox.entityId 用同一键,`handleCancelBox`(824)/`handleCancelEntity`(835) 双向匹配、写 `cancelled-entities.json`、恢复回读(669)。
 - **真凶**:`handleTextChange`(890) 编辑原文即 `setTextEntities([])` + 删所有带 entityId 的框 + 清空 cancelled → 全部高亮被毁。
