@@ -3,7 +3,7 @@ import { analyzeTask, updateTaskBoxes, maskExportTask, textExportTask, getTaskSe
 import { Button } from '@/components/ui/button';
 import { normalizedToCSS, computeDisplaySize, createNormalizedBox } from '../services/coords';
 import { findOcrSpansForBox } from '../services/ocrBoxLinking';
-import { multiDiff, mapEntities, detectAmbiguous } from '../services/diff';
+import { multiDiff, mapEntities, detectAmbiguous, projectEntities } from '../services/diff';
 
 // ─── Constants ───────────────────────────────────────────────
 
@@ -405,23 +405,34 @@ function TextDualColumn({ ocrText, entities, mode, onRightClickEntity, onAddManu
     return ent.start === hoveredEntity.start && ent.end === hoveredEntity.end && ent.entity_type === hoveredEntity.entity_type;
   }, [hoveredEntity]);
 
-  // Build highlight overlay for edit mode (entity backgrounds from ocrText positions)
+  // Build highlight overlay for edit mode — project entities onto draftText via diff (S3)
   const highlightOverlay = useMemo(() => {
     if (!entities.length) return [{ text: draftText || '', type: 'normal' }];
+
+    // Project non-needsReselect entities via diff; append needsReselect at original positions
+    const toProject = entities.filter(e => !e.needsReselect);
+    const projected = (ocrText && draftText !== ocrText && toProject.length > 0)
+      ? projectEntities(toProject, ocrText, draftText)
+      : toProject;
+    const allEnts = [
+      ...projected,
+      ...entities.filter(e => e.needsReselect),
+    ];
+
     const parts = [];
     let last = 0;
-    const sorted = [...entities].sort((a, b) => (a.start || 0) - (b.start || 0));
+    const sorted = [...allEnts].sort((a, b) => (a.start || 0) - (b.start || 0));
     for (const ent of sorted) {
       const s = Math.min(ent.start, draftText.length);
       if (s > last) parts.push({ text: draftText.substring(last, s), type: 'normal' });
       const e = Math.min(ent.end, draftText.length);
-      if (e > s) parts.push({ text: draftText.substring(s, e), type: 'entity' });
+      if (e > s) parts.push({ text: draftText.substring(s, e), type: 'entity', entity: ent });
       last = Math.max(last, e);
     }
     if (last < draftText.length) parts.push({ text: draftText.substring(last), type: 'normal' });
     if (!parts.length) parts.push({ text: draftText || '', type: 'normal' });
     return parts;
-  }, [draftText, entities]);
+  }, [draftText, entities, ocrText]);
 
   const getSelectionOffset = useCallback((node, offset) => {
     const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
@@ -475,7 +486,7 @@ function TextDualColumn({ ocrText, entities, mode, onRightClickEntity, onAddManu
               <pre className="text-edit-highlights" ref={highlightRef} aria-hidden="true">
                 {highlightOverlay.map((part, i) =>
                   part.type === 'entity'
-                    ? <span key={i} className="text-entity-bg">{part.text}</span>
+                    ? <span key={i} className={`text-entity-bg${part.entity?.needsReselect ? ' needs-reselect' : ''}`}>{part.text}</span>
                     : <span key={i}>{part.text}</span>
                 )}
               </pre>
