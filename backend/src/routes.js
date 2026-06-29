@@ -2420,10 +2420,11 @@ router.post('/tasks/:id/analyze', async (req, res) => {
 
     // Greedy dedup: keep non-overlapping, prefer longer
     let lastEnd = -1;
+    let entitySeq = 0;
     for (const ent of allEntities) {
       if (ent.start >= lastEnd) {
-        // Add stable id for cross-mode linking
-        ent.id = `${ent.entity_type || 'CUSTOM'}:${ent.start}:${ent.end}`;
+        // Add stable immutable id for cross-mode linking (position-independent)
+        ent.id = `ent_${entitySeq++}`;
         textEntities.push(ent);
         lastEnd = ent.end;
       }

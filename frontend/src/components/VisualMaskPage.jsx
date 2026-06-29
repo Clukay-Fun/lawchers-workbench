@@ -481,6 +481,9 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const [ocrText, setOcrText] = useState('');
   const [pageImages, setPageImages] = useState([]);
   const cancelledRef = useRef(new Set());
+  const entityIdCounterRef = useRef(0);
+  const ocrTextRef = useRef('');
+  const textEntitiesRef = useRef([]);
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedBox, setSelectedBox] = useState(null);
   const [hoveredBox, setHoveredBox] = useState(null);
@@ -662,9 +665,19 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
       renderCacheRef.current = session.renderCacheStatus || 'unknown';
       setTask(normalized);
       setBoxes(session.boxes || []);
-      setTextEntities(session.textEntities || []);
+      const restoredEntities = session.textEntities || [];
+      setTextEntities(restoredEntities);
+      textEntitiesRef.current = restoredEntities;
+      // Initialize manual entity counter past existing manual IDs
+      const maxManual = restoredEntities.reduce((max, e) => {
+        const m = (e.id || '').match(/^manual_(\d+)$/);
+        return m ? Math.max(max, parseInt(m[1], 10)) : max;
+      }, 0);
+      entityIdCounterRef.current = maxManual;
       setOcrBoxes(session.ocrBoxes || []);
-      setOcrText(session.ocrText || '');
+      const restoredOcrText = session.ocrText || '';
+      setOcrText(restoredOcrText);
+      ocrTextRef.current = restoredOcrText;
       setPageImages(session.manifest?.pages || []);
       cancelledRef.current = new Set(session.cancelledEntities || []);
       setCurrentPage(1);
@@ -820,23 +833,23 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     updateCancelledEntities(task.taskId, [...newSet]).catch(() => {});
   }, [task]);
 
-  const handleRightClickBox = useCallback((box) => {
-    setBoxes(prev => prev.filter(b => b.id !== box.id));
-    if (box.entityId) {
-      setTextEntities(prev => prev.filter(e => e.id !== box.entityId));
-      cancelledRef.current.add(box.entityId);
-      persistCancelled(cancelledRef.current);
-    }
+  const cancelEntity = useCallback((entityId) => {
+    if (!entityId) return;
+    setTextEntities(prev => prev.filter(e => e.id !== entityId));
+    setBoxes(prev => prev.filter(b => b.entityId !== entityId));
+    cancelledRef.current.add(entityId);
+    persistCancelled(cancelledRef.current);
     showToast('已取消该区域脱敏');
   }, [showToast, persistCancelled]);
 
+  const handleRightClickBox = useCallback((box) => {
+    setBoxes(prev => prev.filter(b => b.id !== box.id));
+    cancelEntity(box.entityId);
+  }, [cancelEntity]);
+
   const handleRightClickEntity = useCallback((entity) => {
-    setTextEntities(prev => prev.filter(e => e.id !== entity.id));
-    setBoxes(prev => prev.filter(b => !(b.entityId && b.entityId === entity.id)));
-    cancelledRef.current.add(entity.id);
-    persistCancelled(cancelledRef.current);
-    showToast('已取消该实体脱敏');
-  }, [showToast, persistCancelled]);
+    cancelEntity(entity.id);
+  }, [cancelEntity]);
 
   const createBoxForTextEntity = useCallback((entity) => {
     let offset = 0;
@@ -872,27 +885,98 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     const cleanOriginal = original.trim();
     if (!cleanOriginal) return;
     const entity = {
-      id: `CUSTOM:${start}:${end}`,
+      id: `manual_${++entityIdCounterRef.current}`,
       original: cleanOriginal,
       entity_type: 'CUSTOM',
       start,
       end,
       source: 'manual',
     };
-    setTextEntities(prev => prev.some(e => e.id === entity.id) ? prev : [...prev, entity].sort((a, b) => a.start - b.start));
+    setTextEntities(prev => {
+      if (prev.some(e => e.start === start && e.end === end && e.original === cleanOriginal)) return prev;
+      return [...prev, entity].sort((a, b) => a.start - b.start);
+    });
     const box = createBoxForTextEntity(entity);
     if (box) setBoxes(prev => prev.some(b => b.entityId === entity.id) ? prev : [...prev, box]);
     showToast(box ? '已新增脱敏' : '已新增文本脱敏，遮蔽框需手动补充');
   }, [createBoxForTextEntity, showToast]);
 
   const handleTextChange = useCallback((nextText) => {
+    const prevText = ocrTextRef.current;
+    const prevEntities = textEntitiesRef.current;
     setOcrText(nextText);
-    setTextEntities([]);
-    setBoxes(prev => prev.filter(b => !b.entityId));
-    cancelledRef.current = new Set();
-    if (task?.taskId) updateCancelledEntities(task.taskId, []).catch(() => {});
-    showToast('原文已更新，请重新滑选需要脱敏的内容');
-  }, [showToast, task]);
+    ocrTextRef.current = nextText;
+
+    if (!prevText || !prevEntities?.length) {
+      setTextEntities([]);
+      setBoxes(prev => prev.filter(b => !b.entityId));
+      cancelledRef.current = new Set();
+      if (task?.taskId) updateCancelledEntities(task.taskId, []).catch(() => {});
+      showToast('原文已更新，请重新滑选需要脱敏的内容');
+      return;
+    }
+
+    // Longest common prefix
+    const minLen = Math.min(prevText.length, nextText.length);
+    let prefixLen = 0;
+    while (prefixLen < minLen && prevText[prefixLen] === nextText[prefixLen]) prefixLen++;
+
+    // Longest common suffix (after prefix)
+    const maxSuffix = Math.min(prevText.length - prefixLen, nextText.length - prefixLen);
+    let suffixLen = 0;
+    while (suffixLen < maxSuffix &&
+           prevText[prevText.length - 1 - suffixLen] === nextText[nextText.length - 1 - suffixLen]) {
+      suffixLen++;
+    }
+
+    const oldChangeStart = prefixLen;
+    const oldChangeEnd = prevText.length - suffixLen;
+    const newChangeEnd = nextText.length - suffixLen;
+    const delta = (newChangeEnd - prefixLen) - (oldChangeEnd - oldChangeStart);
+
+    const keptEntities = [];
+    const toCancel = [];
+
+    for (const entity of prevEntities) {
+      const { start, end, id } = entity;
+      if (end <= oldChangeStart) {
+        // Entity entirely before change region — keep as-is
+        keptEntities.push(entity);
+      } else if (start >= oldChangeEnd) {
+        // Entity entirely after change region — shift offsets
+        keptEntities.push({ ...entity, start: start + delta, end: end + delta });
+      } else {
+        // Entity overlaps change region — cancel
+        toCancel.push(id);
+      }
+    }
+
+    setTextEntities(keptEntities);
+    textEntitiesRef.current = keptEntities;
+    // Remove boxes for cancelled entities and rebuild boxes for shifted entities
+    setBoxes(prev => {
+      let updated = prev.filter(b => !b.entityId || !toCancel.includes(b.entityId));
+      // Rebuild boxes for shifted entities (their positions changed)
+      const shiftedIds = new Set(keptEntities.filter(e => e.start !== prevEntities.find(p => p.id === e.id)?.start).map(e => e.id));
+      if (shiftedIds.size > 0) {
+        updated = updated.filter(b => !shiftedIds.has(b.entityId));
+        for (const entity of keptEntities) {
+          if (shiftedIds.has(entity.id)) {
+            const box = createBoxForTextEntity(entity);
+            if (box) updated.push(box);
+          }
+        }
+      }
+      return updated;
+    });
+
+    // Update cancelled set
+    for (const id of toCancel) cancelledRef.current.add(id);
+    if (task?.taskId) updateCancelledEntities(task.taskId, [...cancelledRef.current]).catch(() => {});
+    showToast(toCancel.length > 0
+      ? `原文已更新，${toCancel.length} 个实体因位置变动已取消`
+      : '原文已更新，实体位置已自动调整');
+  }, [showToast, task, createBoxForTextEntity]);
 
   // Persist boxes on change (debounced) — allow empty array to clear
   useEffect(() => {
@@ -907,13 +991,17 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     return () => clearTimeout(timer);
   }, [task, boxes]);
 
+  // Keep refs in sync with state for handleTextChange
+  useEffect(() => { ocrTextRef.current = ocrText; }, [ocrText]);
+  useEffect(() => { textEntitiesRef.current = textEntities; }, [textEntities]);
+
   // ─── Upload + Analyze ────────────────────────────────────────
 
   const handleFile = async (file) => {
     if (!file) return;
     localStorage.removeItem('activeTaskId');
     renderCacheRef.current = 'unknown';
-    setLoading(true); setError(null); setBoxes([]); setTextEntities([]); setOcrBoxes([]); setOcrText(''); setPageImages([]); cancelledRef.current = new Set(); setUploadPercent(0); setProcessingStep('上传中…');
+    setLoading(true); setError(null); setBoxes([]); setTextEntities([]); textEntitiesRef.current = []; setOcrBoxes([]); setOcrText(''); ocrTextRef.current = ''; setPageImages([]); cancelledRef.current = new Set(); setUploadPercent(0); setProcessingStep('上传中…');
     try {
       const taskData = await uploadWithProgress(file, _settings?.rulesConfig, setUploadPercent);
       const normalized = normalizeTask(taskData);
@@ -927,22 +1015,19 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
 
       setProcessingStep('正在规则匹配…');
 
-      const backendTextEntities = (analyzeData.textEntities || []).map(e => {
-        const entityType = e.entity_type || 'CUSTOM';
-        const start = e.start ?? 0;
-        const end = e.end ?? 0;
-        return {
-          id: `${entityType}:${start}:${end}`,
-          original: e.original || '',
-          entity_type: entityType,
-          start,
-          end,
-        };
-      });
+      const backendTextEntities = (analyzeData.textEntities || []).map(e => ({
+        id: e.id,
+        original: e.original || '',
+        entity_type: e.entity_type || 'CUSTOM',
+        start: e.start ?? 0,
+        end: e.end ?? 0,
+      }));
       const fullText = (analyzeData.ocrBoxes || []).map(b => b.text || '').join('\n');
       setTextEntities(backendTextEntities);
+      textEntitiesRef.current = backendTextEntities;
       setOcrBoxes(analyzeData.ocrBoxes || []);
       setOcrText(fullText);
+      ocrTextRef.current = fullText;
 
       const refined = (analyzeData.refinedBoxes || []).map((b, i) => {
         return createNormalizedBox({
