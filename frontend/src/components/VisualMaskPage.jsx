@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { analyzeTask, updateTaskBoxes, maskExportTask, textExportTask, getTaskSession, updateCancelledEntities, updateEditedText, getHistory, deleteHistory, renderTasksPages } from '../api';
 import { Button } from '@/components/ui/button';
 import { normalizedToCSS, computeDisplaySize, createNormalizedBox } from '../services/coords';
+import { findOcrSpansForBox } from '../services/ocrBoxLinking';
 
 // ─── Constants ───────────────────────────────────────────────
 
@@ -114,8 +115,9 @@ function ProgressBar({ percent, step }) {
 
 // ─── Page Image Component ────────────────────────────────────
 
-function PageCanvas({ pageInfo, boxes, onBoxesChange, onBoxCreated, containerWidth, selectedBox, onSelectBox, hoveredBox, onHoverBox, onRightClickBox, status, imageUrl, onLoadSuccess, onLoadError, onReloadPage, onRerenderAll }) {
+function PageCanvas({ pageInfo, boxes, onBoxesChange, onBoxCreated, onBoxUpdated, containerWidth, selectedBox, onSelectBox, hoveredBox, onHoverBox, onRightClickBox, status, imageUrl, onLoadSuccess, onLoadError, onReloadPage, onRerenderAll }) {
   const overlayRef = useRef(null);
+  const interactionBoxRef = useRef(null);
   const [drawing, setDrawing] = useState(null);
   const [dragging, setDragging] = useState(null);
   const [resizing, setResizing] = useState(null);
@@ -138,20 +140,37 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, onBoxCreated, containerWid
     if (drawing) { const p = toNormalized(e); setDrawing(prev => prev ? { ...prev, currentX: p.x, currentY: p.y } : prev); }
     if (dragging) {
       const p = toNormalized(e);
-      onBoxesChange(prev => prev.map(b => b.id === dragging.boxId ? { ...b, x: Math.max(0, Math.min(1 - dragging.boxW, p.x - dragging.offsetX)), y: Math.max(0, Math.min(1 - dragging.boxH, p.y - dragging.offsetY)) } : b));
+      const current = interactionBoxRef.current || dragging.box;
+      if (current) {
+        const updated = {
+          ...current,
+          x: Math.max(0, Math.min(1 - dragging.boxW, p.x - dragging.offsetX)),
+          y: Math.max(0, Math.min(1 - dragging.boxH, p.y - dragging.offsetY)),
+        };
+        interactionBoxRef.current = updated;
+        onBoxesChange(prev => prev.map(b => b.id === dragging.boxId ? updated : b));
+      }
     }
     if (resizing) {
       const p = toNormalized(e);
-      onBoxesChange(prev => prev.map(b => {
-        if (b.id !== resizing.boxId) return b;
-        let { x, y, width, height } = b;
+      const current = interactionBoxRef.current || resizing.box;
+      if (current) {
+        let { x, y, width, height } = current;
         const h = resizing.handle;
         if (h.includes('e')) width = Math.max(BOX_MIN_SIZE, p.x - x);
         if (h.includes('s')) height = Math.max(BOX_MIN_SIZE, p.y - y);
         if (h.includes('w')) { const nx = Math.min(p.x, x + width - BOX_MIN_SIZE); width += x - nx; x = nx; }
         if (h.includes('n')) { const ny = Math.min(p.y, y + height - BOX_MIN_SIZE); height += y - ny; y = ny; }
-        return { ...b, x: Math.max(0, x), y: Math.max(0, y), width: Math.min(1 - x, width), height: Math.min(1 - y, height) };
-      }));
+        const updated = {
+          ...current,
+          x: Math.max(0, x),
+          y: Math.max(0, y),
+          width: Math.min(1 - x, width),
+          height: Math.min(1 - y, height),
+        };
+        interactionBoxRef.current = updated;
+        onBoxesChange(prev => prev.map(b => b.id === resizing.boxId ? updated : b));
+      }
     }
   }, [drawing, dragging, resizing, toNormalized, onBoxesChange]);
 
@@ -170,12 +189,16 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, onBoxCreated, containerWid
       }
       setDrawing(null);
     }
+    if ((dragging || resizing) && interactionBoxRef.current) {
+      onBoxUpdated?.(interactionBoxRef.current);
+      interactionBoxRef.current = null;
+    }
     setDragging(null); setResizing(null);
-  }, [drawing, toNormalized, pageInfo, onBoxesChange, onBoxCreated]);
+  }, [drawing, dragging, resizing, toNormalized, pageInfo, onBoxesChange, onBoxCreated, onBoxUpdated]);
 
-  const handleBoxMouseDown = useCallback((e, box) => { e.stopPropagation(); if (e.button !== 0) return; onSelectBox?.(box.id); const p = toNormalized(e); setDragging({ boxId: box.id, offsetX: p.x - box.x, offsetY: p.y - box.y, boxW: box.width, boxH: box.height }); }, [toNormalized, onSelectBox]);
+  const handleBoxMouseDown = useCallback((e, box) => { e.stopPropagation(); if (e.button !== 0) return; onSelectBox?.(box.id); const p = toNormalized(e); setDragging({ boxId: box.id, box, offsetX: p.x - box.x, offsetY: p.y - box.y, boxW: box.width, boxH: box.height }); }, [toNormalized, onSelectBox]);
   const handleDeleteBox = useCallback((e, boxId) => { e.stopPropagation(); onBoxesChange(prev => prev.filter(b => b.id !== boxId)); }, [onBoxesChange]);
-  const handleResizeStart = useCallback((e, boxId, handle) => { e.stopPropagation(); setResizing({ boxId, handle }); }, []);
+  const handleResizeStart = useCallback((e, box, handle) => { e.stopPropagation(); setResizing({ boxId: box.id, box, handle }); }, []);
 
   const pageBoxes = boxes.filter(b => b.page === pageInfo.pageNumber);
   const isFailed = status === 'failed';
@@ -245,7 +268,7 @@ function PageCanvas({ pageInfo, boxes, onBoxesChange, onBoxCreated, containerWid
                   title="删除"
                 >×</button>
               )}
-              {isActive && ['nw', 'ne', 'sw', 'se'].map(h => <div key={h} data-handle={h} style={{ position: 'absolute', width: 8, height: 8, background: '#3b82f6', border: '1px solid #fff', borderRadius: 2, zIndex: 10, ...(h.includes('n') ? { top: -4 } : { bottom: -4 }), ...(h.includes('w') ? { left: -4 } : { right: -4 }), cursor: h === 'nw' || h === 'se' ? 'nwse-resize' : 'nesw-resize' }} onMouseDown={(e) => handleResizeStart(e, box.id, h)} />)}
+              {isActive && ['nw', 'ne', 'sw', 'se'].map(h => <div key={h} data-handle={h} style={{ position: 'absolute', width: 8, height: 8, background: '#3b82f6', border: '1px solid #fff', borderRadius: 2, zIndex: 10, ...(h.includes('n') ? { top: -4 } : { bottom: -4 }), ...(h.includes('w') ? { left: -4 } : { right: -4 }), cursor: h === 'nw' || h === 'se' ? 'nwse-resize' : 'nesw-resize' }} onMouseDown={(e) => handleResizeStart(e, box, h)} />)}
             </div>
           );
         })}
@@ -522,6 +545,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const entityIdCounterRef = useRef(0);
   const ocrTextRef = useRef('');
   const textEntitiesRef = useRef([]);
+  const boxesRef = useRef([]);
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedBox, setSelectedBox] = useState(null);
   const [hoveredBox, setHoveredBox] = useState(null);
@@ -711,7 +735,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
       const cancelledEntities = session.cancelledEntities || [];
       const allKnownIds = [...restoredEntities.map(e => e.id), ...cancelledEntities];
       const maxManual = allKnownIds.reduce((max, id) => {
-        const m = (id || '').match(/^manual_(\d+)$/);
+        const m = (id || '').match(/^(?:manual|bbox)_(\d+)$/);
         return m ? Math.max(max, parseInt(m[1], 10)) : max;
       }, 0);
       entityIdCounterRef.current = maxManual;
@@ -942,84 +966,64 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     showToast(box ? '已新增脱敏' : '已新增文本脱敏，遮蔽框需手动补充');
   }, [createBoxForTextEntity, showToast]);
 
-  // P1.5: 画框后 OCR 反查 → 生成文本实体 → entityIds[]
-  const handleBoxCreated = useCallback((newBox) => {
-    if (!ocrBoxes?.length) return;
+  // P1.5/P1.6: OCR 反查；新增、移动、缩放统一走这一条关联链路。
+  const syncBoxEntities = useCallback((box) => {
+    const spans = findOcrSpansForBox(box, ocrBoxes);
+    const oldEntityIds = box.entityIds?.length
+      ? box.entityIds
+      : [box.entityId].filter(Boolean);
+    const linkedByOtherBoxes = new Set(
+      boxesRef.current
+        .filter(other => other.id !== box.id)
+        .flatMap(other => other.entityIds?.length
+          ? other.entityIds
+          : [other.entityId].filter(Boolean)),
+    );
+    const oldManualIds = new Set(oldEntityIds.filter(id => id.startsWith('bbox_')));
+    const baseEntities = textEntitiesRef.current.filter(entity => !oldManualIds.has(entity.id));
     const matchedEntities = [];
-    let cumulativeOffset = 0;
-
-    for (const line of ocrBoxes) {
-      const bPage = line.page || line.pageNumber || 1;
-      const lineLen = (line.text || '').length;
-      const lineStart = cumulativeOffset;
-      const lineEnd = cumulativeOffset + lineLen;
-
-      if (bPage === newBox.page) {
-        if (lineLen > 0) {
-          // Vertical overlap check
-          const lineY = line.y || 0;
-          const lineH = line.height || 0;
-          if (lineY < newBox.y + newBox.height && newBox.y < lineY + lineH) {
-            const charWidth = (line.width || 0) / lineLen;
-
-            const lineRight = (line.x || 0) + (line.width || 0);
-            const boxRight = newBox.x + newBox.width;
-
-            // Horizontal overlap
-            if (lineRight > newBox.x && (line.x || 0) < boxRight) {
-              const relStart = Math.max(0, (newBox.x - (line.x || 0)) / charWidth);
-              const relEnd = Math.max(relStart, (boxRight - (line.x || 0)) / charWidth);
-              let charStart = Math.floor(relStart);
-              let charEnd = Math.ceil(relEnd);
-              charStart = Math.max(0, Math.min(lineLen, charStart));
-              charEnd = Math.max(charStart, Math.min(lineLen, charEnd));
-
-              if (charStart < charEnd) {
-                const coveredText = (line.text || '').substring(charStart, charEnd);
-                if (coveredText.trim()) {
-                  const globalStart = lineStart + charStart;
-                  const globalEnd = lineStart + charEnd;
-
-                  const overlapping = textEntitiesRef.current.find(
-                    e => globalStart < e.end && globalEnd > e.start
-                  );
-
-                  if (overlapping) {
-                    matchedEntities.push(overlapping);
-                  } else {
-                    matchedEntities.push({
-                      id: `bbox_${++entityIdCounterRef.current}`,
-                      original: coveredText,
-                      entity_type: 'OCR',
-                      start: globalStart,
-                      end: globalEnd,
-                      source: 'manual',
-                    });
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-
-      cumulativeOffset = lineEnd + 1;
+    for (const span of spans) {
+      const overlapping = [...baseEntities, ...matchedEntities].find(
+        entity => span.start < entity.end && span.end > entity.start
+      );
+      matchedEntities.push(overlapping || {
+        id: `bbox_${++entityIdCounterRef.current}`,
+        original: span.original,
+        entity_type: 'OCR',
+        start: span.start,
+        end: span.end,
+        source: 'manual',
+      });
     }
 
-    if (matchedEntities.length === 0) return;
-
-    const entityIds = matchedEntities.map(e => e.id);
-    setBoxes(prev => prev.map(b =>
-      b.id === newBox.id ? { ...b, entityIds } : b
-    ));
-
-    setTextEntities(prev => {
-      const existingIds = new Set(prev.map(e => e.id));
-      const toAdd = matchedEntities.filter(e => !existingIds.has(e.id));
-      if (toAdd.length === 0) return prev;
-      return [...prev, ...toAdd].sort((a, b) => a.start - b.start);
+    const entityIds = [...new Set(matchedEntities.map(entity => entity.id))];
+    const staleEntityIds = oldEntityIds.filter(
+      id => !entityIds.includes(id) && !linkedByOtherBoxes.has(id)
+    );
+    const nextEntities = [
+      ...baseEntities,
+      ...matchedEntities.filter(entity => !baseEntities.some(existing => existing.id === entity.id)),
+    ].filter(entity => !staleEntityIds.includes(entity.id))
+      .sort((a, b) => a.start - b.start);
+    textEntitiesRef.current = nextEntities;
+    setTextEntities(nextEntities);
+    setBoxes(prev => {
+      const next = prev.map(b =>
+        b.id === box.id ? { ...b, entityId: null, entityIds } : b
+      );
+      boxesRef.current = next;
+      return next;
     });
-  }, [ocrBoxes]);
+
+    const staleAutomaticIds = staleEntityIds.filter(id => !id.startsWith('bbox_'));
+    if (staleAutomaticIds.length > 0) {
+      for (const id of staleAutomaticIds) cancelledRef.current.add(id);
+      persistCancelled(cancelledRef.current);
+    }
+  }, [ocrBoxes, persistCancelled]);
+
+  const handleBoxCreated = useCallback((box) => syncBoxEntities(box), [syncBoxEntities]);
+  const handleBoxUpdated = useCallback((box) => syncBoxEntities(box), [syncBoxEntities]);
 
   const handleTextChange = useCallback((nextText) => {
     const prevText = ocrTextRef.current;
@@ -1075,7 +1079,10 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     textEntitiesRef.current = keptEntities;
     // Only remove boxes for cancelled entities — text offset changes do not
     // affect PDF/scan visual positions, so kept entities keep their existing boxes.
-    setBoxes(prev => prev.filter(b => !b.entityId || !toCancel.includes(b.entityId)));
+    setBoxes(prev => prev.filter(b => {
+      const linkedIds = b.entityIds?.length ? b.entityIds : [b.entityId].filter(Boolean);
+      return !linkedIds.some(id => toCancel.includes(id));
+    }));
 
     // Update cancelled set
     for (const id of toCancel) cancelledRef.current.add(id);
@@ -1101,6 +1108,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   // Keep refs in sync with state for handleTextChange
   useEffect(() => { ocrTextRef.current = ocrText; }, [ocrText]);
   useEffect(() => { textEntitiesRef.current = textEntities; }, [textEntities]);
+  useEffect(() => { boxesRef.current = boxes; }, [boxes]);
 
   // Debounced save of edited text + entities (P0: persist edits across refresh)
   useEffect(() => {
@@ -1345,7 +1353,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
                   return (
                     <div key={pg.pageNumber} className="mask-page-row" data-page={pg.pageNumber} ref={el => { pageRowRefs.current[pg.pageNumber] = el; }}>
                       <PageCanvas
-                        pageInfo={pgInfo} boxes={boxes} onBoxesChange={setBoxes} onBoxCreated={handleBoxCreated} containerWidth={containerWidth}
+                        pageInfo={pgInfo} boxes={boxes} onBoxesChange={setBoxes} onBoxCreated={handleBoxCreated} onBoxUpdated={handleBoxUpdated} containerWidth={containerWidth}
                         selectedBox={selectedBox} onSelectBox={setSelectedBox}
                         hoveredBox={hoveredBox} onHoverBox={setHoveredBox}
                         onRightClickBox={handleRightClickBox}
