@@ -370,6 +370,24 @@ function TextDualColumn({ ocrText, entities, mode, onRightClickEntity, onAddManu
     return ent.start === hoveredEntity.start && ent.end === hoveredEntity.end && ent.entity_type === hoveredEntity.entity_type;
   }, [hoveredEntity]);
 
+  // Build highlight overlay for edit mode (entity backgrounds from ocrText positions)
+  const highlightOverlay = useMemo(() => {
+    if (!entities.length) return [{ text: draftText || '', type: 'normal' }];
+    const parts = [];
+    let last = 0;
+    const sorted = [...entities].sort((a, b) => (a.start || 0) - (b.start || 0));
+    for (const ent of sorted) {
+      const s = Math.min(ent.start, draftText.length);
+      if (s > last) parts.push({ text: draftText.substring(last, s), type: 'normal' });
+      const e = Math.min(ent.end, draftText.length);
+      if (e > s) parts.push({ text: draftText.substring(s, e), type: 'entity' });
+      last = Math.max(last, e);
+    }
+    if (last < draftText.length) parts.push({ text: draftText.substring(last), type: 'normal' });
+    if (!parts.length) parts.push({ text: draftText || '', type: 'normal' });
+    return parts;
+  }, [draftText, entities]);
+
   const getSelectionOffset = useCallback((node, offset) => {
     const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
     const span = el?.closest?.('[data-src-start]');
@@ -416,7 +434,16 @@ function TextDualColumn({ ocrText, entities, mode, onRightClickEntity, onAddManu
         </div>
         <div className="text-panel-body" ref={leftRef} onScroll={handleLeftScroll} onMouseUp={handleOriginalMouseUp}>
           {editing ? (
-            <textarea className="text-edit-area" value={draftText} onChange={(e) => setDraftText(e.target.value)} />
+            <div className="text-edit-overlay-container">
+              <pre className="text-edit-highlights" aria-hidden="true">
+                {highlightOverlay.map((part, i) =>
+                  part.type === 'entity'
+                    ? <span key={i} className="text-entity-bg">{part.text}</span>
+                    : <span key={i}>{part.text}</span>
+                )}
+              </pre>
+              <textarea className="text-edit-area" value={draftText} onChange={(e) => setDraftText(e.target.value)} />
+            </div>
           ) : (
             <pre className="text-content">
               {Array.isArray(highlightedOriginal)

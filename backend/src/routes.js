@@ -2588,7 +2588,7 @@ router.get('/tasks/:id/session', async (req, res) => {
     if (existsSync(editedPath)) {
       try {
         const edited = JSON.parse(await fs.readFile(editedPath, 'utf-8'));
-        if (edited.text) {
+        if (typeof edited.text === 'string') {
           sessionData.ocrText = edited.text;
           sessionData.textEntities = edited.textEntities || [];
         }
@@ -2772,6 +2772,22 @@ router.patch('/tasks/:id/edited-text', async (req, res) => {
     }
     if (!Array.isArray(textEntities)) {
       return res.status(400).json({ success: false, message: '缺少 textEntities' });
+    }
+
+    // Validate entity boundaries and unique IDs
+    const seenIds = new Set();
+    for (let i = 0; i < textEntities.length; i++) {
+      const ent = textEntities[i];
+      if (typeof ent.start !== 'number' || typeof ent.end !== 'number' || ent.start < 0 || ent.end <= ent.start) {
+        return res.status(400).json({ success: false, message: `实体 ${i} 的 start/end 无效` });
+      }
+      if (ent.end > text.length) {
+        return res.status(400).json({ success: false, message: `实体 ${i} 的 end 超出文本长度` });
+      }
+      if (!ent.id || seenIds.has(ent.id)) {
+        return res.status(400).json({ success: false, message: `实体 ${i} 的 id 为空或重复` });
+      }
+      seenIds.add(ent.id);
     }
 
     const workDir = task.work_dir || path.join(uploadsDir, 'tasks', `.work_${taskId}`);
@@ -3090,17 +3106,15 @@ router.post('/tasks/:id/text-export', async (req, res) => {
     // then to original OCR text for PDF sources
     const sourceExt = path.extname(sourcePath).toLowerCase();
     let ocrTextSource = null;
-    if (text) {
-      // Frontend sent the current edited text — use it directly
+    if (typeof text === 'string') {
       ocrTextSource = path.join(workDir, 'export-ocr-text.txt');
       await fs.writeFile(ocrTextSource, text, 'utf-8');
     } else {
-      // Fall back to persisted edited text
       const editedPath = path.join(workDir, 'edited-text.json');
       if (existsSync(editedPath)) {
         try {
           const edited = JSON.parse(await fs.readFile(editedPath, 'utf-8'));
-          if (edited.text) {
+          if (typeof edited.text === 'string') {
             ocrTextSource = path.join(workDir, 'export-ocr-text.txt');
             await fs.writeFile(ocrTextSource, edited.text, 'utf-8');
           }
@@ -3189,8 +3203,14 @@ router.post('/tasks/:id/text-export', async (req, res) => {
       }
 
       try {
-        const ocrTextContent = (await fs.readFile(path.join(workDir, 'ocr-text.txt'), 'utf-8').catch(() => '')) || '';
-        const sourceSha = createHash('sha256').update(ocrTextContent).digest('hex');
+        // Hash the ACTUAL text that the engine processed (ocrTextSource or source file)
+        let actualTextForHash = '';
+        if (ocrTextSource && existsSync(ocrTextSource)) {
+          actualTextForHash = await fs.readFile(ocrTextSource, 'utf-8').catch(() => '');
+        } else {
+          actualTextForHash = await fs.readFile(sourcePath, 'utf-8').catch(() => '');
+        }
+        const sourceSha = createHash('sha256').update(actualTextForHash).digest('hex');
         const exportedContent = await fs.readFile(exportPath, 'utf-8');
         const redactedSha = createHash('sha256').update(exportedContent).digest('hex');
 

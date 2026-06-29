@@ -466,6 +466,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .text-panel-body { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; background: #fff; }
 .text-panel-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .text-panel-actions { display: flex; align-items: center; gap: 8px; }
+.text-edit-overlay-container { position: relative; width: 100%; min-height: 100%; }
+.text-edit-overlay-container .text-edit-area { background: transparent; color: transparent; caret-color: var(--base02); position: relative; padding: 0; }
+.text-edit-highlights { position: absolute; top: 0; left: 0; right: 0; margin: 0; font: 13px/1.7 var(--font-mono); white-space: pre-wrap; word-break: break-all; pointer-events: none; color: var(--base02); }
+.text-entity-bg { background: rgba(59, 130, 246, .12); border-radius: 2px; }
 .text-edit-area { width: 100%; min-height: 100%; resize: none; border: 0; outline: none; background: #fff; color: var(--base02); font: 13px/1.7 var(--font-mono); }
 .text-content { margin: 0; font: 13px/1.7 var(--font-mono); color: var(--base02); white-space: pre-wrap; word-break: break-all; }
 .text-preview-note { margin-top: 12px; font-size: 11px; color: var(--base01); font-style: italic; }
