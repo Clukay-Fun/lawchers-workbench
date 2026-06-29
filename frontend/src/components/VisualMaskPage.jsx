@@ -333,7 +333,7 @@ function MaskPreview({ pageInfo, boxes, containerWidth, selectedBox, hoveredBox,
 
 // ─── Text Dual-Column (P9-3: sync scroll + hover highlight) ─
 
-function TextDualColumn({ ocrText, entities, mode, onRightClickEntity, onAddManualEntity, onTextChange }) {
+function TextDualColumn({ ocrText, entities, mode, onRightClickEntity, onAddManualEntity, onTextChange, pendingReselect }) {
   const [hoveredEntity, setHoveredEntity] = useState(null);
   const [editing, setEditing] = useState(false);
   const [draftText, setDraftText] = useState(ocrText || '');
@@ -409,24 +409,18 @@ function TextDualColumn({ ocrText, entities, mode, onRightClickEntity, onAddManu
   const highlightOverlay = useMemo(() => {
     if (!entities.length) return [{ text: draftText || '', type: 'normal' }];
 
-    // Project non-needsReselect entities via diff; append needsReselect at original positions
-    const toProject = entities.filter(e => !e.needsReselect);
-    const projected = (ocrText && draftText !== ocrText && toProject.length > 0)
-      ? projectEntities(toProject, ocrText, draftText)
-      : toProject;
-    const allEnts = [
-      ...projected,
-      ...entities.filter(e => e.needsReselect),
-    ];
+    const projected = (ocrText && draftText !== ocrText)
+      ? projectEntities(entities, ocrText, draftText)
+      : entities;
 
     const parts = [];
     let last = 0;
-    const sorted = [...allEnts].sort((a, b) => (a.start || 0) - (b.start || 0));
+    const sorted = [...projected].sort((a, b) => (a.start || 0) - (b.start || 0));
     for (const ent of sorted) {
       const s = Math.min(ent.start, draftText.length);
       if (s > last) parts.push({ text: draftText.substring(last, s), type: 'normal' });
       const e = Math.min(ent.end, draftText.length);
-      if (e > s) parts.push({ text: draftText.substring(s, e), type: 'entity', entity: ent });
+      if (e > s) parts.push({ text: draftText.substring(s, e), type: 'entity' });
       last = Math.max(last, e);
     }
     if (last < draftText.length) parts.push({ text: draftText.substring(last), type: 'normal' });
@@ -462,7 +456,7 @@ function TextDualColumn({ ocrText, entities, mode, onRightClickEntity, onAddManu
     setEditing(false);
   }, [draftText, onTextChange]);
 
-  const reselectCount = entities.filter(e => e.needsReselect).length;
+  const reselectCount = pendingReselect?.length || 0;
 
   return (
     <div className="text-dual-column">
@@ -486,7 +480,7 @@ function TextDualColumn({ ocrText, entities, mode, onRightClickEntity, onAddManu
               <pre className="text-edit-highlights" ref={highlightRef} aria-hidden="true">
                 {highlightOverlay.map((part, i) =>
                   part.type === 'entity'
-                    ? <span key={i} className={`text-entity-bg${part.entity?.needsReselect ? ' needs-reselect' : ''}`}>{part.text}</span>
+                    ? <span key={i} className="text-entity-bg">{part.text}</span>
                     : <span key={i}>{part.text}</span>
                 )}
               </pre>
@@ -496,7 +490,7 @@ function TextDualColumn({ ocrText, entities, mode, onRightClickEntity, onAddManu
             <pre className="text-content">
               {Array.isArray(highlightedOriginal)
                 ? highlightedOriginal.map((part, i) => part.type === 'entity'
-                  ? <span key={i} data-src-start={part.start} className={`text-entity-highlight ${isHighlighted(part.entity) ? 'active' : ''}${part.entity?.needsReselect ? ' needs-reselect' : ''}`} onMouseEnter={() => setHoveredEntity(part.entity)} onMouseLeave={() => setHoveredEntity(null)} onContextMenu={(e) => { e.preventDefault(); onRightClickEntity?.(part.entity); }}>{part.text}</span>
+                  ? <span key={i} data-src-start={part.start} className={`text-entity-highlight ${isHighlighted(part.entity) ? 'active' : ''}`} onMouseEnter={() => setHoveredEntity(part.entity)} onMouseLeave={() => setHoveredEntity(null)} onContextMenu={(e) => { e.preventDefault(); onRightClickEntity?.(part.entity); }}>{part.text}</span>
                   : <span key={i} data-src-start={part.start}>{part.text}</span>
                 )
                 : highlightedOriginal
@@ -511,7 +505,7 @@ function TextDualColumn({ ocrText, entities, mode, onRightClickEntity, onAddManu
           <pre className="text-content">
             {Array.isArray(highlightedReplaced)
                 ? highlightedReplaced.map((part, i) => part.type === 'entity'
-                  ? <span key={i} className={`text-entity-highlight replaced ${isHighlighted(part.entity) ? 'active' : ''}${part.entity?.needsReselect ? ' needs-reselect' : ''}`} onMouseEnter={() => setHoveredEntity(part.entity)} onMouseLeave={() => setHoveredEntity(null)} onContextMenu={(e) => { e.preventDefault(); onRightClickEntity?.(part.entity); }}>{part.text}</span>
+                  ? <span key={i} className={`text-entity-highlight replaced ${isHighlighted(part.entity) ? 'active' : ''}`} onMouseEnter={() => setHoveredEntity(part.entity)} onMouseLeave={() => setHoveredEntity(null)} onContextMenu={(e) => { e.preventDefault(); onRightClickEntity?.(part.entity); }}>{part.text}</span>
                 : <span key={i}>{part.text}</span>
               )
               : highlightedReplaced
@@ -556,6 +550,8 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const [ocrText, setOcrText] = useState('');
   const [pageImages, setPageImages] = useState([]);
   const cancelledRef = useRef(new Set());
+  const [pendingReselect, setPendingReselect] = useState([]);
+  const pendingReselectRef = useRef([]);
   const entityIdCounterRef = useRef(0);
   const ocrTextRef = useRef('');
   const textEntitiesRef = useRef([]);
@@ -744,6 +740,9 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
       const restoredEntities = session.textEntities || [];
       setTextEntities(restoredEntities);
       textEntitiesRef.current = restoredEntities;
+      const restoredPending = session.pendingReselect || [];
+      setPendingReselect(restoredPending);
+      pendingReselectRef.current = restoredPending;
       // Initialize manual entity counter past existing manual IDs
       // Must scan both active AND cancelled entities to avoid ID reuse
       const cancelledEntities = session.cancelledEntities || [];
@@ -963,6 +962,22 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const handleAddManualEntity = useCallback(({ start, end, original }) => {
     const cleanOriginal = original.trim();
     if (!cleanOriginal) return;
+
+    // If there are pendingReselect items, resolve the first one
+    const pending = pendingReselectRef.current;
+    if (pending.length > 0) {
+      const target = pending[0];
+      const resolved = { ...target, start, end, original: cleanOriginal };
+      setPendingReselect(prev => prev.filter(p => p.id !== target.id));
+      pendingReselectRef.current = pending.filter(p => p.id !== target.id);
+      setTextEntities(prev => {
+        if (prev.some(e => e.start === start && e.end === end && e.original === cleanOriginal)) return prev;
+        return [...prev, resolved].sort((a, b) => a.start - b.start);
+      });
+      showToast('已重新选择');
+      return;
+    }
+
     const entity = {
       id: `manual_${++entityIdCounterRef.current}`,
       original: cleanOriginal,
@@ -1065,14 +1080,15 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     const reselectIds = new Set(needsReselect.map(e => e.id));
     const remapIds = new Set(remapped.map(e => e.id));
     const trulyCancelled = toCancel.filter(e => !reselectIds.has(e.id) && !remapIds.has(e.id));
-    const finalEntities = [
-      ...keptEntities,
-      ...remapped,
-      ...needsReselect.map(e => ({ ...e, needsReselect: true })),
-    ];
+    // Only position-valid entities go into textEntities
+    const finalEntities = [...keptEntities, ...remapped];
+    // needsReselect held separately — no valid position, not in text splicing
+    const pending = needsReselect.map(e => ({ id: e.id, original: e.original, entity_type: e.entity_type }));
 
     setTextEntities(finalEntities);
     textEntitiesRef.current = finalEntities;
+    setPendingReselect(pending);
+    pendingReselectRef.current = pending;
     // Only remove boxes for cancelled entities — text offset changes do not
     // affect PDF/scan visual positions, so kept entities keep their existing boxes.
     const cancelIds = new Set(trulyCancelled.map(e => e.id));
@@ -1108,16 +1124,17 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   // Keep refs in sync with state for handleTextChange
   useEffect(() => { ocrTextRef.current = ocrText; }, [ocrText]);
   useEffect(() => { textEntitiesRef.current = textEntities; }, [textEntities]);
+  useEffect(() => { pendingReselectRef.current = pendingReselect; }, [pendingReselect]);
   useEffect(() => { boxesRef.current = boxes; }, [boxes]);
 
   // Debounced save of edited text + entities (P0: persist edits across refresh)
   useEffect(() => {
     if (!task || !hasLoadedRef.current) return;
     const timer = setTimeout(() => {
-      updateEditedText(task.taskId, { text: ocrText, textEntities }).catch(err => console.warn('[PERSIST] edited-text save failed:', err?.message));
+      updateEditedText(task.taskId, { text: ocrText, textEntities, pendingReselect }).catch(err => console.warn('[PERSIST] edited-text save failed:', err?.message));
     }, 1500);
     return () => clearTimeout(timer);
-  }, [task, ocrText, textEntities]);
+  }, [task, ocrText, textEntities, pendingReselect]);
 
   // ─── Upload + Analyze ────────────────────────────────────────
 
@@ -1125,7 +1142,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     if (!file) return;
     localStorage.removeItem('activeTaskId');
     renderCacheRef.current = 'unknown';
-    setLoading(true); setError(null); setBoxes([]); setTextEntities([]); textEntitiesRef.current = []; setOcrBoxes([]); setOcrText(''); ocrTextRef.current = ''; setPageImages([]); cancelledRef.current = new Set(); setUploadPercent(0); setProcessingStep('上传中…');
+    setLoading(true); setError(null); setBoxes([]); setTextEntities([]); textEntitiesRef.current = []; setOcrBoxes([]); setOcrText(''); ocrTextRef.current = ''; setPageImages([]); cancelledRef.current = new Set(); setPendingReselect([]); pendingReselectRef.current = []; setUploadPercent(0); setProcessingStep('上传中…');
     try {
       const taskData = await uploadWithProgress(file, _settings?.rulesConfig, setUploadPercent);
       const normalized = normalizeTask(taskData);
@@ -1345,8 +1362,20 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
                   <Button variant="ghost" size="sm" disabled={currentPage <= 1} onClick={() => scrollToPage(currentPage - 1)}>←</Button>
                   <span>{currentPage} / {totalPages}</span>
                   <Button variant="ghost" size="sm" disabled={currentPage >= totalPages} onClick={() => scrollToPage(currentPage + 1)}>→</Button>
-                </div>
-              </div>
+      </div>
+      {pendingReselect?.length > 0 && (
+        <div className="pending-reselect-bar">
+          <span className="pending-reselect-label">待重新选择</span>
+          {pendingReselect.map(p => (
+            <span key={p.id} className="pending-reselect-item">
+              <span className="pending-reselect-type">{p.entity_type}</span>
+              <span className="pending-reselect-text">{p.original}</span>
+              <span className="pending-reselect-hint">请滑选原文中对应文字</span>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
               <div className="mask-panel-body" ref={scrollRef} onScroll={handleMaskLeftScroll}>
                 {pageImages.map((pg) => {
                   const pgInfo = { ...pg, taskId: task?.taskId };
@@ -1398,6 +1427,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
               ocrText={ocrText}
               entities={textEntities}
               mode={mode}
+              pendingReselect={pendingReselect}
               onRightClickEntity={handleRightClickEntity}
               onAddManualEntity={handleAddManualEntity}
               onTextChange={handleTextChange}

@@ -491,9 +491,14 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .text-entity-highlight:hover, .text-entity-highlight.active { background: rgba(59, 130, 246, .25); }
 .text-entity-highlight.replaced { background: rgba(59, 130, 246, .15); }
 .text-entity-highlight.replaced:hover, .text-entity-highlight.replaced.active { background: rgba(59, 130, 246, .35); }
-.text-entity-highlight.needs-reselect { background: rgba(234, 179, 8, .18); position: relative; }
-.text-entity-highlight.needs-reselect:hover, .text-entity-highlight.needs-reselect.active { background: rgba(234, 179, 8, .35); }
-.text-entity-highlight.needs-reselect::after { content: '待重新选择'; position: absolute; top: -16px; right: 0; font-size: 10px; color: #b8860b; white-space: nowrap; pointer-events: none; }
+
+/* P2: Pending reselect bar */
+.pending-reselect-bar { padding: 8px 16px; border-top: 1px solid var(--base03); display: flex; flex-wrap: wrap; gap: 8px; align-items: center; background: #fffbe6; font-size: 12px; }
+.pending-reselect-label { font-weight: 600; color: #b8860b; }
+.pending-reselect-item { display: inline-flex; align-items: center; gap: 4px; background: rgba(234, 179, 8, .12); padding: 2px 8px; border-radius: 4px; }
+.pending-reselect-type { font-weight: 600; color: #92400e; }
+.pending-reselect-text { color: #78350f; }
+.pending-reselect-hint { color: #b8860b; font-style: italic; }
 
 /* P9-5: Diagnostic panel */
 .diag-panel { margin: 8px 0; font-size: 12px; }
