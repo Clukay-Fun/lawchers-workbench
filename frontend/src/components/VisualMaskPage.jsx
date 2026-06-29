@@ -877,7 +877,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const cancelEntity = useCallback((entityId) => {
     if (!entityId) return;
     setTextEntities(prev => prev.filter(e => e.id !== entityId));
-    setBoxes(prev => prev.filter(b => b.entityId !== entityId));
+    setBoxes(prev => prev.filter(b => b.entityId !== entityId && !(b.entityIds || []).includes(entityId)));
     cancelledRef.current.add(entityId);
     persistCancelled(cancelledRef.current);
     showToast('已取消该区域脱敏');
@@ -988,7 +988,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
                     matchedEntities.push(existing);
                   } else {
                     matchedEntities.push({
-                      id: `ent_${++entityIdCounterRef.current}`,
+                      id: `bbox_${++entityIdCounterRef.current}`,
                       original: coveredText,
                       entity_type: 'OCR',
                       start: globalStart,

@@ -69,6 +69,7 @@ export function createNormalizedBox(partial) {
     pageHeight: partial.pageHeight || 842,
     source: partial.source || 'manual',
     entityType: partial.entityType || null,
+    entityId: partial.entityId || null,
     entityIds: partial.entityIds || [],
     text: partial.text || '',
     original: partial.original || partial.text || '',
