@@ -514,6 +514,18 @@ function TextDualColumn({ ocrText, entities, mode, onRightClickEntity, onAddManu
           <div className="text-preview-note">预览仅供参考，以实际导出为准</div>
         </div>
       </div>
+      {pendingReselect?.length > 0 && (
+        <div className="pending-reselect-bar">
+          <span className="pending-reselect-label">待重新选择</span>
+          {pendingReselect.map(p => (
+            <span key={p.id} className="pending-reselect-item">
+              <span className="pending-reselect-type">{p.entity_type}</span>
+              <span className="pending-reselect-text">{p.original}</span>
+              <span className="pending-reselect-hint">请滑选原文中对应文字</span>
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1362,20 +1374,8 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
                   <Button variant="ghost" size="sm" disabled={currentPage <= 1} onClick={() => scrollToPage(currentPage - 1)}>←</Button>
                   <span>{currentPage} / {totalPages}</span>
                   <Button variant="ghost" size="sm" disabled={currentPage >= totalPages} onClick={() => scrollToPage(currentPage + 1)}>→</Button>
-      </div>
-      {pendingReselect?.length > 0 && (
-        <div className="pending-reselect-bar">
-          <span className="pending-reselect-label">待重新选择</span>
-          {pendingReselect.map(p => (
-            <span key={p.id} className="pending-reselect-item">
-              <span className="pending-reselect-type">{p.entity_type}</span>
-              <span className="pending-reselect-text">{p.original}</span>
-              <span className="pending-reselect-hint">请滑选原文中对应文字</span>
-            </span>
-          ))}
-        </div>
-      )}
-    </div>
+                </div>
+              </div>
               <div className="mask-panel-body" ref={scrollRef} onScroll={handleMaskLeftScroll}>
                 {pageImages.map((pg) => {
                   const pgInfo = { ...pg, taskId: task?.taskId };

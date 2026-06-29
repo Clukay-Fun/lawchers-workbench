@@ -2591,6 +2591,7 @@ router.get('/tasks/:id/session', async (req, res) => {
         if (typeof edited.text === 'string') {
           sessionData.ocrText = edited.text;
           sessionData.textEntities = edited.textEntities || [];
+          sessionData.pendingReselect = edited.pendingReselect || [];
         }
       } catch (e) {
         console.warn('[WARN] Failed to load edited-text.json:', e.message);
@@ -2677,6 +2678,7 @@ router.get('/tasks/:id/session', async (req, res) => {
         diagnostics: sessionData.diagnostics || null,
         renderCacheStatus,
         cancelledEntities: cancelledEntities,
+        pendingReselect: (sessionData.pendingReselect || []).filter(p => !cancelledSet.has(p.id)),
       },
     });
   } catch (error) {
@@ -2766,7 +2768,7 @@ router.patch('/tasks/:id/edited-text', async (req, res) => {
     const task = getTaskById(taskId);
     if (!task) return res.status(404).json({ success: false, message: '任务不存在' });
 
-    const { text, textEntities } = req.body;
+    const { text, textEntities, pendingReselect } = req.body;
     if (typeof text !== 'string') {
       return res.status(400).json({ success: false, message: '缺少 text' });
     }
@@ -2806,7 +2808,7 @@ router.patch('/tasks/:id/edited-text', async (req, res) => {
     if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
 
     const editedPath = path.join(workDir, 'edited-text.json');
-    await fs.writeFile(editedPath, JSON.stringify({ text, textEntities }, null, 2), 'utf-8');
+    await fs.writeFile(editedPath, JSON.stringify({ text, textEntities, pendingReselect: pendingReselect || [] }, null, 2), 'utf-8');
 
     res.json({ success: true });
   } catch (error) {
