@@ -2774,8 +2774,9 @@ router.patch('/tasks/:id/edited-text', async (req, res) => {
       return res.status(400).json({ success: false, message: '缺少 textEntities' });
     }
 
-    // Validate entity boundaries and unique IDs
+    // Validate entity boundaries, original match, unique IDs, and no overlap
     const seenIds = new Set();
+    const intervals = [];
     for (let i = 0; i < textEntities.length; i++) {
       const ent = textEntities[i];
       if (typeof ent.start !== 'number' || typeof ent.end !== 'number' || ent.start < 0 || ent.end <= ent.start) {
@@ -2784,10 +2785,21 @@ router.patch('/tasks/:id/edited-text', async (req, res) => {
       if (ent.end > text.length) {
         return res.status(400).json({ success: false, message: `实体 ${i} 的 end 超出文本长度` });
       }
+      if (typeof ent.original === 'string' && text.slice(ent.start, ent.end) !== ent.original) {
+        return res.status(400).json({ success: false, message: `实体 ${i} 的 original 与文本不匹配` });
+      }
       if (!ent.id || seenIds.has(ent.id)) {
         return res.status(400).json({ success: false, message: `实体 ${i} 的 id 为空或重复` });
       }
       seenIds.add(ent.id);
+      intervals.push({ start: ent.start, end: ent.end });
+    }
+    // Check for overlaps
+    intervals.sort((a, b) => a.start - b.start);
+    for (let i = 1; i < intervals.length; i++) {
+      if (intervals[i].start < intervals[i - 1].end) {
+        return res.status(400).json({ success: false, message: `实体区间重叠: [${intervals[i-1].start},${intervals[i-1].end}) 与 [${intervals[i].start},${intervals[i].end})` });
+      }
     }
 
     const workDir = task.work_dir || path.join(uploadsDir, 'tasks', `.work_${taskId}`);

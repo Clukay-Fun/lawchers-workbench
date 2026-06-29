@@ -314,6 +314,8 @@ function TextDualColumn({ ocrText, entities, mode, onRightClickEntity, onAddManu
   const leftRef = useRef(null);
   const rightRef = useRef(null);
   const syncingRef = useRef(false);
+  const textareaRef = useRef(null);
+  const highlightRef = useRef(null);
 
   // Build highlighted original text (sequential, left-to-right)
   const highlightedOriginal = useMemo(() => {
@@ -363,6 +365,13 @@ function TextDualColumn({ ocrText, entities, mode, onRightClickEntity, onAddManu
       leftRef.current.scrollTop = rightRef.current.scrollTop;
     }
     syncingRef.current = false;
+  }, []);
+
+  const handleEditScroll = useCallback(() => {
+    if (textareaRef.current && highlightRef.current) {
+      highlightRef.current.scrollTop = textareaRef.current.scrollTop;
+      highlightRef.current.scrollLeft = textareaRef.current.scrollLeft;
+    }
   }, []);
 
   const isHighlighted = useCallback((ent) => {
@@ -435,14 +444,14 @@ function TextDualColumn({ ocrText, entities, mode, onRightClickEntity, onAddManu
         <div className="text-panel-body" ref={leftRef} onScroll={handleLeftScroll} onMouseUp={handleOriginalMouseUp}>
           {editing ? (
             <div className="text-edit-overlay-container">
-              <pre className="text-edit-highlights" aria-hidden="true">
+              <pre className="text-edit-highlights" ref={highlightRef} aria-hidden="true">
                 {highlightOverlay.map((part, i) =>
                   part.type === 'entity'
                     ? <span key={i} className="text-entity-bg">{part.text}</span>
                     : <span key={i}>{part.text}</span>
                 )}
               </pre>
-              <textarea className="text-edit-area" value={draftText} onChange={(e) => setDraftText(e.target.value)} />
+              <textarea className="text-edit-area" ref={textareaRef} value={draftText} onChange={(e) => setDraftText(e.target.value)} onScroll={handleEditScroll} />
             </div>
           ) : (
             <pre className="text-content">
