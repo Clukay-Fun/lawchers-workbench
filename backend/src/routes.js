@@ -2637,7 +2637,7 @@ router.get('/tasks/:id/session', async (req, res) => {
       boxes = [...(sessionData.refinedBoxes || []), ...(sessionData.sealBoxes || [])];
     }
 
-    // Read cancelled entities set
+    // S5: cancelled-entities.json only read for migration (not for runtime filtering)
     const cancelledPath = path.join(workDir, 'cancelled-entities.json');
     let cancelledEntities = [];
     if (existsSync(cancelledPath)) {
@@ -2645,25 +2645,21 @@ router.get('/tasks/:id/session', async (req, res) => {
         cancelledEntities = JSON.parse(await fs.readFile(cancelledPath, 'utf-8'));
       } catch {}
     }
-    const cancelledSet = new Set(cancelledEntities);
 
-    // Filter textEntities: remove cancelled
-    const textEntities = (sessionData.textEntities || []).filter(e => !cancelledSet.has(e.id));
+    // S5: No more cancelled-set filtering — redactions.enabled handles cancellation.
+    // Legacy fields returned unfiltered for migration converter.
+    const textEntities = sessionData.textEntities || [];
 
-    // Filter refinedBoxes: remove boxes whose entityId is cancelled
-    const refinedBoxes = refineToEntityBoxes(sessionData.ocrBoxes || [], textEntities);
+    // S5: No more refinedBoxes recompute or cancelled filtering of boxes
+    const refinedBoxes = sessionData.refinedBoxes || [];
 
-    // Rebuild boxes: user-saved boxes (minus cancelled) + refined + seal
     let savedBoxes = [];
     if (existsSync(boxesPath)) {
       savedBoxes = JSON.parse(await fs.readFile(boxesPath, 'utf-8'));
     }
-    // Filter out boxes whose entityId is cancelled
-    const filteredSavedBoxes = savedBoxes.filter(b => !b.entityId || !cancelledSet.has(b.entityId));
-    // If no saved boxes, use refined + seal as initial
-    const finalBoxes = filteredSavedBoxes.length > 0
-      ? filteredSavedBoxes
-      : [...refinedBoxes, ...(sessionData.sealBoxes || [])].filter(b => !b.entityId || !cancelledSet.has(b.entityId));
+    const finalBoxes = savedBoxes.length > 0
+      ? savedBoxes
+      : [...refinedBoxes, ...(sessionData.sealBoxes || [])];
 
     const ocrBoxes = sessionData.ocrBoxes || [];
 
@@ -2689,8 +2685,8 @@ router.get('/tasks/:id/session', async (req, res) => {
         ocrText: sessionData.ocrText || ocrBoxes.map(b => b.text || '').join('\n'),
         diagnostics: sessionData.diagnostics || null,
         renderCacheStatus,
-        cancelledEntities: cancelledEntities,
-        pendingReselect: (sessionData.pendingReselect || []).filter(p => !cancelledSet.has(p.id)),
+        cancelledEntities,
+        pendingReselect: sessionData.pendingReselect || [],
         redactions: redactionsData,
       },
     });
@@ -2701,75 +2697,11 @@ router.get('/tasks/:id/session', async (req, res) => {
 });
 
 /**
- * PATCH /api/tasks/:id/boxes - 更新任务的遮蔽框列表
+ * S5: Deleted PATCH /tasks/:id/boxes and PATCH /tasks/:id/cancelled-entities
+ * Runtime writes now go through PATCH /tasks/:id/redactions only.
+ * Legacy files (boxes.json, cancelled-entities.json) are still READ by
+ * session endpoint and migration converter for backward compatibility.
  */
-router.patch('/tasks/:id/boxes', async (req, res) => {
-  try {
-    const taskId = parseInt(req.params.id, 10);
-    const task = getTaskById(taskId);
-    if (!task) return res.status(404).json({ success: false, message: '任务不存在' });
-
-    const { boxes } = req.body;
-    if (!Array.isArray(boxes)) {
-      return res.status(400).json({ success: false, message: 'boxes 必须是数组' });
-    }
-
-    // Validate boxes
-    for (const box of boxes) {
-      if (typeof box.x !== 'number' || typeof box.y !== 'number' ||
-          typeof box.width !== 'number' || typeof box.height !== 'number' ||
-          typeof box.page !== 'number') {
-        return res.status(400).json({ success: false, message: '框缺少必要字段 (page, x, y, width, height)' });
-      }
-      if (box.x < 0 || box.x > 1 || box.y < 0 || box.y > 1 ||
-          box.width <= 0 || box.width > 1 || box.height <= 0 || box.height > 1) {
-        return res.status(400).json({ success: false, message: '坐标必须在 [0,1] 范围内' });
-      }
-      if (box.x + box.width > 1 || box.y + box.height > 1) {
-        return res.status(400).json({ success: false, message: '遮蔽框不能超出页面边界' });
-      }
-    }
-
-    // Save boxes to work_dir
-    const workDir = task.work_dir || path.join(uploadsDir, 'tasks', `.work_${taskId}`);
-    if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
-    const boxesPath = path.join(workDir, 'boxes.json');
-    await fs.writeFile(boxesPath, JSON.stringify(boxes, null, 2), 'utf-8');
-
-    res.json({ success: true, data: { count: boxes.length, boxesPath } });
-  } catch (error) {
-    console.error('Boxes Update Error:', error);
-    res.status(500).json({ success: false, message: '更新框失败', error: error.message });
-  }
-});
-
-/**
- * PATCH /api/tasks/:id/cancelled-entities - 更新已取消的实体列表
- * Body: { cancelled: ["ORG:120:138", "PER:300:302"] }
- * 右键取消 = 当前任务复核决定，不写规则中心。
- */
-router.patch('/tasks/:id/cancelled-entities', async (req, res) => {
-  try {
-    const taskId = parseInt(req.params.id, 10);
-    const task = getTaskById(taskId);
-    if (!task) return res.status(404).json({ success: false, message: '任务不存在' });
-
-    const { cancelled } = req.body;
-    if (!Array.isArray(cancelled)) {
-      return res.status(400).json({ success: false, message: 'cancelled 必须是数组' });
-    }
-
-    const workDir = task.work_dir || path.join(uploadsDir, 'tasks', `.work_${taskId}`);
-    if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
-    const cancelledPath = path.join(workDir, 'cancelled-entities.json');
-    await fs.writeFile(cancelledPath, JSON.stringify(cancelled, null, 2), 'utf-8');
-
-    res.json({ success: true, data: { count: cancelled.length } });
-  } catch (error) {
-    console.error('Cancelled Entities Error:', error);
-    res.status(500).json({ success: false, message: '更新取消列表失败', error: error.message });
-  }
-});
 
 /**
  * GET /api/tasks/:id/redactions - 获取 redactions（单一事实源）
@@ -2941,79 +2873,12 @@ router.patch('/tasks/:id/redactions', async (req, res) => {
 });
 
 /**
- * PATCH /api/tasks/:id/edited-text - 保存编辑后的工作文本与实体位置
- * Body: { text: string, textEntities: array }
+ * S5: Deleted PATCH /tasks/:id/edited-text
+ * Runtime persistence now goes through PATCH /tasks/:id/redactions
+ * (which stores both work text and redactions in one atomic write).
+ * edited-text.json is still READ by session endpoint and text-export
+ * for migration / fallback on old tasks.
  */
-router.patch('/tasks/:id/edited-text', async (req, res) => {
-  try {
-    const taskId = parseInt(req.params.id, 10);
-    const task = getTaskById(taskId);
-    if (!task) return res.status(404).json({ success: false, message: '任务不存在' });
-
-    const { text, textEntities, pendingReselect } = req.body;
-    if (typeof text !== 'string') {
-      return res.status(400).json({ success: false, message: '缺少 text' });
-    }
-    if (!Array.isArray(textEntities)) {
-      return res.status(400).json({ success: false, message: '缺少 textEntities' });
-    }
-    const pending = pendingReselect ?? [];
-    if (!Array.isArray(pending)) {
-      return res.status(400).json({ success: false, message: 'pendingReselect 必须是数组' });
-    }
-
-    // Validate entity boundaries, original match, unique IDs, and no overlap
-    const seenIds = new Set();
-    const intervals = [];
-    for (let i = 0; i < textEntities.length; i++) {
-      const ent = textEntities[i];
-      if (typeof ent.start !== 'number' || typeof ent.end !== 'number' || ent.start < 0 || ent.end <= ent.start) {
-        return res.status(400).json({ success: false, message: `实体 ${i} 的 start/end 无效` });
-      }
-      if (ent.end > text.length) {
-        return res.status(400).json({ success: false, message: `实体 ${i} 的 end 超出文本长度` });
-      }
-      if (typeof ent.original !== 'string' || text.slice(ent.start, ent.end) !== ent.original) {
-        return res.status(400).json({ success: false, message: `实体 ${i} 的 original 与文本不匹配` });
-      }
-      if (!ent.id || seenIds.has(ent.id)) {
-        return res.status(400).json({ success: false, message: `实体 ${i} 的 id 为空或重复` });
-      }
-      seenIds.add(ent.id);
-      intervals.push({ start: ent.start, end: ent.end });
-    }
-    const pendingIds = new Set();
-    for (let i = 0; i < pending.length; i++) {
-      const item = pending[i];
-      if (!item || typeof item.id !== 'string' || !item.id
-        || typeof item.original !== 'string' || typeof item.entity_type !== 'string') {
-        return res.status(400).json({ success: false, message: `待重选实体 ${i} 无效` });
-      }
-      if (seenIds.has(item.id) || pendingIds.has(item.id)) {
-        return res.status(400).json({ success: false, message: `待重选实体 ${i} 的 id 重复` });
-      }
-      pendingIds.add(item.id);
-    }
-    // Check for overlaps
-    intervals.sort((a, b) => a.start - b.start);
-    for (let i = 1; i < intervals.length; i++) {
-      if (intervals[i].start < intervals[i - 1].end) {
-        return res.status(400).json({ success: false, message: `实体区间重叠: [${intervals[i-1].start},${intervals[i-1].end}) 与 [${intervals[i].start},${intervals[i].end})` });
-      }
-    }
-
-    const workDir = task.work_dir || path.join(uploadsDir, 'tasks', `.work_${taskId}`);
-    if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
-
-    const editedPath = path.join(workDir, 'edited-text.json');
-    await fs.writeFile(editedPath, JSON.stringify({ text, textEntities, pendingReselect: pending }, null, 2), 'utf-8');
-
-    res.json({ success: true });
-  } catch (error) {
-    console.error('Save edited text error:', error);
-    res.status(500).json({ success: false, message: '保存编辑文本失败', error: error.message });
-  }
-});
 
 /**
  * POST /api/tasks/:id/mask-export - 导出遮蔽 PDF

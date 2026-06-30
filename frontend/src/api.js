@@ -202,34 +202,6 @@ export async function renderTasksPages(taskId) {
 }
 
 
-/** 更新任务的遮蔽框列表 */
-export async function updateTaskBoxes(taskId, boxes) {
-  const response = await fetch(`${API_BASE}/tasks/${taskId}/boxes`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ boxes }),
-  });
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err.message || '更新框失败');
-  }
-  return response.json();
-}
-
-/** 更新已取消的实体列表 */
-export async function updateCancelledEntities(taskId, cancelled) {
-  const response = await fetch(`${API_BASE}/tasks/${taskId}/cancelled-entities`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ cancelled }),
-  });
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err.message || '更新取消列表失败');
-  }
-  return response.json();
-}
-
 /** 导出遮蔽 PDF */
 export async function maskExportTask(taskId, boxes) {
   const response = await fetch(`${API_BASE}/tasks/${taskId}/mask-export`, {
@@ -256,18 +228,6 @@ export async function textExportTask(taskId, entities, mode, format, text) {
     throw new Error(err.message || '文本替换导出失败');
   }
   return response;
-}
-
-/** 保存编辑后的工作文本与实体位置 */
-export async function updateEditedText(taskId, data) {
-  const response = await fetch(`${API_BASE}/tasks/${taskId}/edited-text`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  });
-  const j = await response.json();
-  if (!j.success) throw new Error(j.message || '保存编辑文本失败');
-  return j;
 }
 
 /** S4: 获取 redactions（单一事实源） */

@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { analyzeTask, updateTaskBoxes, maskExportTask, textExportTask, getTaskSession, updateCancelledEntities, updateEditedText, getHistory, deleteHistory, renderTasksPages, updateRedactions } from '../api';
+import { analyzeTask, maskExportTask, textExportTask, getTaskSession, getHistory, deleteHistory, renderTasksPages, updateRedactions } from '../api';
 import { Button } from '@/components/ui/button';
 import { normalizedToCSS, computeDisplaySize, createNormalizedBox } from '../services/coords';
 import { findOcrSpansForBox } from '../services/ocrBoxLinking';
@@ -7,7 +7,7 @@ import { projectEntities } from '../services/diff';
 import { choosePendingReselect } from '../services/reselection';
 import {
   convertToRedactions, deriveBoxes, deriveTextEntities, derivePendingReselect,
-  deriveCancelledIds, remapRedactions, addRedaction, cancelRedaction,
+  remapRedactions, addRedaction, cancelRedaction,
   resolveRedaction, updateRedaction,
 } from '../services/redactions';
 
@@ -627,7 +627,6 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const boxes = useMemo(() => deriveBoxes(redactions), [redactions]);
   const textEntities = useMemo(() => deriveTextEntities(redactions), [redactions]);
   const pendingReselect = useMemo(() => derivePendingReselect(redactions), [redactions]);
-  const cancelledIds = useMemo(() => deriveCancelledIds(redactions), [redactions]);
 
   // Track container width for adaptive layout — rebind when mask mode renders
   useEffect(() => {
@@ -767,11 +766,12 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
       const normalized = normalizeTask(session.task);
       renderCacheRef.current = session.renderCacheStatus || 'unknown';
       setTask(normalized);
-      // S4: Use redactions from session if available, otherwise convert from old format
+      // S5: Use redactions from session if available, otherwise convert from old format (migration)
       if (session.redactions && Array.isArray(session.redactions)) {
         setRedactions(session.redactions);
         redactionsRef.current = session.redactions;
       } else {
+        // Migration path: old task without redactions.json — convert from legacy fields
         const restoredEntities = session.textEntities || [];
         const restoredBoxes = session.boxes || [];
         const restoredCancelled = session.cancelledEntities || [];
@@ -1158,23 +1158,14 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   useEffect(() => { ocrTextRef.current = ocrText; }, [ocrText]);
   useEffect(() => { redactionsRef.current = redactions; }, [redactions]);
 
-  // S4: Persist — primary redactions.json first, then legacy compat only on success
+  // S5: Persist — only redactions.json (single source of truth)
   useEffect(() => {
     if (!task || !hasLoadedRef.current) return;
-    const timer = setTimeout(async () => {
-      try {
-        await updateRedactions(task.taskId, redactions, ocrText);
-      } catch (err) {
-        console.warn('[PERSIST] redactions save failed:', err?.message);
-        return;
-      }
-      // Legacy compat writes only after primary succeeds (prevents split state)
-      updateTaskBoxes(task.taskId, boxes).catch(() => {});
-      updateEditedText(task.taskId, { text: ocrText, textEntities, pendingReselect }).catch(() => {});
-      updateCancelledEntities(task.taskId, cancelledIds).catch(() => {});
+    const timer = setTimeout(() => {
+      updateRedactions(task.taskId, redactions, ocrText).catch(err => console.warn('[PERSIST] redactions save failed:', err?.message));
     }, 1500);
     return () => clearTimeout(timer);
-  }, [task, redactions, ocrText, boxes, textEntities, pendingReselect, cancelledIds]);
+  }, [task, redactions, ocrText]);
 
   // ─── Upload + Analyze ────────────────────────────────────────
 
@@ -1256,7 +1247,6 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
 
     setExporting(true);
     try {
-      await updateTaskBoxes(task.taskId, boxes);
       const baseName = task.filename ? task.filename.substring(0, task.filename.lastIndexOf('.')) : 'document';
       const ext = task.filename ? task.filename.substring(task.filename.lastIndexOf('.')) : '';
 
