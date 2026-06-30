@@ -3,8 +3,13 @@ import { analyzeTask, updateTaskBoxes, maskExportTask, textExportTask, getTaskSe
 import { Button } from '@/components/ui/button';
 import { normalizedToCSS, computeDisplaySize, createNormalizedBox } from '../services/coords';
 import { findOcrSpansForBox } from '../services/ocrBoxLinking';
-import { multiDiff, mapEntities, detectAmbiguous, projectEntities } from '../services/diff';
+import { projectEntities } from '../services/diff';
 import { choosePendingReselect } from '../services/reselection';
+import {
+  convertToRedactions, deriveBoxes, deriveTextEntities, derivePendingReselect,
+  deriveCancelledIds, remapRedactions, addRedaction, cancelRedaction,
+  resolveRedaction,
+} from '../services/redactions';
 
 // ─── Constants ───────────────────────────────────────────────
 
@@ -569,19 +574,13 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const [uploadPercent, setUploadPercent] = useState(0);
   const [error, setError] = useState(null);
 
-  const [boxes, setBoxes] = useState([]);
-  const [textEntities, setTextEntities] = useState([]);
   const [ocrBoxes, setOcrBoxes] = useState([]);
   const [ocrText, setOcrText] = useState('');
   const [pageImages, setPageImages] = useState([]);
-  const cancelledRef = useRef(new Set());
-  const [pendingReselect, setPendingReselect] = useState([]);
+  const [redactions, setRedactions] = useState([]);
+  const redactionsRef = useRef([]);
   const [selectedPendingId, setSelectedPendingId] = useState(null);
-  const pendingReselectRef = useRef([]);
-  const entityIdCounterRef = useRef(0);
   const ocrTextRef = useRef('');
-  const textEntitiesRef = useRef([]);
-  const boxesRef = useRef([]);
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedBox, setSelectedBox] = useState(null);
   const [hoveredBox, setHoveredBox] = useState(null);
@@ -623,6 +622,12 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const pageRowRefs = useRef({});
   const hasLoadedRef = useRef(false);
   const [containerWidth, setContainerWidth] = useState(560);
+
+  // ─── Derived values from redactions (single source of truth) ───
+  const boxes = useMemo(() => deriveBoxes(redactions), [redactions]);
+  const textEntities = useMemo(() => deriveTextEntities(redactions), [redactions]);
+  const pendingReselect = useMemo(() => derivePendingReselect(redactions), [redactions]);
+  const cancelledIds = useMemo(() => deriveCancelledIds(redactions), [redactions]);
 
   // Track container width for adaptive layout — rebind when mask mode renders
   useEffect(() => {
@@ -762,29 +767,20 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
       const normalized = normalizeTask(session.task);
       renderCacheRef.current = session.renderCacheStatus || 'unknown';
       setTask(normalized);
-      setBoxes(session.boxes || []);
+      // S2: Convert old format to redactions (single source of truth)
       const restoredEntities = session.textEntities || [];
-      setTextEntities(restoredEntities);
-      textEntitiesRef.current = restoredEntities;
+      const restoredBoxes = session.boxes || [];
+      const restoredCancelled = session.cancelledEntities || [];
       const restoredPending = session.pendingReselect || [];
-      setPendingReselect(restoredPending);
+      const reds = convertToRedactions(restoredEntities, restoredBoxes, restoredCancelled, restoredPending);
+      setRedactions(reds);
+      redactionsRef.current = reds;
       setSelectedPendingId(null);
-      pendingReselectRef.current = restoredPending;
-      // Initialize manual entity counter past existing manual IDs
-      // Must scan both active AND cancelled entities to avoid ID reuse
-      const cancelledEntities = session.cancelledEntities || [];
-      const allKnownIds = [...restoredEntities.map(e => e.id), ...cancelledEntities];
-      const maxManual = allKnownIds.reduce((max, id) => {
-        const m = (id || '').match(/^(?:manual|bbox)_(\d+)$/);
-        return m ? Math.max(max, parseInt(m[1], 10)) : max;
-      }, 0);
-      entityIdCounterRef.current = maxManual;
       setOcrBoxes(session.ocrBoxes || []);
       const restoredOcrText = session.ocrText || '';
       setOcrText(restoredOcrText);
       ocrTextRef.current = restoredOcrText;
       setPageImages(session.manifest?.pages || []);
-      cancelledRef.current = new Set(session.cancelledEntities || []);
       setCurrentPage(1);
       hasLoadedRef.current = true;
       localStorage.setItem('activeTaskId', String(taskId));
@@ -824,14 +820,13 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
         } else {
           // Clear everything — show empty state
           setTask(null);
-          setBoxes([]);
-          setTextEntities([]);
+          setRedactions([]);
+          redactionsRef.current = [];
           setOcrBoxes([]);
           setOcrText('');
           setPageImages([]);
           setPageStatus({});
           setImageUrls({});
-          cancelledRef.current = new Set();
           hasLoadedRef.current = false;
           setCurrentPage(1);
           localStorage.removeItem('activeTaskId');
@@ -932,228 +927,201 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     maskScrollSyncRef.current = false;
   }, []);
 
-  // ─── S5: Right-click cancel handler (Slice 2: persist to backend) ──
-  const persistCancelled = useCallback((newSet) => {
-    if (!task) return;
-    updateCancelledEntities(task.taskId, [...newSet]).catch(() => {});
-  }, [task]);
+  // ─── Redaction mutations (S2/S3: all entry points operate on redactions) ──
 
-  const cancelEntity = useCallback((entityId) => {
-    if (!entityId) return;
-    setTextEntities(prev => prev.filter(e => e.id !== entityId));
-    setBoxes(prev => prev.filter(b => b.entityId !== entityId && !(b.entityIds || []).includes(entityId)));
-    cancelledRef.current.add(entityId);
-    persistCancelled(cancelledRef.current);
+  const cancelRedactionHandler = useCallback((redactionId) => {
+    if (!redactionId) return;
+    setRedactions(prev => cancelRedaction(prev, redactionId));
     showToast('已取消该区域脱敏');
-  }, [showToast, persistCancelled]);
+  }, [showToast]);
 
   const handleRightClickBox = useCallback((box) => {
-    setBoxes(prev => prev.filter(b => b.id !== box.id));
-    (box.entityIds?.length ? box.entityIds : [box.entityId].filter(Boolean)).forEach(cancelEntity);
-  }, [cancelEntity]);
+    const linkedIds = box.entityIds?.length ? box.entityIds : [box.entityId].filter(Boolean);
+    if (linkedIds.length > 0) {
+      setRedactions(prev => prev.map(r => linkedIds.includes(r.id) ? { ...r, enabled: false } : r));
+      showToast('已取消该区域脱敏');
+    }
+  }, [showToast]);
 
   const handleRightClickEntity = useCallback((entity) => {
-    cancelEntity(entity.id);
-  }, [cancelEntity]);
+    cancelRedactionHandler(entity.id);
+  }, [cancelRedactionHandler]);
 
-  const createBoxForTextEntity = useCallback((entity) => {
+  // Build pageRegions for a text range by looking up OCR line positions
+  const createPageRegionsForTextRange = useCallback((start, end) => {
     let offset = 0;
     for (const line of ocrBoxes) {
       const text = line.text || '';
       const lineStart = offset;
       const lineEnd = offset + text.length;
       offset = lineEnd + 1;
-      if (entity.start < lineStart || entity.start >= lineEnd || !text.length) continue;
-      const startInLine = Math.max(0, entity.start - lineStart);
-      const endInLine = Math.min(text.length, entity.end - lineStart);
+      if (start < lineStart || start >= lineEnd || !text.length) continue;
+      const startInLine = Math.max(0, start - lineStart);
+      const endInLine = Math.min(text.length, end - lineStart);
       const ratioStart = startInLine / text.length;
       const ratioWidth = Math.max(1 / text.length, (endInLine - startInLine) / text.length);
-      return createNormalizedBox({
-        id: `manual_box_${entity.id}`,
+      return [{
+        id: `reg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         page: line.page || line.pageNumber || 1,
         x: (line.x || 0) + (line.width || 0) * ratioStart,
         y: line.y || 0,
         width: (line.width || 0) * ratioWidth,
         height: line.height || 0.015,
-        pageWidth: 595,
-        pageHeight: 842,
-        source: 'manual-text',
-        entityType: entity.entity_type,
-        text: entity.original,
-        entityId: entity.id,
-      });
+      }];
     }
-    return null;
+    return [];
   }, [ocrBoxes]);
 
   const handleAddManualEntity = useCallback(({ start, end, original }) => {
     const cleanOriginal = original.trim();
     if (!cleanOriginal) return;
-    const overlapsActiveEntity = textEntitiesRef.current.some(
-      entity => start < entity.end && end > entity.start,
-    );
-    if (overlapsActiveEntity) {
+
+    // Check overlap with active text entities
+    const activeEntities = deriveTextEntities(redactionsRef.current);
+    const overlaps = activeEntities.some(e => start < e.end && end > e.start);
+    if (overlaps) {
       showToast('所选文字与现有脱敏项重叠，请先取消原脱敏项');
       return;
     }
 
-    const pending = pendingReselectRef.current;
+    // Check pending reselect resolution
+    const pending = derivePendingReselect(redactionsRef.current);
     const choice = choosePendingReselect(pending, selectedPendingId, cleanOriginal);
     if (choice.status === 'ambiguous') {
       showToast('有多个相同待重选项，请先点击待重选项再滑选');
       return;
     }
     if (choice.status === 'resolve') {
-      const target = choice.target;
-      const resolved = { ...target, start, end, original: cleanOriginal };
-      const remaining = pending.filter(p => p.id !== target.id);
-      setPendingReselect(remaining);
-      pendingReselectRef.current = remaining;
+      setRedactions(prev => resolveRedaction(prev, choice.target.id, { start, end }, cleanOriginal));
       setSelectedPendingId(null);
-      setTextEntities(prev => {
-        if (prev.some(e => e.start === start && e.end === end && e.original === cleanOriginal)) return prev;
-        const next = [...prev, resolved].sort((a, b) => a.start - b.start);
-        textEntitiesRef.current = next;
-        return next;
-      });
       showToast('已重新选择');
       return;
     }
 
-    const entity = {
-      id: `manual_${++entityIdCounterRef.current}`,
+    // New redaction with textAnchor + pageRegions (if mappable to OCR)
+    const pageRegions = createPageRegionsForTextRange(start, end);
+    setRedactions(prev => addRedaction(prev, {
+      entityType: 'CUSTOM',
       original: cleanOriginal,
-      entity_type: 'CUSTOM',
-      start,
-      end,
       source: 'manual',
-    };
-    setTextEntities(prev => {
-      if (prev.some(e => e.start === start && e.end === end && e.original === cleanOriginal)) return prev;
-      const next = [...prev, entity].sort((a, b) => a.start - b.start);
-      textEntitiesRef.current = next;
-      return next;
-    });
-    const box = createBoxForTextEntity(entity);
-    if (box) setBoxes(prev => prev.some(b => b.entityId === entity.id) ? prev : [...prev, box]);
-    showToast(box ? '已新增脱敏' : '已新增文本脱敏，遮蔽框需手动补充');
-  }, [createBoxForTextEntity, selectedPendingId, showToast]);
+      textAnchor: { start, end },
+      pageRegions,
+    }));
+    showToast(pageRegions.length > 0 ? '已新增脱敏' : '已新增文本脱敏，遮蔽框需手动补充');
+  }, [createPageRegionsForTextRange, selectedPendingId, showToast]);
 
-  // P1.5/P1.6: OCR 反查；新增、移动、缩放统一走这一条关联链路。
-  const syncBoxEntities = useCallback((box) => {
+  // Box drawn or moved → find OCR spans → create/update redactions
+  const handleBoxCreated = useCallback((box) => {
     const spans = findOcrSpansForBox(box, ocrBoxes);
-    const oldEntityIds = box.entityIds?.length
-      ? box.entityIds
-      : [box.entityId].filter(Boolean);
-    const linkedByOtherBoxes = new Set(
-      boxesRef.current
-        .filter(other => other.id !== box.id)
-        .flatMap(other => other.entityIds?.length
-          ? other.entityIds
-          : [other.entityId].filter(Boolean)),
-    );
-    const oldManualIds = new Set(oldEntityIds.filter(id => id.startsWith('bbox_')));
-    const baseEntities = textEntitiesRef.current.filter(entity => !oldManualIds.has(entity.id));
-    const matchedEntities = [];
-    for (const span of spans) {
-      const overlapping = [...baseEntities, ...matchedEntities].find(
-        entity => span.start < entity.end && span.end > entity.start
-      );
-      matchedEntities.push(overlapping || {
-        id: `bbox_${++entityIdCounterRef.current}`,
-        original: span.original,
-        entity_type: 'OCR',
-        start: span.start,
-        end: span.end,
-        source: 'manual',
-      });
+    if (spans.length === 0) {
+      // Pure visual (seal / no OCR text in region)
+      setRedactions(prev => addRedaction(prev, {
+        entityType: 'SEAL',
+        original: '',
+        source: 'seal',
+        textAnchor: null,
+        pageRegions: [{ id: `reg_${box.id}`, page: box.page, x: box.x, y: box.y, width: box.width, height: box.height }],
+      }));
+      showToast('已新增遮蔽框');
+      return;
     }
-
-    const entityIds = [...new Set(matchedEntities.map(entity => entity.id))];
-    const staleEntityIds = oldEntityIds.filter(
-      id => !entityIds.includes(id) && !linkedByOtherBoxes.has(id)
-    );
-    const nextEntities = [
-      ...baseEntities,
-      ...matchedEntities.filter(entity => !baseEntities.some(existing => existing.id === entity.id)),
-    ].filter(entity => !staleEntityIds.includes(entity.id))
-      .sort((a, b) => a.start - b.start);
-    textEntitiesRef.current = nextEntities;
-    setTextEntities(nextEntities);
-    setBoxes(prev => {
-      const next = prev.map(b =>
-        b.id === box.id ? { ...b, entityId: null, entityIds } : b
-      );
-      boxesRef.current = next;
-      return next;
+    setRedactions(prev => {
+      let result = prev;
+      for (const span of spans) {
+        const existing = result.find(r =>
+          r.enabled && r.textAnchor &&
+          r.textAnchor.start === span.start && r.textAnchor.end === span.end
+        );
+        if (existing) {
+          result = result.map(r => r.id === existing.id
+            ? { ...r, pageRegions: [...r.pageRegions, { id: `reg_${box.id}`, page: box.page, x: box.x, y: box.y, width: box.width, height: box.height }] }
+            : r
+          );
+        } else {
+          result = addRedaction(result, {
+            entityType: 'CUSTOM',
+            original: span.original,
+            source: 'manual',
+            textAnchor: { start: span.start, end: span.end },
+            pageRegions: [{ id: `reg_${box.id}`, page: box.page, x: box.x, y: box.y, width: box.width, height: box.height }],
+          });
+        }
+      }
+      return result;
     });
+    showToast(spans.length > 0 ? '已新增脱敏' : '已新增遮蔽框');
+  }, [ocrBoxes, showToast]);
 
-    const staleAutomaticIds = staleEntityIds.filter(id => !id.startsWith('bbox_'));
-    if (staleAutomaticIds.length > 0) {
-      for (const id of staleAutomaticIds) cancelledRef.current.add(id);
-      persistCancelled(cancelledRef.current);
-    }
-  }, [ocrBoxes, persistCancelled]);
+  // Box moved/resized → update pageRegions
+  const handleBoxUpdated = useCallback((box) => {
+    setRedactions(prev => {
+      const regId = `reg_${box.id}`;
+      return prev.map(r => {
+        const regIdx = r.pageRegions.findIndex(reg => reg.id === regId);
+        if (regIdx === -1) return r;
+        const newRegions = [...r.pageRegions];
+        newRegions[regIdx] = { ...newRegions[regIdx], x: box.x, y: box.y, width: box.width, height: box.height };
+        return { ...r, pageRegions: newRegions };
+      });
+    });
+  }, []);
 
-  const handleBoxCreated = useCallback((box) => syncBoxEntities(box), [syncBoxEntities]);
-  const handleBoxUpdated = useCallback((box) => syncBoxEntities(box), [syncBoxEntities]);
+  // Live drag preview → update pageRegions in real-time
+  const handleBoxesChange = useCallback((nextBoxes) => {
+    const currentBoxes = deriveBoxes(redactionsRef.current);
+    setRedactions(prev => {
+      let result = prev;
+      for (const nextBox of nextBoxes) {
+        const currentBox = currentBoxes.find(b => b.id === nextBox.id);
+        if (!currentBox) continue;
+        if (currentBox.x === nextBox.x && currentBox.y === nextBox.y &&
+            currentBox.width === nextBox.width && currentBox.height === nextBox.height) continue;
+        const regId = nextBox.id;
+        result = result.map(r => {
+          const regIdx = r.pageRegions.findIndex(reg => reg.id === regId);
+          if (regIdx === -1) return r;
+          const newRegions = [...r.pageRegions];
+          newRegions[regIdx] = { ...newRegions[regIdx], x: nextBox.x, y: nextBox.y, width: nextBox.width, height: nextBox.height };
+          return { ...r, pageRegions: newRegions };
+        });
+      }
+      return result;
+    });
+  }, []);
 
   const handleTextChange = useCallback((nextText) => {
     const prevText = ocrTextRef.current;
-    const prevEntities = textEntitiesRef.current;
     setOcrText(nextText);
     ocrTextRef.current = nextText;
 
-    if (!prevText || !prevEntities?.length) {
-      setTextEntities([]);
-      setBoxes(prev => prev.filter(b => !b.entityId));
-      cancelledRef.current = new Set();
-      if (task?.taskId) updateCancelledEntities(task.taskId, []).catch(() => {});
+    if (!prevText) {
+      setRedactions([]);
+      redactionsRef.current = [];
       showToast('原文已更新，请重新滑选需要脱敏的内容');
       return;
     }
 
-    // Multi-segment diff (S1): LCS-based extract changes → map entities
-    const changes = multiDiff(prevText, nextText);
-
-    const { kept: keptEntities, cancelled: toCancel } = mapEntities(prevEntities, changes);
-
-    // S2: split cancelled into remapped (text appears uniquely), needsReselect (duplicate),
-    // and truly cancelled (text disappeared)
-    const { remapped, needsReselect } = detectAmbiguous(toCancel, nextText);
-    const reselectIds = new Set(needsReselect.map(e => e.id));
-    const remapIds = new Set(remapped.map(e => e.id));
-    const trulyCancelled = toCancel.filter(e => !reselectIds.has(e.id) && !remapIds.has(e.id));
-    // Only position-valid entities go into textEntities
-    const finalEntities = [...keptEntities, ...remapped];
-    // needsReselect held separately — no valid position, not in text splicing
-    const pending = needsReselect.map(e => ({ id: e.id, original: e.original, entity_type: e.entity_type }));
-
-    setTextEntities(finalEntities);
-    textEntitiesRef.current = finalEntities;
-    setPendingReselect(pending);
+    const prev = redactionsRef.current;
+    const remapped = remapRedactions(prev, prevText, nextText);
+    setRedactions(remapped);
+    redactionsRef.current = remapped;
     setSelectedPendingId(null);
-    pendingReselectRef.current = pending;
-    // Only remove boxes for cancelled entities — text offset changes do not
-    // affect PDF/scan visual positions, so kept entities keep their existing boxes.
-    const cancelIds = new Set(trulyCancelled.map(e => e.id));
-    setBoxes(prev => prev.filter(b => {
-      const linkedIds = b.entityIds?.length ? b.entityIds : [b.entityId].filter(Boolean);
-      return !linkedIds.some(id => cancelIds.has(id));
-    }));
 
-    // Update cancelled set
-    for (const id of cancelIds) cancelledRef.current.add(id);
-    if (task?.taskId) updateCancelledEntities(task.taskId, [...cancelledRef.current]).catch(() => {});
+    // Count changes for toast
+    let cancelledCount = 0, reselectCount = 0;
+    for (let i = 0; i < prev.length; i++) {
+      if (prev[i].enabled && !remapped[i].enabled) cancelledCount++;
+      if (prev[i].status !== 'needs_reselect' && remapped[i].status === 'needs_reselect') reselectCount++;
+    }
     const msg = [];
-    if (trulyCancelled.length > 0) msg.push(`${trulyCancelled.length} 个已取消`);
-    if (needsReselect.length > 0) msg.push(`${needsReselect.length} 个需重新选择`);
+    if (cancelledCount > 0) msg.push(`${cancelledCount} 个已取消`);
+    if (reselectCount > 0) msg.push(`${reselectCount} 个需重新选择`);
     showToast(msg.length > 0
       ? `原文已更新，${msg.join('，')}`
       : '原文已更新，实体位置已自动调整');
-  }, [showToast, task]);
+  }, [showToast]);
 
-  // Persist boxes on change (debounced) — allow empty array to clear
+  // Persist boxes on change (debounced) — derived from redactions, saved as boxes.json for backward compat
   useEffect(() => {
     if (!task) hasLoadedRef.current = false;
   }, [task]);
@@ -1166,20 +1134,21 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     return () => clearTimeout(timer);
   }, [task, boxes]);
 
-  // Keep refs in sync with state for handleTextChange
   useEffect(() => { ocrTextRef.current = ocrText; }, [ocrText]);
-  useEffect(() => { textEntitiesRef.current = textEntities; }, [textEntities]);
-  useEffect(() => { pendingReselectRef.current = pendingReselect; }, [pendingReselect]);
-  useEffect(() => { boxesRef.current = boxes; }, [boxes]);
+  useEffect(() => { redactionsRef.current = redactions; }, [redactions]);
 
-  // Debounced save of edited text + entities (P0: persist edits across refresh)
+  // Debounced save of edited text + entities + pending (backward compat until S4+S5)
   useEffect(() => {
     if (!task || !hasLoadedRef.current) return;
     const timer = setTimeout(() => {
       updateEditedText(task.taskId, { text: ocrText, textEntities, pendingReselect }).catch(err => console.warn('[PERSIST] edited-text save failed:', err?.message));
+      // Also persist cancelled IDs for backward compat
+      if (cancelledIds.length > 0 || hasLoadedRef.current) {
+        updateCancelledEntities(task.taskId, cancelledIds).catch(() => {});
+      }
     }, 1500);
     return () => clearTimeout(timer);
-  }, [task, ocrText, textEntities, pendingReselect]);
+  }, [task, ocrText, textEntities, pendingReselect, cancelledIds]);
 
   // ─── Upload + Analyze ────────────────────────────────────────
 
@@ -1187,7 +1156,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     if (!file) return;
     localStorage.removeItem('activeTaskId');
     renderCacheRef.current = 'unknown';
-    setLoading(true); setError(null); setBoxes([]); setTextEntities([]); textEntitiesRef.current = []; setOcrBoxes([]); setOcrText(''); ocrTextRef.current = ''; setPageImages([]); cancelledRef.current = new Set(); setPendingReselect([]); setSelectedPendingId(null); pendingReselectRef.current = []; setUploadPercent(0); setProcessingStep('上传中…');
+    setLoading(true); setError(null); setRedactions([]); redactionsRef.current = []; setOcrBoxes([]); setOcrText(''); ocrTextRef.current = ''; setPageImages([]); setSelectedPendingId(null); setUploadPercent(0); setProcessingStep('上传中…');
     try {
       const taskData = await uploadWithProgress(file, _settings?.rulesConfig, setUploadPercent);
       const normalized = normalizeTask(taskData);
@@ -1207,35 +1176,30 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
         entity_type: e.entity_type || 'CUSTOM',
         start: e.start ?? 0,
         end: e.end ?? 0,
+        source: e.source || 'regex',
       }));
       const fullText = (analyzeData.ocrBoxes || []).map(b => b.text || '').join('\n');
-      setTextEntities(backendTextEntities);
-      textEntitiesRef.current = backendTextEntities;
       setOcrBoxes(analyzeData.ocrBoxes || []);
       setOcrText(fullText);
       ocrTextRef.current = fullText;
 
-      const refined = (analyzeData.refinedBoxes || []).map((b, i) => {
-        return createNormalizedBox({
-          id: `cand_${i}`, page: b.page,
-          x: b.x, y: b.y, width: b.width, height: b.height,
-          pageWidth: analyzeData.manifest?.pages?.[b.page - 1]?.pageWidth || 595,
-          pageHeight: analyzeData.manifest?.pages?.[b.page - 1]?.pageHeight || 842,
-          source: 'ocr', entityType: b.entityType || 'CUSTOM',
-          text: b.text || '', confidence: b.confidence ?? null,
-          entityId: b.entityId || null,
-        });
-      });
-
-      const sealBoxes = (analyzeData.sealBoxes || []).map((b, i) => createNormalizedBox({
+      // S2: Build redactions from analyze result (textEntities + refinedBoxes + sealBoxes)
+      const refinedBoxes = (analyzeData.refinedBoxes || []).map((b, i) => ({
+        id: `cand_${i}`, page: b.page,
+        x: b.x, y: b.y, width: b.width, height: b.height,
+        entityId: b.entityId || null,
+        source: 'ocr', entityType: b.entityType || 'CUSTOM',
+      }));
+      const sealBoxes = (analyzeData.sealBoxes || []).map((b, i) => ({
         id: b.id || `seal_${i}`, page: b.page,
         x: b.x, y: b.y, width: b.width, height: b.height,
-        pageWidth: analyzeData.manifest?.pages?.[b.page - 1]?.pageWidth || 595,
-        pageHeight: analyzeData.manifest?.pages?.[b.page - 1]?.pageHeight || 842,
         source: 'seal', entityType: 'SEAL',
       }));
+      const allBoxes = [...refinedBoxes, ...sealBoxes];
+      const initialRedactions = convertToRedactions(backendTextEntities, allBoxes, [], []);
+      setRedactions(initialRedactions);
+      redactionsRef.current = initialRedactions;
 
-      setBoxes([...refined, ...sealBoxes]);
       setPageImages(analyzeData.manifest?.pages || []);
       setCurrentPage(1);
       hasLoadedRef.current = true;
@@ -1415,7 +1379,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
                   return (
                     <div key={pg.pageNumber} className="mask-page-row" data-page={pg.pageNumber} ref={el => { pageRowRefs.current[pg.pageNumber] = el; }}>
                       <PageCanvas
-                        pageInfo={pgInfo} boxes={boxes} onBoxesChange={setBoxes} onBoxCreated={handleBoxCreated} onBoxUpdated={handleBoxUpdated} containerWidth={containerWidth}
+                        pageInfo={pgInfo} boxes={boxes} onBoxesChange={handleBoxesChange} onBoxCreated={handleBoxCreated} onBoxUpdated={handleBoxUpdated} containerWidth={containerWidth}
                         selectedBox={selectedBox} onSelectBox={setSelectedBox}
                         hoveredBox={hoveredBox} onHoverBox={setHoveredBox}
                         onRightClickBox={handleRightClickBox}
