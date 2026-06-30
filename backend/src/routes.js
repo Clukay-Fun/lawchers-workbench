@@ -18,6 +18,7 @@ import { execFile as execFileCb } from 'child_process';
 import { createHash } from 'crypto';
 import { promisify } from 'util';
 import { resolveLegalDesensBin, getRulesPath } from './services/cliResolver.js';
+import { convertToRedactions } from './services/redactions.js';
 import { getDPI, getSetting, getAllSettings, setSetting, validateSetting } from './db/settingsRepo.js';
 
 const execFileAsync = promisify(execFileCb);
@@ -2598,6 +2599,17 @@ router.get('/tasks/:id/session', async (req, res) => {
       }
     }
 
+    // S4: Check for redactions.json (single source of truth)
+    let redactionsData = null;
+    const redactionsPath = path.join(workDir, 'redactions.json');
+    if (existsSync(redactionsPath)) {
+      try {
+        redactionsData = JSON.parse(await fs.readFile(redactionsPath, 'utf-8'));
+      } catch (e) {
+        console.warn('[WARN] Failed to load redactions.json:', e.message);
+      }
+    }
+
     // Read render manifest (read-only, never re-render here)
     const manifestPath = path.join(workDir, 'render-manifest.json');
     let manifest = {};
@@ -2679,6 +2691,7 @@ router.get('/tasks/:id/session', async (req, res) => {
         renderCacheStatus,
         cancelledEntities: cancelledEntities,
         pendingReselect: (sessionData.pendingReselect || []).filter(p => !cancelledSet.has(p.id)),
+        redactions: redactionsData,
       },
     });
   } catch (error) {
@@ -2755,6 +2768,174 @@ router.patch('/tasks/:id/cancelled-entities', async (req, res) => {
   } catch (error) {
     console.error('Cancelled Entities Error:', error);
     res.status(500).json({ success: false, message: '更新取消列表失败', error: error.message });
+  }
+});
+
+/**
+ * GET /api/tasks/:id/redactions - 获取 redactions（单一事实源）
+ * 如果 redactions.json 不存在，从旧格式自动迁移。
+ */
+router.get('/tasks/:id/redactions', async (req, res) => {
+  try {
+    const taskId = parseInt(req.params.id, 10);
+    const task = getTaskById(taskId);
+    if (!task) return res.status(404).json({ success: false, message: '任务不存在' });
+
+    const workDir = task.work_dir || path.join(uploadsDir, 'tasks', `.work_${taskId}`);
+    if (!existsSync(workDir)) return res.status(404).json({ success: false, message: '工作目录不存在' });
+
+    const redactionsPath = path.join(workDir, 'redactions.json');
+
+    if (existsSync(redactionsPath)) {
+      const redactions = JSON.parse(await fs.readFile(redactionsPath, 'utf-8'));
+      return res.json({ success: true, data: redactions });
+    }
+
+    // ── 旧任务迁移：从旧格式转换 ──
+    // 1. 读取当前工作文本（edited-text.json 优先，否则 session.json 的 ocrText）
+    let workText = '';
+    let oldTextEntities = [];
+    let oldPending = [];
+    const editedPath = path.join(workDir, 'edited-text.json');
+    if (existsSync(editedPath)) {
+      try {
+        const edited = JSON.parse(await fs.readFile(editedPath, 'utf-8'));
+        workText = typeof edited.text === 'string' ? edited.text : '';
+        oldTextEntities = edited.textEntities || [];
+        oldPending = edited.pendingReselect || [];
+      } catch {}
+    }
+
+    // 2. 读取 session.json 获取原始 textEntities（如果 edited-text 没覆盖）
+    const sessionPath = path.join(workDir, 'session.json');
+    if (existsSync(sessionPath) && oldTextEntities.length === 0) {
+      try {
+        const session = JSON.parse(await fs.readFile(sessionPath, 'utf-8'));
+        if (oldTextEntities.length === 0) oldTextEntities = session.textEntities || [];
+        if (!workText) workText = session.ocrText || '';
+      } catch {}
+    }
+
+    // 3. 读取 boxes.json
+    let oldBoxes = [];
+    const boxesPath = path.join(workDir, 'boxes.json');
+    if (existsSync(boxesPath)) {
+      try { oldBoxes = JSON.parse(await fs.readFile(boxesPath, 'utf-8')); } catch {}
+    }
+    // 如果没有 boxes.json，用 session.json 的 refinedBoxes + sealBoxes
+    if (oldBoxes.length === 0 && existsSync(sessionPath)) {
+      try {
+        const session = JSON.parse(await fs.readFile(sessionPath, 'utf-8'));
+        oldBoxes = [...(session.refinedBoxes || []), ...(session.sealBoxes || [])];
+      } catch {}
+    }
+
+    // 4. 读取 cancelled-entities.json
+    let oldCancelled = [];
+    const cancelledPath = path.join(workDir, 'cancelled-entities.json');
+    if (existsSync(cancelledPath)) {
+      try { oldCancelled = JSON.parse(await fs.readFile(cancelledPath, 'utf-8')); } catch {}
+    }
+
+    // 5. 转换为 redactions
+    const redactions = convertToRedactions(oldTextEntities, oldBoxes, oldCancelled, oldPending);
+
+    // 6. 原子写入 redactions.json（保留旧文件以便回滚）
+    const tmpPath = redactionsPath + '.tmp';
+    await fs.writeFile(tmpPath, JSON.stringify(redactions, null, 2), 'utf-8');
+    await fs.rename(tmpPath, redactionsPath);
+    console.log(`[redactions] task ${taskId}: migrated ${redactions.length} redactions from old format`);
+
+    res.json({ success: true, data: redactions, migrated: true });
+  } catch (error) {
+    console.error('Get Redactions Error:', error);
+    res.status(500).json({ success: false, message: '获取 redactions 失败', error: error.message });
+  }
+});
+
+/**
+ * PATCH /api/tasks/:id/redactions - 保存 redactions
+ * Body: { redactions: array, text: string }
+ * 校验：id 唯一、textAnchor 切片==original 对当前工作文本、归一化坐标合法
+ */
+router.patch('/tasks/:id/redactions', async (req, res) => {
+  try {
+    const taskId = parseInt(req.params.id, 10);
+    const task = getTaskById(taskId);
+    if (!task) return res.status(404).json({ success: false, message: '任务不存在' });
+
+    const { redactions, text } = req.body;
+    if (!Array.isArray(redactions)) {
+      return res.status(400).json({ success: false, message: '缺少 redactions 数组' });
+    }
+    if (typeof text !== 'string') {
+      return res.status(400).json({ success: false, message: '缺少 text 工作文本' });
+    }
+
+    // 校验
+    const seenIds = new Set();
+    for (let i = 0; i < redactions.length; i++) {
+      const r = redactions[i];
+      if (!r.id || seenIds.has(r.id)) {
+        return res.status(400).json({ success: false, message: `redaction ${i} 的 id 为空或重复` });
+      }
+      seenIds.add(r.id);
+
+      if (typeof r.enabled !== 'boolean') {
+        return res.status(400).json({ success: false, message: `redaction ${i} 的 enabled 必须是布尔值` });
+      }
+      if (r.status !== 'active' && r.status !== 'needs_reselect') {
+        return res.status(400).json({ success: false, message: `redaction ${i} 的 status 非法` });
+      }
+
+      // textAnchor 切片 == original 对当前工作文本校验
+      if (r.textAnchor !== null && r.status === 'active') {
+        if (typeof r.textAnchor.start !== 'number' || typeof r.textAnchor.end !== 'number') {
+          return res.status(400).json({ success: false, message: `redaction ${i} 的 textAnchor 无效` });
+        }
+        if (r.textAnchor.end > text.length) {
+          return res.status(400).json({ success: false, message: `redaction ${i} 的 textAnchor 超出文本长度` });
+        }
+        const slice = text.slice(r.textAnchor.start, r.textAnchor.end);
+        if (slice !== r.original) {
+          return res.status(400).json({ success: false, message: `redaction ${i} 的 original 与文本不匹配` });
+        }
+      }
+
+      // pageRegions 坐标校验
+      if (Array.isArray(r.pageRegions)) {
+        for (let j = 0; j < r.pageRegions.length; j++) {
+          const p = r.pageRegions[j];
+          if (typeof p.x !== 'number' || typeof p.y !== 'number' ||
+              typeof p.width !== 'number' || typeof p.height !== 'number') {
+            return res.status(400).json({ success: false, message: `redaction ${i} pageRegions[${j}] 坐标非数字` });
+          }
+          if (p.x < 0 || p.y < 0 || p.width <= 0 || p.height <= 0 ||
+              p.x + p.width > 1.001 || p.y + p.height > 1.001) {
+            return res.status(400).json({ success: false, message: `redaction ${i} pageRegions[${j}] 越界` });
+          }
+        }
+      }
+    }
+
+    // 原子写入
+    const workDir = task.work_dir || path.join(uploadsDir, 'tasks', `.work_${taskId}`);
+    if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
+    const redactionsPath = path.join(workDir, 'redactions.json');
+    const tmpPath = redactionsPath + '.tmp';
+    await fs.writeFile(tmpPath, JSON.stringify(redactions, null, 2), 'utf-8');
+    await fs.rename(tmpPath, redactionsPath);
+
+    // 日志只记数量，不记敏感原文
+    const active = redactions.filter(r => r.enabled && r.status === 'active').length;
+    const reselect = redactions.filter(r => r.status === 'needs_reselect').length;
+    const cancelled = redactions.filter(r => !r.enabled).length;
+    console.log(`[redactions] task ${taskId}: saved ${redactions.length} (active=${active} reselect=${reselect} cancelled=${cancelled})`);
+
+    res.json({ success: true, count: redactions.length });
+  } catch (error) {
+    console.error('Save Redactions Error:', error);
+    res.status(500).json({ success: false, message: '保存 redactions 失败', error: error.message });
   }
 });
 

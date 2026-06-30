@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { analyzeTask, updateTaskBoxes, maskExportTask, textExportTask, getTaskSession, updateCancelledEntities, updateEditedText, getHistory, deleteHistory, renderTasksPages } from '../api';
+import { analyzeTask, updateTaskBoxes, maskExportTask, textExportTask, getTaskSession, updateCancelledEntities, updateEditedText, getHistory, deleteHistory, renderTasksPages, updateRedactions } from '../api';
 import { Button } from '@/components/ui/button';
 import { normalizedToCSS, computeDisplaySize, createNormalizedBox } from '../services/coords';
 import { findOcrSpansForBox } from '../services/ocrBoxLinking';
@@ -767,14 +767,19 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
       const normalized = normalizeTask(session.task);
       renderCacheRef.current = session.renderCacheStatus || 'unknown';
       setTask(normalized);
-      // S2: Convert old format to redactions (single source of truth)
-      const restoredEntities = session.textEntities || [];
-      const restoredBoxes = session.boxes || [];
-      const restoredCancelled = session.cancelledEntities || [];
-      const restoredPending = session.pendingReselect || [];
-      const reds = convertToRedactions(restoredEntities, restoredBoxes, restoredCancelled, restoredPending);
-      setRedactions(reds);
-      redactionsRef.current = reds;
+      // S4: Use redactions from session if available, otherwise convert from old format
+      if (session.redactions && Array.isArray(session.redactions)) {
+        setRedactions(session.redactions);
+        redactionsRef.current = session.redactions;
+      } else {
+        const restoredEntities = session.textEntities || [];
+        const restoredBoxes = session.boxes || [];
+        const restoredCancelled = session.cancelledEntities || [];
+        const restoredPending = session.pendingReselect || [];
+        const reds = convertToRedactions(restoredEntities, restoredBoxes, restoredCancelled, restoredPending);
+        setRedactions(reds);
+        redactionsRef.current = reds;
+      }
       setSelectedPendingId(null);
       setOcrBoxes(session.ocrBoxes || []);
       const restoredOcrText = session.ocrText || '';
@@ -1120,34 +1125,34 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
       : '原文已更新，实体位置已自动调整');
   }, [showToast]);
 
-  // Persist boxes on change (debounced) — derived from redactions, saved as boxes.json for backward compat
+  // S4: Persist redactions (single source of truth) + backward compat saves
   useEffect(() => {
     if (!task) hasLoadedRef.current = false;
   }, [task]);
 
+  useEffect(() => { ocrTextRef.current = ocrText; }, [ocrText]);
+  useEffect(() => { redactionsRef.current = redactions; }, [redactions]);
+
+  // Primary: save redactions.json
+  useEffect(() => {
+    if (!task || !hasLoadedRef.current) return;
+    const timer = setTimeout(() => {
+      updateRedactions(task.taskId, redactions, ocrText).catch(err => console.warn('[PERSIST] redactions save failed:', err?.message));
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [task, redactions, ocrText]);
+
+  // Backward compat: save derived boxes.json + edited-text.json + cancelled-entities.json
+  // (kept until S5 deletes old chain)
   useEffect(() => {
     if (!task || !hasLoadedRef.current) return;
     const timer = setTimeout(() => {
       updateTaskBoxes(task.taskId, boxes).catch(() => {});
-    }, 1000);
-    return () => clearTimeout(timer);
-  }, [task, boxes]);
-
-  useEffect(() => { ocrTextRef.current = ocrText; }, [ocrText]);
-  useEffect(() => { redactionsRef.current = redactions; }, [redactions]);
-
-  // Debounced save of edited text + entities + pending (backward compat until S4+S5)
-  useEffect(() => {
-    if (!task || !hasLoadedRef.current) return;
-    const timer = setTimeout(() => {
-      updateEditedText(task.taskId, { text: ocrText, textEntities, pendingReselect }).catch(err => console.warn('[PERSIST] edited-text save failed:', err?.message));
-      // Also persist cancelled IDs for backward compat
-      if (cancelledIds.length > 0 || hasLoadedRef.current) {
-        updateCancelledEntities(task.taskId, cancelledIds).catch(() => {});
-      }
+      updateEditedText(task.taskId, { text: ocrText, textEntities, pendingReselect }).catch(() => {});
+      updateCancelledEntities(task.taskId, cancelledIds).catch(() => {});
     }, 1500);
     return () => clearTimeout(timer);
-  }, [task, ocrText, textEntities, pendingReselect, cancelledIds]);
+  }, [task, boxes, ocrText, textEntities, pendingReselect, cancelledIds]);
 
   // ─── Upload + Analyze ────────────────────────────────────────
 

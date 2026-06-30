@@ -270,6 +270,30 @@ export async function updateEditedText(taskId, data) {
   return j;
 }
 
+/** S4: 获取 redactions（单一事实源） */
+export async function getRedactions(taskId) {
+  const response = await fetch(`${API_BASE}/tasks/${taskId}/redactions`, { method: 'GET' });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.message || '获取 redactions 失败');
+  }
+  const result = await response.json();
+  if (!result.success) throw new Error(result.message || '获取 redactions 异常');
+  return result.data;
+}
+
+/** S4: 保存 redactions */
+export async function updateRedactions(taskId, redactions, text) {
+  const response = await fetch(`${API_BASE}/tasks/${taskId}/redactions`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ redactions, text }),
+  });
+  const j = await response.json();
+  if (!j.success) throw new Error(j.message || '保存 redactions 失败');
+  return j;
+}
+
 /** 批量上传文件 */
 export async function batchUpload(files) {
   const formData = new FormData();
