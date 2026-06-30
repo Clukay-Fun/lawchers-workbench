@@ -8,7 +8,7 @@ import { choosePendingReselect } from '../services/reselection';
 import {
   convertToRedactions, deriveBoxes, deriveTextEntities, derivePendingReselect,
   deriveCancelledIds, remapRedactions, addRedaction, cancelRedaction,
-  resolveRedaction,
+  resolveRedaction, updateRedaction,
 } from '../services/redactions';
 
 // ─── Constants ───────────────────────────────────────────────
@@ -938,7 +938,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const handleRightClickBox = useCallback((box) => {
     const linkedIds = box.entityIds?.length ? box.entityIds : [box.entityId].filter(Boolean);
     if (linkedIds.length > 0) {
-      setRedactions(prev => prev.map(r => linkedIds.includes(r.id) ? { ...r, enabled: false } : r));
+      setRedactions(prev => linkedIds.reduce((acc, id) => cancelRedaction(acc, id), prev));
       showToast('已取消该区域脱敏');
     }
   }, [showToast]);
@@ -1033,10 +1033,9 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
           r.textAnchor.start === span.start && r.textAnchor.end === span.end
         );
         if (existing) {
-          result = result.map(r => r.id === existing.id
-            ? { ...r, pageRegions: [...r.pageRegions, { id: `reg_${box.id}`, page: box.page, x: box.x, y: box.y, width: box.width, height: box.height }] }
-            : r
-          );
+          result = updateRedaction(result, existing.id, {
+            pageRegions: [...existing.pageRegions, { id: `reg_${box.id}`, page: box.page, x: box.x, y: box.y, width: box.width, height: box.height }],
+          });
         } else {
           result = addRedaction(result, {
             entityType: 'CUSTOM',
