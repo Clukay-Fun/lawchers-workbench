@@ -1070,24 +1070,49 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     });
   }, []);
 
-  // Live drag preview → update pageRegions in real-time
-  const handleBoxesChange = useCallback((nextBoxes) => {
+  // Live drag/resize/delete → PageCanvas passes functional updater
+  // We derive current boxes, apply the updater to get next boxes, then diff
+  // and update the corresponding pageRegions in redactions.
+  const handleBoxesChange = useCallback((updater) => {
     const currentBoxes = deriveBoxes(redactionsRef.current);
+    const nextBoxes = typeof updater === 'function' ? updater(currentBoxes) : updater;
+    if (!Array.isArray(nextBoxes)) return;
+
+    // Build a map of changed boxes by id
+    const changed = new Map();
+    const currentMap = new Map(currentBoxes.map(b => [b.id, b]));
+    for (const nb of nextBoxes) {
+      const cb = currentMap.get(nb.id);
+      if (!cb || cb.x !== nb.x || cb.y !== nb.y || cb.width !== nb.width || cb.height !== nb.height) {
+        changed.set(nb.id, nb);
+      }
+    }
+    // Deleted boxes: in current but not in next
+    const nextIds = new Set(nextBoxes.map(b => b.id));
+    for (const cb of currentBoxes) {
+      if (!nextIds.has(cb.id)) changed.set(cb.id, null);
+    }
+    if (changed.size === 0) return;
+
     setRedactions(prev => {
       let result = prev;
-      for (const nextBox of nextBoxes) {
-        const currentBox = currentBoxes.find(b => b.id === nextBox.id);
-        if (!currentBox) continue;
-        if (currentBox.x === nextBox.x && currentBox.y === nextBox.y &&
-            currentBox.width === nextBox.width && currentBox.height === nextBox.height) continue;
-        const regId = nextBox.id;
-        result = result.map(r => {
-          const regIdx = r.pageRegions.findIndex(reg => reg.id === regId);
-          if (regIdx === -1) return r;
-          const newRegions = [...r.pageRegions];
-          newRegions[regIdx] = { ...newRegions[regIdx], x: nextBox.x, y: nextBox.y, width: nextBox.width, height: nextBox.height };
-          return { ...r, pageRegions: newRegions };
-        });
+      for (const [boxId, nb] of changed) {
+        if (nb === null) {
+          // Delete: remove pageRegion with this id from all redactions
+          result = result.map(r => ({
+            ...r,
+            pageRegions: r.pageRegions.filter(reg => reg.id !== boxId),
+          }));
+        } else {
+          // Update: modify pageRegion with this id
+          result = result.map(r => {
+            const regIdx = r.pageRegions.findIndex(reg => reg.id === boxId);
+            if (regIdx === -1) return r;
+            const newRegions = [...r.pageRegions];
+            newRegions[regIdx] = { ...newRegions[regIdx], x: nb.x, y: nb.y, width: nb.width, height: nb.height };
+            return { ...r, pageRegions: newRegions };
+          });
+        }
       }
       return result;
     });
@@ -1133,26 +1158,23 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   useEffect(() => { ocrTextRef.current = ocrText; }, [ocrText]);
   useEffect(() => { redactionsRef.current = redactions; }, [redactions]);
 
-  // Primary: save redactions.json
+  // S4: Persist — primary redactions.json first, then legacy compat only on success
   useEffect(() => {
     if (!task || !hasLoadedRef.current) return;
-    const timer = setTimeout(() => {
-      updateRedactions(task.taskId, redactions, ocrText).catch(err => console.warn('[PERSIST] redactions save failed:', err?.message));
-    }, 1500);
-    return () => clearTimeout(timer);
-  }, [task, redactions, ocrText]);
-
-  // Backward compat: save derived boxes.json + edited-text.json + cancelled-entities.json
-  // (kept until S5 deletes old chain)
-  useEffect(() => {
-    if (!task || !hasLoadedRef.current) return;
-    const timer = setTimeout(() => {
+    const timer = setTimeout(async () => {
+      try {
+        await updateRedactions(task.taskId, redactions, ocrText);
+      } catch (err) {
+        console.warn('[PERSIST] redactions save failed:', err?.message);
+        return;
+      }
+      // Legacy compat writes only after primary succeeds (prevents split state)
       updateTaskBoxes(task.taskId, boxes).catch(() => {});
       updateEditedText(task.taskId, { text: ocrText, textEntities, pendingReselect }).catch(() => {});
       updateCancelledEntities(task.taskId, cancelledIds).catch(() => {});
     }, 1500);
     return () => clearTimeout(timer);
-  }, [task, boxes, ocrText, textEntities, pendingReselect, cancelledIds]);
+  }, [task, redactions, ocrText, boxes, textEntities, pendingReselect, cancelledIds]);
 
   // ─── Upload + Analyze ────────────────────────────────────────
 

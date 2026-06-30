@@ -2888,8 +2888,9 @@ router.patch('/tasks/:id/redactions', async (req, res) => {
         return res.status(400).json({ success: false, message: `redaction ${i} 的 status 非法` });
       }
 
-      // textAnchor 切片 == original 对当前工作文本校验
-      if (r.textAnchor !== null && r.status === 'active') {
+      // textAnchor 切片 == original 只对 enabled + active 记录校验
+      // （已取消 / needs_reselect 的 textAnchor 可能是旧坐标，跳过）
+      if (r.enabled && r.status === 'active' && r.textAnchor !== null) {
         if (typeof r.textAnchor.start !== 'number' || typeof r.textAnchor.end !== 'number') {
           return res.status(400).json({ success: false, message: `redaction ${i} 的 textAnchor 无效` });
         }
