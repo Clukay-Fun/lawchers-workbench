@@ -563,6 +563,67 @@ function ExportDropdown({ mode, onExport, exporting, disabled }) {
   );
 }
 
+// ─── Sidebar Component (S3: collapsible) ────────────────────
+
+function Sidebar({ tasks, activeTaskId, tasksLoading, sidebarCollapsed, onToggleCollapse, onUploadClick, onSelectTask, onDeleteTask, analyzingTaskId }) {
+  if (sidebarCollapsed) {
+    return (
+      <div className="workspace-sidebar-collapsed" style={{ width: '36px', flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: '12px', gap: '12px', borderRight: '1px solid #e5e7eb' }}>
+        <button className="sidebar-collapse-btn" onClick={onToggleCollapse} title="展开材料列表" style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '18px', color: '#666', padding: '4px' }}>›</button>
+        <button onClick={onUploadClick} title="上传文件" style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '16px', color: '#666', padding: '4px' }}>＋</button>
+      </div>
+    );
+  }
+  return (
+    <div className="workspace-sidebar" style={{ width: '228px', flexShrink: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', borderRight: '1px solid #e5e7eb' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', borderBottom: '1px solid #f0f0f0' }}>
+        <h4 className="sidebar-title" style={{ margin: 0, fontSize: '13px', fontWeight: 600, color: '#333' }}>材料</h4>
+        <div style={{ display: 'flex', gap: '4px' }}>
+          <button onClick={onUploadClick} title="上传文件" style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '16px', color: '#666', padding: '2px 6px', borderRadius: '4px' }}>＋</button>
+          <button onClick={onToggleCollapse} title="收起材料列表" style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '14px', color: '#666', padding: '2px 6px', borderRadius: '4px' }}>‹</button>
+        </div>
+      </div>
+      {tasksLoading && tasks.length === 0 ? (
+        <div style={{ fontSize: '12px', color: '#999', textAlign: 'center', padding: '16px 0' }}>加载中…</div>
+      ) : tasks.length === 0 ? (
+        <div style={{ fontSize: '12px', color: '#999', textAlign: 'center', padding: '32px 0', fontStyle: 'italic' }}>暂无材料</div>
+      ) : (
+        <div className="file-list" style={{ flex: 1, overflowY: 'auto', padding: '4px 0' }}>
+          {tasks.map(t => {
+            const isActive = activeTaskId === t.id;
+            const isAnalyzing = analyzingTaskId === t.id;
+            return (
+              <div
+                key={t.id}
+                className={`file-card ${isActive ? 'active' : ''}`}
+                onClick={() => { if (!isActive) onSelectTask(t.id); }}
+                style={{ display: 'flex', alignItems: 'center', padding: '6px 12px', cursor: 'pointer', gap: '0', position: 'relative' }}
+              >
+                <div className="file-card-title" title={t.filename} style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '13px', color: isActive ? '#3b82f6' : '#333', paddingRight: '24px' }}>
+                  {t.filename}
+                </div>
+                <button
+                  onClick={(e) => { e.stopPropagation(); if (!isAnalyzing) onDeleteTask(t.id, e); }}
+                  disabled={isAnalyzing}
+                  title={isAnalyzing ? '识别中，无法删除' : '删除材料'}
+                  style={{
+                    flexShrink: 0, width: '24px', height: '24px', border: 'none', background: 'none',
+                    cursor: isAnalyzing ? 'not-allowed' : 'pointer', fontSize: '15px', lineHeight: 1,
+                    color: '#ccc', borderRadius: '4px', padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    transition: 'color 150ms',
+                  }}
+                  onMouseEnter={(e) => { if (!isAnalyzing) e.target.style.color = '#dc2626'; }}
+                  onMouseLeave={(e) => { if (!isAnalyzing) e.target.style.color = '#ccc'; }}
+                >×</button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main VisualMaskPage ─────────────────────────────────────
 
 export default function VisualMaskPage({ settings: _settings, resumeTaskId, onResumeDone }) {
@@ -592,6 +653,14 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const [pageState, setPageState] = useState('empty');
   const [taskStatus, setTaskStatus] = useState(null);  // {status, progress_step, error_message, filename, fileSize}
   const [sourcePreviewOpen, setSourcePreviewOpen] = useState(false);
+
+  // S3: sidebar collapse state (persisted to localStorage)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    return localStorage.getItem('sidebarCollapsed') === 'true';
+  });
+  useEffect(() => {
+    localStorage.setItem('sidebarCollapsed', String(sidebarCollapsed));
+  }, [sidebarCollapsed]);
 
   const [pageStatus, setPageStatus] = useState({});
   const [imageUrls, setImageUrls] = useState({});
@@ -1409,17 +1478,17 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
       : '';
     return (
       <div className="workspace-container" ref={containerRef}>
-        <div className="workspace-sidebar">
-          <h4 className="sidebar-title">本案材料</h4>
-          <div className="file-list">
-            {tasks.map(t => (
-              <div key={t.id} className={`file-card ${task.taskId === t.id ? 'active' : ''}`} onClick={() => { if (task.taskId !== t.id) loadTaskSession(t.id); }}>
-                <div className="file-card-title" title={t.filename}>{t.filename}</div>
-                <Button variant="ghost" size="icon" className="file-card-delete-btn text-muted-foreground hover:text-destructive" onClick={(e) => handleDeleteTask(t.id, e)} title="删除材料">×</Button>
-              </div>
-            ))}
-          </div>
-        </div>
+        <Sidebar
+          tasks={tasks}
+          activeTaskId={task.taskId}
+          tasksLoading={tasksLoading}
+          sidebarCollapsed={sidebarCollapsed}
+          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+          onUploadClick={() => fileInputRef.current?.click()}
+          onSelectTask={loadTaskSession}
+          onDeleteTask={handleDeleteTask}
+          analyzingTaskId={pageState === 'analyzing' ? task.taskId : null}
+        />
         <div className="workspace-main" style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '20px' }}>
           <div style={{ textAlign: 'center', maxWidth: '400px' }}>
             <div style={{ fontSize: '48px', marginBottom: '12px' }}>📄</div>
@@ -1463,17 +1532,17 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     const stepLabel = STEP_LABELS[taskStatus?.progress_step] || '正在准备脱敏工作区';
     return (
       <div className="workspace-container" ref={containerRef}>
-        <div className="workspace-sidebar">
-          <h4 className="sidebar-title">本案材料</h4>
-          <div className="file-list">
-            {tasks.map(t => (
-              <div key={t.id} className={`file-card ${task.taskId === t.id ? 'active' : ''}`} onClick={() => { if (task.taskId !== t.id) loadTaskSession(t.id); }}>
-                <div className="file-card-title" title={t.filename}>{t.filename}</div>
-                <Button variant="ghost" size="icon" className="file-card-delete-btn text-muted-foreground hover:text-destructive" disabled={t.id === task.taskId && pageState === 'analyzing'} onClick={(e) => handleDeleteTask(t.id, e)} title={t.id === task.taskId && pageState === 'analyzing' ? '识别中，无法删除' : '删除材料'}>×</Button>
-              </div>
-            ))}
-          </div>
-        </div>
+        <Sidebar
+          tasks={tasks}
+          activeTaskId={task.taskId}
+          tasksLoading={tasksLoading}
+          sidebarCollapsed={sidebarCollapsed}
+          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+          onUploadClick={() => fileInputRef.current?.click()}
+          onSelectTask={loadTaskSession}
+          onDeleteTask={handleDeleteTask}
+          analyzingTaskId={task.taskId}
+        />
         <div className="workspace-main" style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '24px' }}>
           <div style={{ textAlign: 'center', maxWidth: '460px', width: '100%' }}>
             <div style={{ fontWeight: 600, fontSize: '15px', marginBottom: '20px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={task.filename}>{task.filename}</div>
@@ -1495,17 +1564,17 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   if (pageState === 'failed' && task) {
     return (
       <div className="workspace-container" ref={containerRef}>
-        <div className="workspace-sidebar">
-          <h4 className="sidebar-title">本案材料</h4>
-          <div className="file-list">
-            {tasks.map(t => (
-              <div key={t.id} className={`file-card ${task.taskId === t.id ? 'active' : ''}`} onClick={() => { if (task.taskId !== t.id) loadTaskSession(t.id); }}>
-                <div className="file-card-title" title={t.filename}>{t.filename}</div>
-                <Button variant="ghost" size="icon" className="file-card-delete-btn text-muted-foreground hover:text-destructive" onClick={(e) => handleDeleteTask(t.id, e)} title="删除材料">×</Button>
-              </div>
-            ))}
-          </div>
-        </div>
+        <Sidebar
+          tasks={tasks}
+          activeTaskId={task.taskId}
+          tasksLoading={tasksLoading}
+          sidebarCollapsed={sidebarCollapsed}
+          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+          onUploadClick={() => fileInputRef.current?.click()}
+          onSelectTask={loadTaskSession}
+          onDeleteTask={handleDeleteTask}
+          analyzingTaskId={pageState === 'analyzing' ? task.taskId : null}
+        />
         <div className="workspace-main" style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '20px' }}>
           <div style={{ textAlign: 'center', maxWidth: '420px' }}>
             <div style={{ fontSize: '48px', marginBottom: '12px' }}>⚠️</div>
@@ -1529,46 +1598,17 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
 
   return (
     <div className="workspace-container" ref={containerRef}>
-      {/* 左栏：本案材料列表 */}
-      <div className="workspace-sidebar">
-        <h4 className="sidebar-title">本案材料</h4>
-        
-        {tasksLoading && tasks.length === 0 ? (
-          <div className="text-xs text-muted-foreground py-4 text-center">加载中…</div>
-        ) : (
-          <div className="file-list">
-            {tasks.length === 0 ? (
-              <div className="text-xs text-muted-foreground py-8 text-center italic">暂无材料</div>
-            ) : (
-              tasks.map(t => {
-                const isActive = task && task.taskId === t.id;
-                return (
-                  <div
-                    key={t.id}
-                    className={`file-card ${isActive ? 'active' : ''}`}
-                    onClick={() => { if (!isActive) loadTaskSession(t.id); }}
-                  >
-                    <div className="file-card-title" title={t.filename}>{t.filename}</div>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="file-card-delete-btn text-muted-foreground hover:text-destructive"
-                      onClick={(e) => handleDeleteTask(t.id, e)}
-                      title="删除材料"
-                    >
-                      ×
-                    </Button>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        )}
-
-        <div className="sidebar-upload-btn" onClick={() => fileInputRef.current?.click()}>
-          ＋ 追加上传本地材料
-        </div>
-      </div>
+      <Sidebar
+        tasks={tasks}
+        activeTaskId={task?.taskId}
+        tasksLoading={tasksLoading}
+        sidebarCollapsed={sidebarCollapsed}
+        onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+        onUploadClick={() => fileInputRef.current?.click()}
+        onSelectTask={loadTaskSession}
+        onDeleteTask={handleDeleteTask}
+        analyzingTaskId={pageState === 'analyzing' ? task?.taskId : null}
+      />
 
       {/* 右栏：主编辑区 */}
       <div className="workspace-main" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0, position: 'relative' }}>
