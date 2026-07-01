@@ -96,7 +96,7 @@ CREATE TABLE IF NOT EXISTS "task" (
     "error_message" TEXT,
     "file_size" INTEGER DEFAULT 0,
     "created_at" DATETIME DEFAULT CURRENT_TIMESTAMP,
-    "updated_at" DATETIME DEFAULT CURRENT_TIMESTAMP
+    "updated_at" DATETIME  -- set via UPDATE in app code, not DEFAULT (SQLite ALTER restriction)
 );
 
 -- 8. 自定义规则表（自定义正则 + 黑名单 + 白名单）

@@ -2011,9 +2011,9 @@ router.post('/tasks', upload.single('file'), async (req, res) => {
     const ext = path.extname(originalName).toLowerCase();
     const tmpPath = req.file.path;
 
-    if (!['.docx', '.pdf', '.txt', '.md'].includes(ext)) {
+    if (!['.pdf'].includes(ext)) {
       await fs.unlink(tmpPath).catch(() => {});
-      return res.status(400).json({ success: false, message: '仅支持 DOCX、PDF、TXT、MD 文件' });
+      return res.status(400).json({ success: false, message: '仅支持 PDF 文件' });
     }
 
     // 动态大小上限
@@ -2028,9 +2028,7 @@ router.post('/tasks', upload.single('file'), async (req, res) => {
     const handle = await fs.open(tmpPath, 'r');
     const signature = Buffer.alloc(4);
     try { await handle.read(signature, 0, 4, 0); } finally { await handle.close(); }
-    const validSig = ext === '.pdf'
-      ? signature.toString('ascii') === '%PDF'
-      : ['.txt', '.md'].includes(ext) || (signature[0] === 0x50 && signature[1] === 0x4b);
+    const validSig = signature.toString('ascii') === '%PDF';
     if (!validSig) {
       await fs.unlink(tmpPath).catch(() => {});
       return res.status(400).json({ success: false, message: '文件内容与扩展名不匹配' });
@@ -2056,17 +2054,24 @@ router.post('/tasks', upload.single('file'), async (req, res) => {
     const workDir = path.join(tasksDir, `.work_${uniqueSuffix}`);
     if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
 
-    // 建 task(status=uploaded)
-    const task = createTask({
-      filename: originalName,
-      ext,
-      document_kind: '',
-      source_path: finalPath,
-      work_dir: workDir,
-      rules_config: rulesConfig,
-      status: 'uploaded',
-      file_size: req.file.size,
-    });
+    // 建 task(status=uploaded) — 若失败则清理原件和工作目录
+    let task;
+    try {
+      task = createTask({
+        filename: originalName,
+        ext,
+        document_kind: '',
+        source_path: finalPath,
+        work_dir: workDir,
+        rules_config: rulesConfig,
+        status: 'uploaded',
+        file_size: req.file.size,
+      });
+    } catch (dbErr) {
+      await fs.unlink(finalPath).catch(() => {});
+      await fs.rm(workDir, { recursive: true, force: true }).catch(() => {});
+      throw dbErr;
+    }
 
     res.json({
       success: true,
@@ -2309,6 +2314,18 @@ async function runAnalyzePipeline(taskId, task) {
       return failWith('preparing', `规则加载失败: ${mergeErr.message}`);
     }
 
+    // Read task rules_config for entity-policy (DATE/TIME preservation)
+    let rulesConfig = {};
+    try {
+      rulesConfig = task.rules_config ? JSON.parse(task.rules_config) : {};
+    } catch { rulesConfig = {}; }
+    const preserveTypes = [];
+    const typeAliases = { LOC: ['ADDRESS'], DATE: ['DATE', 'TIME'] };
+    for (const [type, enabled] of Object.entries(rulesConfig)) {
+      if (enabled === false) preserveTypes.push(...(typeAliases[type] || [type]));
+    }
+    const preserveSet = new Set(preserveTypes);
+
     // ── Stage 2: recognizing (OCR + regex + NER) ──
     updateTask(taskId, { status: 'recognizing', progress_step: 'recognizing' });
 
@@ -2428,6 +2445,8 @@ async function runAnalyzePipeline(taskId, task) {
     textEntities = textEntities.filter(ent => {
       if (ent.entity_type === 'NER_MISC') return false;
       if (ent.source === 'ner' && GENERIC_LEGAL_TERMS.has(ent.original)) return false;
+      // Entity-policy: filter out types user configured as disabled (e.g. DATE/TIME)
+      if (preserveSet.size > 0 && preserveSet.has(ent.entity_type)) return false;
       return true;
     });
 

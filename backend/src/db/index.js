@@ -241,11 +241,31 @@ try {
         console.log('[MIGRATE] task.file_size 已添加');
       }
       if (!taskCols.includes('updated_at')) {
-        db.exec(`ALTER TABLE "task" ADD COLUMN "updated_at" DATETIME DEFAULT CURRENT_TIMESTAMP`);
-        console.log('[MIGRATE] task.updated_at 已添加');
+        // SQLite rejects ALTER TABLE ADD COLUMN with non-constant CURRENT_TIMESTAMP default.
+        // Add without default, then backfill existing rows to created_at value.
+        db.exec(`ALTER TABLE "task" ADD COLUMN "updated_at" DATETIME`);
+        db.exec(`UPDATE "task" SET "updated_at" = "created_at" WHERE "updated_at" IS NULL`);
+        console.log('[MIGRATE] task.updated_at 已添加并回填');
       }
     } catch (colErr) {
       console.warn('[WARN] task 列增量迁移异常（可忽略若已存在）:', colErr.message);
+    }
+
+    // P1: Reset orphaned intermediate-status tasks on startup
+    // (server crashed/restarted during analyze → task stuck in preparing/recognizing/rendering/detecting_seals)
+    try {
+      const INTERMEDIATE_STATUSES = ['preparing', 'recognizing', 'rendering', 'detecting_seals'];
+      const placeholders = INTERMEDIATE_STATUSES.map(() => '?').join(',');
+      const stuck = db.prepare(`SELECT id, progress_step FROM "task" WHERE status IN (${placeholders})`).all(...INTERMEDIATE_STATUSES);
+      if (stuck.length > 0) {
+        const resetStmt = db.prepare(`UPDATE "task" SET status = 'failed', error_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`);
+        for (const t of stuck) {
+          resetStmt.run(`服务重启时识别中断（阶段: ${t.progress_step || '未知'}）`, t.id);
+        }
+        console.log(`[MIGRATE] ${stuck.length} 个中间状态任务已重置为 failed`);
+      }
+    } catch (resetErr) {
+      console.warn('[WARN] 中间状态重置异常:', resetErr.message);
     }
   } catch (migErr) {
     console.warn('[WARN] material 表增量迁移检查异常（可忽略若已存在）:', migErr.message);
