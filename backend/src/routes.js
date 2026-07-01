@@ -2004,6 +2004,8 @@ function applyWhitelistToManifest(manifest) {
  * 不调 prepare/OCR/NER/render/seal
  */
 router.post('/tasks', upload.single('file'), async (req, res) => {
+  let finalPath = null;
+  let workDir = null;
   try {
     if (!req.file) return res.status(400).json({ success: false, message: '请上传文件' });
 
@@ -2039,8 +2041,9 @@ router.post('/tasks', upload.single('file'), async (req, res) => {
     if (!existsSync(tasksDir)) mkdirSync(tasksDir, { recursive: true });
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
     const newFilename = `${uniqueSuffix}-${originalName}`;
-    const finalPath = path.join(tasksDir, newFilename);
-    await fs.rename(tmpPath, finalPath);
+    const finalPathInner = path.join(tasksDir, newFilename);
+    finalPath = finalPathInner;
+    await fs.rename(tmpPath, finalPathInner);
 
     // 解析 rulesConfig（FormData 中是 JSON 字符串）
     let rulesConfig = {};
@@ -2051,7 +2054,7 @@ router.post('/tasks', upload.single('file'), async (req, res) => {
     } catch { rulesConfig = {}; }
 
     // 创建任务目录（不跑任何 CLI）
-    const workDir = path.join(tasksDir, `.work_${uniqueSuffix}`);
+    workDir = path.join(tasksDir, `.work_${uniqueSuffix}`);
     if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
 
     // 建 task(status=uploaded) — 若失败则清理原件和工作目录
@@ -2061,17 +2064,20 @@ router.post('/tasks', upload.single('file'), async (req, res) => {
         filename: originalName,
         ext,
         document_kind: '',
-        source_path: finalPath,
+        source_path: finalPathInner,
         work_dir: workDir,
         rules_config: rulesConfig,
         status: 'uploaded',
         file_size: req.file.size,
       });
     } catch (dbErr) {
-      await fs.unlink(finalPath).catch(() => {});
+      await fs.unlink(finalPathInner).catch(() => {});
       await fs.rm(workDir, { recursive: true, force: true }).catch(() => {});
       throw dbErr;
     }
+    // Success — clear paths so outer catch doesn't clean up
+    finalPath = null;
+    workDir = null;
 
     res.json({
       success: true,
@@ -2085,6 +2091,9 @@ router.post('/tasks', upload.single('file'), async (req, res) => {
     });
   } catch (error) {
     console.error('Task Upload Error:', error);
+    // Clean up orphaned files if createTask succeeded but something else failed
+    if (finalPath) await fs.unlink(finalPath).catch(() => {});
+    if (workDir) await fs.rm(workDir, { recursive: true, force: true }).catch(() => {});
     res.status(500).json({ success: false, message: '上传失败', error: error.message });
   }
 });
@@ -2320,7 +2329,7 @@ async function runAnalyzePipeline(taskId, task) {
       rulesConfig = task.rules_config ? JSON.parse(task.rules_config) : {};
     } catch { rulesConfig = {}; }
     const preserveTypes = [];
-    const typeAliases = { LOC: ['ADDRESS'], DATE: ['DATE', 'TIME'] };
+    const typeAliases = { LOC: ['LOC', 'ADDRESS'], DATE: ['DATE', 'TIME'] };
     for (const [type, enabled] of Object.entries(rulesConfig)) {
       if (enabled === false) preserveTypes.push(...(typeAliases[type] || [type]));
     }
@@ -2422,7 +2431,29 @@ async function runAnalyzePipeline(taskId, task) {
       nerWarning = '扫描件当前仅正则识别，姓名/机构/地址可能不会自动脱敏';
     }
 
-    // Merge + dedup
+    // Pre-filter: entity-policy + false positives + whitelist (BEFORE dedup)
+    // Applying before dedup ensures preserved types don't suppress sensitive
+    // candidates that would then be lost when the preserved type is removed.
+    const GENERIC_LEGAL_TERMS = new Set([
+      '法院', '司法部门', '行政机关', '合同', '甲方', '乙方',
+      '签约时间', '签约地点', '律师', '律师事务所', '事务所',
+      '委托代理合同', '委托代理', '代理合同',
+    ]);
+    const whitelistMatchers = activeWhitelistMatchers();
+
+    const filterEntity = (ent) => {
+      if (ent.entity_type === 'NER_MISC') return false;
+      if (ent.source === 'ner' && GENERIC_LEGAL_TERMS.has(ent.original)) return false;
+      if (preserveSet.size > 0 && preserveSet.has(ent.entity_type)) return false;
+      // Whitelist: never-redact words from DB rules
+      if (whitelistMatchers.length > 0 && whitelistMatchers.some(({ re }) => re.test(ent.original))) return false;
+      return true;
+    };
+
+    regexEntities = regexEntities.filter(filterEntity);
+    nerEntities = nerEntities.filter(filterEntity);
+
+    // Merge + dedup (only among non-preserved, non-whitelisted entities)
     let textEntities = [];
     const allEntities = [...regexEntities, ...nerEntities];
     allEntities.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
@@ -2435,20 +2466,7 @@ async function runAnalyzePipeline(taskId, task) {
         lastEnd = ent.end;
       }
     }
-
-    // Filter false positives
-    const GENERIC_LEGAL_TERMS = new Set([
-      '法院', '司法部门', '行政机关', '合同', '甲方', '乙方',
-      '签约时间', '签约地点', '律师', '律师事务所', '事务所',
-      '委托代理合同', '委托代理', '代理合同',
-    ]);
-    textEntities = textEntities.filter(ent => {
-      if (ent.entity_type === 'NER_MISC') return false;
-      if (ent.source === 'ner' && GENERIC_LEGAL_TERMS.has(ent.original)) return false;
-      // Entity-policy: filter out types user configured as disabled (e.g. DATE/TIME)
-      if (preserveSet.size > 0 && preserveSet.has(ent.entity_type)) return false;
-      return true;
-    });
+    const filteredCount = (regexEntities.length + nerEntities.length) - textEntities.length;
 
     // ── Stage 3: rendering ──
     updateTask(taskId, { status: 'rendering', progress_step: 'rendering' });
@@ -2493,7 +2511,7 @@ async function runAnalyzePipeline(taskId, task) {
       nerHits: nerEntities.length,
       sealHits: sealBoxes.length,
       totalEntities: textEntities.length,
-      filteredOut: 0,
+      filteredOut: filteredCount,
       nerEnabled,
       nerWarning: nerWarning || null,
     };
