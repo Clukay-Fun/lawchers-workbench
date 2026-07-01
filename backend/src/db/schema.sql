@@ -86,7 +86,17 @@ CREATE TABLE IF NOT EXISTS "task" (
     "map_path" TEXT,
     "audit_path" TEXT,
     "residual_passed" INTEGER DEFAULT 0,
-    "created_at" DATETIME DEFAULT CURRENT_TIMESTAMP
+    "source_path" TEXT,
+    "work_dir" TEXT,
+    "manifest_path" TEXT,
+    "source_map_path" TEXT,
+    "rules_config" TEXT,
+    "status" TEXT DEFAULT 'uploaded',  -- uploaded/preparing/recognizing/rendering/detecting_seals/ready/failed
+    "progress_step" TEXT,
+    "error_message" TEXT,
+    "file_size" INTEGER DEFAULT 0,
+    "created_at" DATETIME DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 -- 8. 自定义规则表（自定义正则 + 黑名单 + 白名单）

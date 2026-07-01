@@ -223,6 +223,27 @@ try {
         db.exec(`ALTER TABLE "task" ADD COLUMN "rules_config" TEXT`);
         console.log('[MIGRATE] task.rules_config 已添加');
       }
+      // S1 (docs/25): task lifecycle columns
+      if (!taskCols.includes('status')) {
+        db.exec(`ALTER TABLE "task" ADD COLUMN "status" TEXT DEFAULT 'uploaded'`);
+        console.log('[MIGRATE] task.status 已添加');
+      }
+      if (!taskCols.includes('progress_step')) {
+        db.exec(`ALTER TABLE "task" ADD COLUMN "progress_step" TEXT`);
+        console.log('[MIGRATE] task.progress_step 已添加');
+      }
+      if (!taskCols.includes('error_message')) {
+        db.exec(`ALTER TABLE "task" ADD COLUMN "error_message" TEXT`);
+        console.log('[MIGRATE] task.error_message 已添加');
+      }
+      if (!taskCols.includes('file_size')) {
+        db.exec(`ALTER TABLE "task" ADD COLUMN "file_size" INTEGER DEFAULT 0`);
+        console.log('[MIGRATE] task.file_size 已添加');
+      }
+      if (!taskCols.includes('updated_at')) {
+        db.exec(`ALTER TABLE "task" ADD COLUMN "updated_at" DATETIME DEFAULT CURRENT_TIMESTAMP`);
+        console.log('[MIGRATE] task.updated_at 已添加');
+      }
     } catch (colErr) {
       console.warn('[WARN] task 列增量迁移异常（可忽略若已存在）:', colErr.message);
     }

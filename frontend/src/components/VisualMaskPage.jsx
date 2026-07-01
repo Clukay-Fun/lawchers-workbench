@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { analyzeTask, maskExportTask, textExportTask, getTaskSession, getHistory, deleteHistory, renderTasksPages, updateRedactions } from '../api';
+import { maskExportTask, textExportTask, getTaskSession, getHistory, deleteHistory, renderTasksPages, updateRedactions } from '../api';
 import { Button } from '@/components/ui/button';
 import { normalizedToCSS, computeDisplaySize, createNormalizedBox } from '../services/coords';
 import { findOcrSpansForBox } from '../services/ocrBoxLinking';
@@ -1179,51 +1179,13 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
       const normalized = normalizeTask(taskData);
       setTask(normalized); setUploadPercent(100);
       localStorage.setItem('activeTaskId', String(normalized.taskId));
-      const initialModes = getAvailableModes(normalized.document_kind);
-      setMode(prev => initialModes.includes(prev) ? prev : initialModes[0]);
 
-      setProcessingStep('正在 OCR 识别…');
-      const analyzeData = await analyzeTask(taskData.taskId);
-
-      setProcessingStep('正在规则匹配…');
-
-      const backendTextEntities = (analyzeData.textEntities || []).map(e => ({
-        id: e.id,
-        original: e.original || '',
-        entity_type: e.entity_type || 'CUSTOM',
-        start: e.start ?? 0,
-        end: e.end ?? 0,
-        source: e.source || 'regex',
-      }));
-      const fullText = (analyzeData.ocrBoxes || []).map(b => b.text || '').join('\n');
-      setOcrBoxes(analyzeData.ocrBoxes || []);
-      setOcrText(fullText);
-      ocrTextRef.current = fullText;
-
-      // S2: Build redactions from analyze result (textEntities + refinedBoxes + sealBoxes)
-      const refinedBoxes = (analyzeData.refinedBoxes || []).map((b, i) => ({
-        id: `cand_${i}`, page: b.page,
-        x: b.x, y: b.y, width: b.width, height: b.height,
-        entityId: b.entityId || null,
-        source: 'ocr', entityType: b.entityType || 'CUSTOM',
-      }));
-      const sealBoxes = (analyzeData.sealBoxes || []).map((b, i) => ({
-        id: b.id || `seal_${i}`, page: b.page,
-        x: b.x, y: b.y, width: b.width, height: b.height,
-        source: 'seal', entityType: 'SEAL',
-      }));
-      const allBoxes = [...refinedBoxes, ...sealBoxes];
-      const initialRedactions = convertToRedactions(backendTextEntities, allBoxes, [], []);
-      setRedactions(initialRedactions);
-      redactionsRef.current = initialRedactions;
-
-      setPageImages(analyzeData.manifest?.pages || []);
-      setCurrentPage(1);
+      // S1 (docs/25): upload only — do NOT auto-analyze.
+      // User triggers "开始脱敏" explicitly (S2 will add the button + polling).
+      // For now, stay in staged state; session will be loaded when ready.
       hasLoadedRef.current = true;
-
-      setProcessingStep('生成预览…');
-      showToast('文档分析完成');
       loadTasksList();
+      showToast('上传成功，点击"开始脱敏"进行识别');
     } catch (err) {
       setError(err.message);
     } finally {

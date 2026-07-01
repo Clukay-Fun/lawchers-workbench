@@ -2000,10 +2000,10 @@ function applyWhitelistToManifest(manifest) {
 }
 
 /**
- * POST /api/tasks - 上传文件 + 自动 prepare + 返回 candidates/preview
+ * POST /api/tasks - 纯上传（S1 docs/25）：校验 → 移动原件 → 建 task(status=uploaded)
+ * 不调 prepare/OCR/NER/render/seal
  */
 router.post('/tasks', upload.single('file'), async (req, res) => {
-  let tempDir = null;
   try {
     if (!req.file) return res.status(400).json({ success: false, message: '请上传文件' });
 
@@ -2016,7 +2016,7 @@ router.post('/tasks', upload.single('file'), async (req, res) => {
       return res.status(400).json({ success: false, message: '仅支持 DOCX、PDF、TXT、MD 文件' });
     }
 
-    // 检查文件大小限制（用户可配置）
+    // 动态大小上限
     const maxMB = getSetting('uploadMaxMB', 100);
     const maxBytes = maxMB * 1024 * 1024;
     if (req.file.size > maxBytes) {
@@ -2036,7 +2036,7 @@ router.post('/tasks', upload.single('file'), async (req, res) => {
       return res.status(400).json({ success: false, message: '文件内容与扩展名不匹配' });
     }
 
-    // 移动到 uploads/tasks/ 目录
+    // 移动原件到 uploads/tasks/
     const tasksDir = path.join(uploadsDir, 'tasks');
     if (!existsSync(tasksDir)) mkdirSync(tasksDir, { recursive: true });
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
@@ -2052,74 +2052,20 @@ router.post('/tasks', upload.single('file'), async (req, res) => {
         : (req.body?.rulesConfig || {});
     } catch { rulesConfig = {}; }
 
-    const { resolveLegalDesensBin } = await import('./services/cliResolver.js');
-    const legalDesensBin = resolveLegalDesensBin();
+    // 创建任务目录（不跑任何 CLI）
+    const workDir = path.join(tasksDir, `.work_${uniqueSuffix}`);
+    if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
 
-    tempDir = path.join(tasksDir, `.tmp_${Date.now()}`);
-    if (!existsSync(tempDir)) mkdirSync(tempDir, { recursive: true });
-
-    const tempPreview = path.join(tempDir, 'preview.md');
-    const tempManifest = path.join(tempDir, 'manifest.json');
-    const tempSourceMap = path.join(tempDir, 'source-map.json');
-
-    // 构建合并规则文件（引擎默认 + DB 自定义/黑名单/白名单）
-    let mergedRulesPath = null;
-    try {
-      mergedRulesPath = await buildMergedRulesFile(tempDir);
-    } catch (mergeErr) {
-      console.warn('[WARN] 构建合并规则文件失败，使用引擎默认:', mergeErr.message);
-    }
-
-    const args = [];
-    if (mergedRulesPath) args.push('--rules', mergedRulesPath);
-    args.push(
-      'prepare', finalPath,
-      '--level', 'strict',
-      '--preview-md', tempPreview,
-      '--manifest', tempManifest,
-      '--map', tempSourceMap,
-    );
-
-    const { getIsNerEnabled } = await import('./services/redactService.js');
-    if (!getIsNerEnabled()) args.push('--regex-only');
-
-    // entity-policy for date/time preservation
-    const preserveTypes = [];
-    const typeAliases = { LOC: ['ADDRESS'], DATE: ['DATE', 'TIME'] };
-    for (const [type, enabled] of Object.entries(rulesConfig)) {
-      if (enabled === false) preserveTypes.push(...(typeAliases[type] || [type]));
-    }
-    if (preserveTypes.length) {
-      const policyPath = path.join(tempDir, 'entity-policy.json');
-      await fs.writeFile(policyPath, JSON.stringify({ preserve_types: [...new Set(preserveTypes)] }), 'utf-8');
-      args.push('--entity-policy', policyPath);
-    }
-
-    await execFileAsync(legalDesensBin, args, {
-      timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '600000', 10),
-    });
-
-    const manifest = applyWhitelistToManifest(JSON.parse(await fs.readFile(tempManifest, 'utf-8')));
-    await fs.writeFile(tempManifest, JSON.stringify(manifest, null, 2), 'utf-8');
-    const sourceMap = JSON.parse(await fs.readFile(tempSourceMap, 'utf-8'));
-    const previewMd = await fs.readFile(tempPreview, 'utf-8');
-
-    // 将 prepare 产物移到最终位置
-    const workDir = path.join(tasksDir, `.work_${Date.now()}`);
-    await fs.rename(tempDir, workDir);
-    tempDir = null;
-
-    // 写入 DB（服务端拥有任务生命周期）
+    // 建 task(status=uploaded)
     const task = createTask({
       filename: originalName,
       ext,
-      document_kind: manifest.documentKind || '',
-      entity_stats: null,
+      document_kind: '',
       source_path: finalPath,
       work_dir: workDir,
-      manifest_path: path.join(workDir, 'manifest.json'),
-      source_map_path: path.join(workDir, 'source-map.json'),
       rules_config: rulesConfig,
+      status: 'uploaded',
+      file_size: req.file.size,
     });
 
     res.json({
@@ -2128,18 +2074,13 @@ router.post('/tasks', upload.single('file'), async (req, res) => {
         taskId: task.id,
         filename: originalName,
         ext,
-        documentKind: manifest.documentKind || '',
-        blockCount: manifest.blocks?.length || 0,
-        candidateCount: (manifest.candidates || []).length,
-        previewMd,
-        manifest,
-        sourceMap,
+        fileSize: req.file.size,
+        status: 'uploaded',
       },
     });
   } catch (error) {
-    console.error('Task Error:', error);
-    if (tempDir) await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
-    res.status(500).json({ success: false, message: '文档处理失败', error: error.message });
+    console.error('Task Upload Error:', error);
+    res.status(500).json({ success: false, message: '上传失败', error: error.message });
   }
 });
 
@@ -2273,8 +2214,13 @@ router.post('/tasks/:id/export', async (req, res) => {
 // #region 视觉遮蔽模式 API（P1 遮蔽主干）
 
 /**
- * POST /api/tasks/:id/analyze - OCR 分析 PDF，返回归一化文字框 + 公章检测
+ * POST /api/tasks/:id/analyze - 异步识别管线（S1+C1 docs/25）
+ * 立即返回 202；detached 执行 prepare→OCR/NER→render→seal→session+redactions
+ * 每个进程边界原子写 status+progress_step；失败 fail-closed 清理产物
+ * 409 门控：同任务在飞则拒绝重复启动
  */
+const _analyzeLocks = new Map();
+
 router.post('/tasks/:id/analyze', async (req, res) => {
   try {
     const taskId = parseInt(req.params.id, 10);
@@ -2286,24 +2232,86 @@ router.post('/tasks/:id/analyze', async (req, res) => {
       return res.status(409).json({ success: false, message: '源文件已丢失' });
     }
 
-    const { resolveLegalDesensBin } = await import('./services/cliResolver.js');
-    const bin = resolveLegalDesensBin();
+    // C1: 409 门控 — 同任务在飞则拒绝
+    if (_analyzeLocks.has(taskId)) {
+      return res.status(409).json({ success: false, message: '该任务正在识别中，请勿重复启动' });
+    }
 
-    const workDir = task.work_dir || path.join(uploadsDir, 'tasks', `.work_${Date.now()}`);
-    if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
+    // 如果已 ready，允许重试（先清理旧产物）
+    // 如果处于中间状态，也允许重试（先清理）
 
-    const analyzeOut = path.join(workDir, 'analyze.json');
-    const sealOut = path.join(workDir, 'seals.json');
+    // 立即返回 202，detached 执行
+    res.status(202).json({ success: true, data: { taskId, status: 'preparing' } });
 
-    // Build merged rules for entity type tagging — must succeed
+    // 启动 detached 识别管线
+    const analyzePromise = runAnalyzePipeline(taskId, task).finally(() => {
+      _analyzeLocks.delete(taskId);
+    });
+    _analyzeLocks.set(taskId, analyzePromise);
+  } catch (error) {
+    console.error('Analyze Start Error:', error);
+    res.status(500).json({ success: false, message: '启动识别失败', error: error.message });
+  }
+});
+
+/**
+ * C1+C2: 异步识别管线。在每个可观测边界原子写 status。
+ * 失败时 fail-closed：清理所有半成品，只留原件。
+ */
+async function runAnalyzePipeline(taskId, task) {
+  const sourcePath = task.source_path;
+  const workDir = task.work_dir || path.join(uploadsDir, 'tasks', `.work_${Date.now()}`);
+  if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
+
+  // 确保 work_dir 在 DB 中
+  if (!task.work_dir) {
+    updateTask(taskId, { work_dir });
+  }
+
+  const { resolveLegalDesensBin } = await import('./services/cliResolver.js');
+  const bin = resolveLegalDesensBin();
+  const analyzeOut = path.join(workDir, 'analyze.json');
+  const sealOut = path.join(workDir, 'seals.json');
+
+  // C2: 失败清理函数
+  const cleanupFailed = async () => {
+    const filesToClean = [
+      analyzeOut, sealOut,
+      path.join(workDir, 'session.json'),
+      path.join(workDir, 'redactions.json'),
+      path.join(workDir, 'render-manifest.json'),
+      path.join(workDir, 'ner-input.txt'),
+      path.join(workDir, 'ner-spans.json'),
+      path.join(workDir, 'merged-rules.json'),
+    ];
+    for (const f of filesToClean) {
+      await fs.unlink(f).catch(() => {});
+    }
+    // 清理 pages 目录
+    await fs.rm(path.join(workDir, 'pages'), { recursive: true, force: true }).catch(() => {});
+  };
+
+  const failWith = async (step, message) => {
+    console.error(`[analyze] task ${taskId} failed at ${step}: ${message}`);
+    await cleanupFailed();
+    updateTask(taskId, { status: 'failed', progress_step: step, error_message: message });
+  };
+
+  try {
+    // ── Stage 1: preparing ──
+    updateTask(taskId, { status: 'preparing', progress_step: 'preparing', error_message: null });
+
+    // Build merged rules
     let mergedRulesPath = null;
     try {
       mergedRulesPath = await buildMergedRulesFile(workDir);
     } catch (mergeErr) {
-      return res.status(500).json({ success: false, message: `规则加载失败: ${mergeErr.message}` });
+      return failWith('preparing', `规则加载失败: ${mergeErr.message}`);
     }
 
-    // Run OCR analyze with rules for entity type tagging
+    // ── Stage 2: recognizing (OCR + regex + NER) ──
+    updateTask(taskId, { status: 'recognizing', progress_step: 'recognizing' });
+
     const analyzeArgs = [];
     if (mergedRulesPath) analyzeArgs.push('--rules', mergedRulesPath);
     analyzeArgs.push('analyze', sourcePath, '--out', analyzeOut);
@@ -2313,32 +2321,22 @@ router.post('/tasks/:id/analyze', async (req, res) => {
         timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '600000', 10),
       });
     } catch (cliErr) {
-      return res.status(500).json({
-        success: false,
-        message: 'OCR 分析失败',
-        error: describeCliFailure(cliErr, 'OCR 引擎执行失败'),
-      });
+      return failWith('recognizing', describeCliFailure(cliErr, 'OCR 引擎执行失败'));
     }
 
     if (!existsSync(analyzeOut)) {
-      return res.status(500).json({
-        success: false,
-        message: 'OCR 分析失败',
-        error: 'OCR 引擎没有生成分析结果',
-      });
+      return failWith('recognizing', 'OCR 引擎没有生成分析结果');
     }
 
     const analyzeData = JSON.parse(await fs.readFile(analyzeOut, 'utf-8'));
 
-    // ── Run rule-based text entity detection on OCR text ──
-    // This produces precise start/end entities for text mode (star/placeholder)
+    // Regex + NER entity detection
     const ocrText = (analyzeData.ocrBoxes || []).map(b => b.text || '').join('\n');
     let regexEntities = [];
     let nerEntities = [];
     let nerEnabled = false;
     let nerWarning = null;
 
-    // 1) Regex detection (always runs)
     try {
       if (ocrText && mergedRulesPath) {
         const rulesRaw = JSON.parse(await fs.readFile(mergedRulesPath, 'utf-8'));
@@ -2367,7 +2365,6 @@ router.post('/tasks/:id/analyze', async (req, res) => {
       console.warn('[WARN] Regex entity detection failed (non-fatal):', detectErr.message);
     }
 
-    // 2) NER detection (best-effort, degrade gracefully)
     const { getIsNerEnabled } = await import('./services/redactService.js');
     nerEnabled = getIsNerEnabled();
 
@@ -2408,51 +2405,49 @@ router.post('/tasks/:id/analyze', async (req, res) => {
       nerWarning = '扫描件当前仅正则识别，姓名/机构/地址可能不会自动脱敏';
     }
 
-    // 3) Merge: regex + NER + denylist, deduplicate overlapping (keep longer/higher-priority)
-    // Priority: denylist > regex > NER
+    // Merge + dedup
     let textEntities = [];
-    const denylistEntities = []; // denylist is already in regex via rules, but track source
-
-    // Combine all sources
     const allEntities = [...regexEntities, ...nerEntities];
-
-    // Sort by start, then by length descending (prefer longer match)
     allEntities.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
-
-    // Greedy dedup: keep non-overlapping, prefer longer
     let lastEnd = -1;
     let entitySeq = 0;
     for (const ent of allEntities) {
       if (ent.start >= lastEnd) {
-        // Session-stable id for cross-mode linking (position-independent within a session).
-        // NOT stable across re-analysis — entity order may change with different rules/NER.
         ent.id = `ent_${entitySeq++}`;
         textEntities.push(ent);
         lastEnd = ent.end;
       }
     }
 
-    // ── P9-4: Filter false positives ──
-    // Layer 1: Drop NER_MISC (position/book/game/movie → "律师/负责人/《…标准》")
-    // Layer 2: Drop exact-match generic legal terms (full text == generic term)
-    //          but NOT entities that contain generic terms as part of longer names
+    // Filter false positives
     const GENERIC_LEGAL_TERMS = new Set([
       '法院', '司法部门', '行政机关', '合同', '甲方', '乙方',
       '签约时间', '签约地点', '律师', '律师事务所', '事务所',
       '委托代理合同', '委托代理', '代理合同',
     ]);
-
-    const preFilterCount = textEntities.length;
     textEntities = textEntities.filter(ent => {
-      // Layer 1: NER_MISC never enters redaction
       if (ent.entity_type === 'NER_MISC') return false;
-      // Layer 2: exact-match generic terms only
       if (ent.source === 'ner' && GENERIC_LEGAL_TERMS.has(ent.original)) return false;
       return true;
     });
-    const filteredCount = preFilterCount - textEntities.length;
 
-    // Run seal detection (best-effort, don't fail if it errors)
+    // ── Stage 3: rendering ──
+    updateTask(taskId, { status: 'rendering', progress_step: 'rendering' });
+
+    const pagesDir = path.join(workDir, 'pages');
+    const renderManifestPath = path.join(workDir, 'render-manifest.json');
+    try {
+      if (!existsSync(pagesDir)) mkdirSync(pagesDir, { recursive: true });
+      await execFileAsync(bin, ['render-pages', sourcePath, '--dpi', String(getDPI()), '--out-dir', pagesDir, '--out', renderManifestPath], {
+        timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '600000', 10),
+      });
+    } catch (renderErr) {
+      return failWith('rendering', `页面渲染失败: ${renderErr.message}`);
+    }
+
+    // ── Stage 4: detecting_seals ──
+    updateTask(taskId, { status: 'detecting_seals', progress_step: 'detecting_seals' });
+
     let sealBoxes = [];
     try {
       await execFileAsync(bin, ['detect-seals', sourcePath, '--out', sealOut], {
@@ -2468,9 +2463,10 @@ router.post('/tasks/:id/analyze', async (req, res) => {
         areaRatio: s.area_ratio,
       }));
     } catch (sealErr) {
-      console.warn('Seal detection failed (non-fatal):', sealErr.message);
+      console.warn('[WARN] Seal detection failed (non-fatal):', sealErr.message);
     }
 
+    // ── Stage 5: write session.json + redactions.json (atomic, C2 fail-closed) ──
     const refinedBoxes = refineToEntityBoxes(analyzeData.ocrBoxes || [], textEntities);
     const diagData = {
       ocrLines: (analyzeData.ocrBoxes || []).length,
@@ -2478,41 +2474,34 @@ router.post('/tasks/:id/analyze', async (req, res) => {
       nerHits: nerEntities.length,
       sealHits: sealBoxes.length,
       totalEntities: textEntities.length,
-      filteredOut: filteredCount,
+      filteredOut: 0,
       nerEnabled,
       nerWarning: nerWarning || null,
     };
 
-    // ── Persist session data for recovery (P9-1) ──
+    // Write session.json atomically
     const sessionPath = path.join(workDir, 'session.json');
-    try {
-      await fs.writeFile(sessionPath, JSON.stringify({
-        ocrBoxes: analyzeData.ocrBoxes || [],
-        textEntities,
-        refinedBoxes,
-        sealBoxes,
-        manifest: analyzeData.manifest || {},
-        diagnostics: diagData,
-        ocrText,
-      }, null, 2), 'utf-8');
-    } catch (sessionErr) {
-      console.warn('[WARN] Failed to write session.json:', sessionErr.message);
-    }
+    const sessionTmp = sessionPath + '.tmp';
+    await fs.writeFile(sessionTmp, JSON.stringify({
+      ocrBoxes: analyzeData.ocrBoxes || [],
+      textEntities,
+      refinedBoxes,
+      sealBoxes,
+      manifest: analyzeData.manifest || {},
+      diagnostics: diagData,
+      ocrText,
+    }, null, 2), 'utf-8');
+    await fs.rename(sessionTmp, sessionPath);
 
-    // ── Slice 1.1: Render page images once after analyze ──
-    const pagesDir = path.join(workDir, 'pages');
-    const renderManifestPath = path.join(workDir, 'render-manifest.json');
-    try {
-      if (!existsSync(pagesDir)) mkdirSync(pagesDir, { recursive: true });
-      await execFileAsync(bin, ['render-pages', sourcePath, '--dpi', String(getDPI()), '--out-dir', pagesDir, '--out', renderManifestPath], {
-        timeout: parseInt(process.env.REDACT_TIMEOUT_MS || '600000', 10),
-      });
-      console.log(`[analyze] Pages rendered for task ${taskId}`);
-    } catch (renderErr) {
-      console.warn('[WARN] Page rendering failed (non-fatal):', renderErr.message);
-    }
+    // Write initial redactions.json atomically
+    const { convertToRedactions } = await import('./services/redactions.js');
+    const initialRedactions = convertToRedactions(textEntities, [...refinedBoxes, ...sealBoxes], [], []);
+    const redactionsPath = path.join(workDir, 'redactions.json');
+    const redactionsTmp = redactionsPath + '.tmp';
+    await fs.writeFile(redactionsTmp, JSON.stringify(initialRedactions, null, 2), 'utf-8');
+    await fs.rename(redactionsTmp, redactionsPath);
 
-    // Read render manifest for response (pages metadata)
+    // ── Final: status=ready ──
     let renderManifest = null;
     try {
       if (existsSync(renderManifestPath)) {
@@ -2520,20 +2509,65 @@ router.post('/tasks/:id/analyze', async (req, res) => {
       }
     } catch {}
 
+    updateTask(taskId, {
+      status: 'ready',
+      progress_step: null,
+      error_message: null,
+      document_kind: analyzeData.manifest?.documentKind || '',
+    });
+
+    console.log(`[analyze] task ${taskId}: ready (${textEntities.length} entities, ${sealBoxes.length} seals)`);
+  } catch (error) {
+    return failWith('unknown', error.message || '识别过程中发生未知错误');
+  }
+}
+
+/**
+ * GET /api/tasks/:id/status - 返回任务状态（只返状态/阶段/安全错误，不含正文）
+ */
+router.get('/tasks/:id/status', async (req, res) => {
+  try {
+    const taskId = parseInt(req.params.id, 10);
+    const task = getTaskById(taskId);
+    if (!task) return res.status(404).json({ success: false, message: '任务不存在' });
+
     res.json({
       success: true,
       data: {
-        ocrBoxes: analyzeData.ocrBoxes || [],
-        refinedBoxes,
-        textEntities,
-        sealBoxes,
-        manifest: renderManifest || analyzeData.manifest || {},
-        diagnostics: diagData,
+        taskId,
+        status: task.status || 'uploaded',
+        progress_step: task.progress_step || null,
+        error_message: task.error_message || null,
+        filename: task.filename,
+        fileSize: task.file_size || 0,
       },
     });
   } catch (error) {
-    console.error('Analyze Error:', error);
-    res.status(500).json({ success: false, message: 'OCR 分析失败', error: error.message });
+    console.error('Status Error:', error);
+    res.status(500).json({ success: false, message: '获取状态失败', error: error.message });
+  }
+});
+
+/**
+ * GET /api/tasks/:id/source - 未脱敏原件只读预览（C4 安全边界）
+ * inline、同源、不写日志正文、仅缓冲页用
+ */
+router.get('/tasks/:id/source', async (req, res) => {
+  try {
+    const taskId = parseInt(req.params.id, 10);
+    const task = getTaskById(taskId);
+    if (!task) return res.status(404).json({ success: false, message: '任务不存在' });
+
+    const sourcePath = task.source_path;
+    if (!sourcePath || !existsSync(sourcePath)) {
+      return res.status(404).json({ success: false, message: '源文件不存在' });
+    }
+
+    res.setHeader('Content-Disposition', 'inline');
+    res.sendFile(path.resolve(sourcePath));
+  } catch (error) {
+    console.error('Source Error:', error);
+    res.status(500).json({ success: false, message: '获取原件失败', error: error.message });
   }
 });
 
