@@ -864,7 +864,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
    * 参数: taskId - 任务 ID, e - 点击事件
    */
   const handleDeleteTask = useCallback(async (taskId, e) => {
-    e.stopPropagation();
+    e?.stopPropagation?.();
     if (!window.confirm('确认删除此材料？这将清除该文档的脱敏记录及所有分析缓存。')) return;
     try {
       await deleteHistory(taskId);
@@ -1235,10 +1235,11 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
       setTask(normalized); setUploadPercent(100);
       localStorage.setItem('activeTaskId', String(normalized.taskId));
 
-  // S1 (docs/25): upload only — do NOT auto-analyze.
-  // User triggers "开始脱敏" explicitly (S2 will add the button + polling).
-      // For now, stay in staged state; session will be loaded when ready.
-      hasLoadedRef.current = true;
+      // S1 (docs/25): upload only — do NOT auto-analyze.
+      // Stay in staged state; hasLoadedRef stays false to prevent
+      // persistence effect from writing empty redactions.json.
+      setTaskStatus({ status: 'uploaded', progress_step: null, error_message: null, filename: normalized.filename, fileSize: normalized.fileSize || 0 });
+      hasLoadedRef.current = false;
       loadTasksList();
       setPageState('staged');
       showToast('上传成功，点击"开始脱敏"进行识别');
@@ -1275,53 +1276,21 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     if (pageState !== 'analyzing' || !task?.taskId) return;
 
     let cancelled = false;
+    let consecutiveFailures = 0;
+    const MAX_FAILURES = 5;
+
     const poll = async () => {
       while (!cancelled) {
         try {
           const status = await getTaskStatus(task.taskId);
           if (cancelled) return;
+          consecutiveFailures = 0;  // reset on success
           setTaskStatus(status);
 
           if (status.status === 'ready') {
+            // Reuse loadTaskSession — single recovery path, sets renderCacheRef etc.
             setPageState('ready');
-            // Load session to enter editor
-            try {
-              const session = await getTaskSession(task.taskId);
-              const normalized = normalizeTask(session.task);
-              setTask(normalized);
-              const restoredOcrText = session.ocrText || '';
-              setOcrText(restoredOcrText);
-              ocrTextRef.current = restoredOcrText;
-              setOcrBoxes(session.ocrBoxes || []);
-              setPageImages(session.manifest?.pages || []);
-              if (session.redactions && Array.isArray(session.redactions)) {
-                setRedactions(session.redactions);
-                redactionsRef.current = session.redactions;
-              } else {
-                const reds = convertToRedactions(
-                  session.textEntities || [],
-                  session.boxes || [],
-                  session.cancelledEntities || [],
-                  session.pendingReselect || [],
-                );
-                setRedactions(reds);
-                redactionsRef.current = reds;
-              }
-              setSelectedPendingId(null);
-              setCurrentPage(1);
-              hasLoadedRef.current = true;
-              const availModes = getAvailableModes(normalized?.document_kind);
-              const savedMode = localStorage.getItem(`taskMode:${normalized.taskId}`);
-              setMode(prev => {
-                if (savedMode && availModes.includes(savedMode)) return savedMode;
-                return availModes.includes(prev) ? prev : availModes[0];
-              });
-              loadTasksList();
-            } catch (err) {
-              console.error('[analyze] Failed to load session after ready:', err);
-              setTaskStatus({ status: 'failed', progress_step: null, error_message: '识别完成但加载会话失败' });
-              setPageState('failed');
-            }
+            await loadTaskSession(task.taskId);
             return;
           }
 
@@ -1331,7 +1300,13 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
           }
         } catch (err) {
           if (cancelled) return;
-          console.warn('[poll] status fetch failed:', err.message);
+          consecutiveFailures++;
+          console.warn(`[poll] status fetch failed (${consecutiveFailures}/${MAX_FAILURES}):`, err.message);
+          if (consecutiveFailures >= MAX_FAILURES) {
+            setTaskStatus({ status: 'failed', progress_step: null, error_message: '连接中断，请重新连接' });
+            setPageState('failed');
+            return;
+          }
         }
         // Wait 900ms before next poll
         await new Promise(resolve => setTimeout(resolve, 900));
@@ -1494,7 +1469,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
             {tasks.map(t => (
               <div key={t.id} className={`file-card ${task.taskId === t.id ? 'active' : ''}`} onClick={() => { if (task.taskId !== t.id) loadTaskSession(t.id); }}>
                 <div className="file-card-title" title={t.filename}>{t.filename}</div>
-                <Button variant="ghost" size="icon" className="file-card-delete-btn text-muted-foreground hover:text-destructive" onClick={(e) => handleDeleteTask(t.id, e)} title="删除材料">×</Button>
+                <Button variant="ghost" size="icon" className="file-card-delete-btn text-muted-foreground hover:text-destructive" disabled={t.id === task.taskId && pageState === 'analyzing'} onClick={(e) => handleDeleteTask(t.id, e)} title={t.id === task.taskId && pageState === 'analyzing' ? '识别中，无法删除' : '删除材料'}>×</Button>
               </div>
             ))}
           </div>

@@ -3846,6 +3846,12 @@ router.get('/history/:id/download-map', (req, res) => {
 router.delete('/history/:id', async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
+
+    // P0-3: Prevent deletion while analyze is running
+    if (_analyzeLocks.has(id)) {
+      return res.status(409).json({ success: false, message: '该任务正在识别中，无法删除' });
+    }
+
     const task = getTaskById(id);
     if (task) {
       // 清理 export/map/audit 文件（敏感残留）
