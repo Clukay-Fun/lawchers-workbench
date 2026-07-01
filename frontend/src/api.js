@@ -168,15 +168,36 @@ export async function testRegex(regex, sample) {
 
 // #region 视觉遮蔽模式 API (P1)
 
-/** OCR 分析 PDF，返回归一化文字框 */
+/** OCR 分析 PDF — 异步：返回 202 + status */
 export async function analyzeTask(taskId) {
   const response = await fetch(`${API_BASE}/tasks/${taskId}/analyze`, { method: 'POST' });
+  if (response.status === 202 || response.ok) {
+    const result = await response.json();
+    if (!result.success) throw new Error(result.message || '启动分析失败');
+    return result.data;
+  }
+  if (response.status === 409) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.message || '该任务正在识别中');
+  }
+  throw new Error(await readApiError(response, '启动分析失败'));
+}
+
+/** S1: 获取任务状态（只返状态/阶段/安全错误） */
+export async function getTaskStatus(taskId) {
+  const response = await fetch(`${API_BASE}/tasks/${taskId}/status`, { method: 'GET' });
   if (!response.ok) {
-    throw new Error(await readApiError(response, 'OCR 分析失败'));
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.message || '获取状态失败');
   }
   const result = await response.json();
-  if (!result.success) throw new Error(result.message || '分析异常');
+  if (!result.success) throw new Error(result.message || '获取状态异常');
   return result.data;
+}
+
+/** S1: 原件预览 URL（inline、同源、只读） */
+export function getSourceUrl(taskId) {
+  return `${API_BASE}/tasks/${taskId}/source`;
 }
 
 /** 恢复任务会话（不重跑 analyze，从 work_dir 回读） */

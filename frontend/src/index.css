@@ -484,6 +484,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .progress-bar-fill.determinate { background: var(--blue); }
 .progress-bar-fill.indeterminate { width: 30%; background: var(--blue); animation: indeterminate 1.4s ease-in-out infinite; }
 @keyframes indeterminate { 0% { transform: translateX(-100%); } 100% { transform: translateX(400%); } }
+@keyframes indeterminate-slide { 0% { left: -40%; } 100% { left: 100%; } }
 .progress-step-text { font-size: 13px; color: var(--base01); }
 
 /* P9-3: Text entity highlight */

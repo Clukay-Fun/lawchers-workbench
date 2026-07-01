@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { maskExportTask, textExportTask, getTaskSession, getHistory, deleteHistory, renderTasksPages, updateRedactions } from '../api';
+import { maskExportTask, textExportTask, getTaskSession, getHistory, deleteHistory, renderTasksPages, updateRedactions, analyzeTask, getTaskStatus, getSourceUrl } from '../api';
 import { Button } from '@/components/ui/button';
 import { normalizedToCSS, computeDisplaySize, createNormalizedBox } from '../services/coords';
 import { findOcrSpansForBox } from '../services/ocrBoxLinking';
@@ -588,6 +588,11 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const [exporting, setExporting] = useState(false);
   const [mode, setMode] = useState('mask');
 
+  // S2 (docs/25): page state machine — empty/uploading/staged/analyzing/ready/failed
+  const [pageState, setPageState] = useState('empty');
+  const [taskStatus, setTaskStatus] = useState(null);  // {status, progress_step, error_message, filename, fileSize}
+  const [sourcePreviewOpen, setSourcePreviewOpen] = useState(false);
+
   const [pageStatus, setPageStatus] = useState({});
   const [imageUrls, setImageUrls] = useState({});
   const renderCacheRef = useRef('unknown'); // 'ready' | 'missing' | 'unknown'
@@ -762,6 +767,54 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
   const loadTaskSession = useCallback(async (taskId) => {
     setLoading(true); setProcessingStep('正在加载任务会话…'); setError(null);
     try {
+      // S2: First check task status to decide routing
+      let status = null;
+      try {
+        status = await getTaskStatus(taskId);
+      } catch { /* old tasks may not have status endpoint — fall through to session */ }
+
+      const taskStatus = status?.status || 'ready';  // default: old task → ready
+
+      if (taskStatus === 'uploaded') {
+        // Staged — show buffer page, don't load session
+        const normalized = { taskId, id: taskId, filename: status?.filename || '', document_kind: '', documentKind: '' };
+        setTask(normalized);
+        setTaskStatus(status);
+        setPageState('staged');
+        setLoading(false); setProcessingStep('');
+        localStorage.setItem('activeTaskId', String(taskId));
+        hasLoadedRef.current = false;  // not in editor yet
+        loadTasksList();
+        return;
+      }
+
+      if (taskStatus === 'failed') {
+        const normalized = { taskId, id: taskId, filename: status?.filename || '', document_kind: '', documentKind: '' };
+        setTask(normalized);
+        setTaskStatus(status);
+        setPageState('failed');
+        setLoading(false); setProcessingStep('');
+        localStorage.setItem('activeTaskId', String(taskId));
+        hasLoadedRef.current = false;
+        loadTasksList();
+        return;
+      }
+
+      const INTERMEDIATE = ['preparing', 'recognizing', 'rendering', 'detecting_seals'];
+      if (INTERMEDIATE.includes(taskStatus)) {
+        // Analyzing — show progress page, polling effect will pick it up
+        const normalized = { taskId, id: taskId, filename: status?.filename || '', document_kind: '', documentKind: '' };
+        setTask(normalized);
+        setTaskStatus(status);
+        setPageState('analyzing');
+        setLoading(false); setProcessingStep('');
+        localStorage.setItem('activeTaskId', String(taskId));
+        hasLoadedRef.current = false;
+        loadTasksList();
+        return;
+      }
+
+      // ready — load full session into editor
       const session = await getTaskSession(taskId);
       const normalized = normalizeTask(session.task);
       renderCacheRef.current = session.renderCacheStatus || 'unknown';
@@ -788,6 +841,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
       setPageImages(session.manifest?.pages || []);
       setCurrentPage(1);
       hasLoadedRef.current = true;
+      setPageState('ready');
       localStorage.setItem('activeTaskId', String(taskId));
       // Adjust mode to document kind
       const availModes = getAvailableModes(normalized?.document_kind);
@@ -1173,6 +1227,7 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
     if (!file) return;
     localStorage.removeItem('activeTaskId');
     renderCacheRef.current = 'unknown';
+    setPageState('uploading');
     setLoading(true); setError(null); setRedactions([]); redactionsRef.current = []; setOcrBoxes([]); setOcrText(''); ocrTextRef.current = ''; setPageImages([]); setSelectedPendingId(null); setUploadPercent(0); setProcessingStep('上传中…');
     try {
       const taskData = await uploadWithProgress(file, _settings?.rulesConfig, setUploadPercent);
@@ -1180,11 +1235,12 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
       setTask(normalized); setUploadPercent(100);
       localStorage.setItem('activeTaskId', String(normalized.taskId));
 
-      // S1 (docs/25): upload only — do NOT auto-analyze.
-      // User triggers "开始脱敏" explicitly (S2 will add the button + polling).
+  // S1 (docs/25): upload only — do NOT auto-analyze.
+  // User triggers "开始脱敏" explicitly (S2 will add the button + polling).
       // For now, stay in staged state; session will be loaded when ready.
       hasLoadedRef.current = true;
       loadTasksList();
+      setPageState('staged');
       showToast('上传成功，点击"开始脱敏"进行识别');
     } catch (err) {
       setError(err.message);
@@ -1193,6 +1249,98 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
+
+  // S2: Start analyze — POST analyze, then poll status until ready|failed
+  const startAnalyze = useCallback(async () => {
+    if (!task?.taskId) return;
+    if (pageState === 'analyzing') return;  // prevent double-trigger
+
+    setPageState('analyzing');
+    setTaskStatus({ status: 'preparing', progress_step: 'preparing', error_message: null });
+    try {
+      await analyzeTask(task.taskId);
+    } catch (err) {
+      // 409 is OK — already running, just resume polling
+      if (!err.message?.includes('正在识别')) {
+        setTaskStatus({ status: 'failed', progress_step: null, error_message: err.message });
+        setPageState('failed');
+        return;
+      }
+    }
+    // Polling is handled by the effect below
+  }, [task, pageState]);
+
+  // S2: Poll GET /status while analyzing
+  useEffect(() => {
+    if (pageState !== 'analyzing' || !task?.taskId) return;
+
+    let cancelled = false;
+    const poll = async () => {
+      while (!cancelled) {
+        try {
+          const status = await getTaskStatus(task.taskId);
+          if (cancelled) return;
+          setTaskStatus(status);
+
+          if (status.status === 'ready') {
+            setPageState('ready');
+            // Load session to enter editor
+            try {
+              const session = await getTaskSession(task.taskId);
+              const normalized = normalizeTask(session.task);
+              setTask(normalized);
+              const restoredOcrText = session.ocrText || '';
+              setOcrText(restoredOcrText);
+              ocrTextRef.current = restoredOcrText;
+              setOcrBoxes(session.ocrBoxes || []);
+              setPageImages(session.manifest?.pages || []);
+              if (session.redactions && Array.isArray(session.redactions)) {
+                setRedactions(session.redactions);
+                redactionsRef.current = session.redactions;
+              } else {
+                const reds = convertToRedactions(
+                  session.textEntities || [],
+                  session.boxes || [],
+                  session.cancelledEntities || [],
+                  session.pendingReselect || [],
+                );
+                setRedactions(reds);
+                redactionsRef.current = reds;
+              }
+              setSelectedPendingId(null);
+              setCurrentPage(1);
+              hasLoadedRef.current = true;
+              const availModes = getAvailableModes(normalized?.document_kind);
+              const savedMode = localStorage.getItem(`taskMode:${normalized.taskId}`);
+              setMode(prev => {
+                if (savedMode && availModes.includes(savedMode)) return savedMode;
+                return availModes.includes(prev) ? prev : availModes[0];
+              });
+              loadTasksList();
+            } catch (err) {
+              console.error('[analyze] Failed to load session after ready:', err);
+              setTaskStatus({ status: 'failed', progress_step: null, error_message: '识别完成但加载会话失败' });
+              setPageState('failed');
+            }
+            return;
+          }
+
+          if (status.status === 'failed') {
+            setPageState('failed');
+            return;
+          }
+        } catch (err) {
+          if (cancelled) return;
+          console.warn('[poll] status fetch failed:', err.message);
+        }
+        // Wait 900ms before next poll
+        await new Promise(resolve => setTimeout(resolve, 900));
+      }
+    };
+    poll();
+
+    return () => { cancelled = true; };
+  }, [pageState, task?.taskId]);
 
   // ─── Export ────────────────────────────────────────────────
 
@@ -1245,12 +1393,12 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
 
   // ─── Empty state (no sidebar) ─────────────────────────────
 
-  if (!task && !loading) {
+  if (!task && !loading && pageState === 'empty') {
     return (
       <div className="visual-mask-page" ref={containerRef}>
         <div className="tool-empty">
           <strong>请选择或上传文档</strong>
-          <p>支持文本 PDF 和扫描 PDF 两种文件格式</p>
+          <p>仅支持 PDF 文件</p>
           <Button variant="default" onClick={() => fileInputRef.current?.click()}>上传新文件</Button>
         </div>
         <input ref={fileInputRef} className="visually-hidden" type="file" accept=".pdf" onChange={(e) => handleFile(e.target.files?.[0])} />
@@ -1272,7 +1420,134 @@ export default function VisualMaskPage({ settings: _settings, resumeTaskId, onRe
       <div className="tool-error" style={{ padding: '40px', maxWidth: '600px', margin: '40px auto', textAlign: 'center' }}>
         <strong>处理失败</strong>
         <p>{error}</p>
-        <Button variant="outline" onClick={() => { setError(null); setTask(null); }}>重试</Button>
+        <Button variant="outline" onClick={() => { setError(null); setTask(null); setPageState('empty'); }}>重试</Button>
+      </div>
+    );
+  }
+
+  // S2: Staged buffer page — upload success, awaiting user "开始脱敏"
+  if (pageState === 'staged' && task) {
+    const fileSizeStr = taskStatus?.fileSize
+      ? taskStatus.fileSize > 1024 * 1024
+        ? `${(taskStatus.fileSize / 1024 / 1024).toFixed(1)} MB`
+        : `${Math.round(taskStatus.fileSize / 1024)} KB`
+      : '';
+    return (
+      <div className="workspace-container" ref={containerRef}>
+        <div className="workspace-sidebar">
+          <h4 className="sidebar-title">本案材料</h4>
+          <div className="file-list">
+            {tasks.map(t => (
+              <div key={t.id} className={`file-card ${task.taskId === t.id ? 'active' : ''}`} onClick={() => { if (task.taskId !== t.id) loadTaskSession(t.id); }}>
+                <div className="file-card-title" title={t.filename}>{t.filename}</div>
+                <Button variant="ghost" size="icon" className="file-card-delete-btn text-muted-foreground hover:text-destructive" onClick={(e) => handleDeleteTask(t.id, e)} title="删除材料">×</Button>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="workspace-main" style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '20px' }}>
+          <div style={{ textAlign: 'center', maxWidth: '400px' }}>
+            <div style={{ fontSize: '48px', marginBottom: '12px' }}>📄</div>
+            <div style={{ fontWeight: 600, fontSize: '16px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: '4px' }} title={task.filename}>{task.filename}</div>
+            <div style={{ color: '#666', fontSize: '13px', marginBottom: '12px' }}>
+              PDF 文档{fileSizeStr ? ` · ${fileSizeStr}` : ''}
+            </div>
+            <div style={{ color: '#22c55e', fontSize: '13px', marginBottom: '20px' }}>✓ 上传成功</div>
+            <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap' }}>
+              <Button variant="outline" size="sm" onClick={() => setSourcePreviewOpen(true)}>查看原件</Button>
+              <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>更换文件</Button>
+              <Button variant="default" size="sm" onClick={startAnalyze}>开始脱敏</Button>
+            </div>
+          </div>
+        </div>
+        {sourcePreviewOpen && (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setSourcePreviewOpen(false)}>
+            <div style={{ background: '#fff', borderRadius: '8px', width: '80vw', height: '85vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
+              <div style={{ padding: '8px 16px', borderBottom: '1px solid #e5e7eb', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontWeight: 600, fontSize: '14px' }}>{task.filename}（原件预览）</span>
+                <Button variant="ghost" size="sm" onClick={() => setSourcePreviewOpen(false)}>✕</Button>
+              </div>
+              <iframe src={getSourceUrl(task.taskId)} style={{ flex: 1, border: 'none' }} title="source-preview" />
+            </div>
+          </div>
+        )}
+        <input ref={fileInputRef} className="visually-hidden" type="file" accept=".pdf" onChange={(e) => handleFile(e.target.files?.[0])} />
+        <div className={`toast ${toast ? 'show' : ''}`}>{toast}</div>
+      </div>
+    );
+  }
+
+  // S2: Analyzing progress page — polling status, indeterminate progress
+  if (pageState === 'analyzing' && task) {
+    const STEP_LABELS = {
+      preparing: '正在分析文档结构',
+      recognizing: '正在识别文字与敏感信息',
+      rendering: '正在生成页面预览',
+      detecting_seals: '正在识别公章候选',
+    };
+    const stepLabel = STEP_LABELS[taskStatus?.progress_step] || '正在准备脱敏工作区';
+    return (
+      <div className="workspace-container" ref={containerRef}>
+        <div className="workspace-sidebar">
+          <h4 className="sidebar-title">本案材料</h4>
+          <div className="file-list">
+            {tasks.map(t => (
+              <div key={t.id} className={`file-card ${task.taskId === t.id ? 'active' : ''}`} onClick={() => { if (task.taskId !== t.id) loadTaskSession(t.id); }}>
+                <div className="file-card-title" title={t.filename}>{t.filename}</div>
+                <Button variant="ghost" size="icon" className="file-card-delete-btn text-muted-foreground hover:text-destructive" onClick={(e) => handleDeleteTask(t.id, e)} title="删除材料">×</Button>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="workspace-main" style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '24px' }}>
+          <div style={{ textAlign: 'center', maxWidth: '460px', width: '100%' }}>
+            <div style={{ fontWeight: 600, fontSize: '15px', marginBottom: '20px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={task.filename}>{task.filename}</div>
+            <div style={{ marginBottom: '16px', fontSize: '14px', color: '#333' }}>{stepLabel}</div>
+            {/* Indeterminate progress bar — no fake percentage */}
+            <div style={{ width: '100%', height: '6px', background: '#e5e7eb', borderRadius: '3px', overflow: 'hidden', position: 'relative' }}>
+              <div style={{ position: 'absolute', height: '100%', width: '40%', background: '#3b82f6', borderRadius: '3px', animation: 'indeterminate-slide 1.5s ease-in-out infinite' }} />
+            </div>
+            <div style={{ marginTop: '16px', fontSize: '12px', color: '#999' }}>请勿关闭页面，识别完成后自动进入编辑器</div>
+          </div>
+        </div>
+        <input ref={fileInputRef} className="visually-hidden" type="file" accept=".pdf" onChange={(e) => handleFile(e.target.files?.[0])} />
+        <div className={`toast ${toast ? 'show' : ''}`}>{toast}</div>
+      </div>
+    );
+  }
+
+  // S2: Failed page — error + retry/change/delete
+  if (pageState === 'failed' && task) {
+    return (
+      <div className="workspace-container" ref={containerRef}>
+        <div className="workspace-sidebar">
+          <h4 className="sidebar-title">本案材料</h4>
+          <div className="file-list">
+            {tasks.map(t => (
+              <div key={t.id} className={`file-card ${task.taskId === t.id ? 'active' : ''}`} onClick={() => { if (task.taskId !== t.id) loadTaskSession(t.id); }}>
+                <div className="file-card-title" title={t.filename}>{t.filename}</div>
+                <Button variant="ghost" size="icon" className="file-card-delete-btn text-muted-foreground hover:text-destructive" onClick={(e) => handleDeleteTask(t.id, e)} title="删除材料">×</Button>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="workspace-main" style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '20px' }}>
+          <div style={{ textAlign: 'center', maxWidth: '420px' }}>
+            <div style={{ fontSize: '48px', marginBottom: '12px' }}>⚠️</div>
+            <div style={{ fontWeight: 600, fontSize: '16px', marginBottom: '8px' }}>识别失败</div>
+            <div style={{ color: '#666', fontSize: '13px', marginBottom: '4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={task.filename}>{task.filename}</div>
+            {taskStatus?.error_message && (
+              <div style={{ color: '#dc2626', fontSize: '13px', marginBottom: '20px', padding: '8px 12px', background: '#fef2f2', borderRadius: '6px' }}>{taskStatus.error_message}</div>
+            )}
+            <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap' }}>
+              <Button variant="default" size="sm" onClick={startAnalyze}>重新识别</Button>
+              <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>更换文件</Button>
+              <Button variant="outline" size="sm" onClick={() => handleDeleteTask(task.taskId)}>删除</Button>
+            </div>
+          </div>
+        </div>
+        <input ref={fileInputRef} className="visually-hidden" type="file" accept=".pdf" onChange={(e) => handleFile(e.target.files?.[0])} />
+        <div className={`toast ${toast ? 'show' : ''}`}>{toast}</div>
       </div>
     );
   }
